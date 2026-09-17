@@ -1,10 +1,13 @@
 // DuckDuckGo adapter — the real adapter at the SearchProvider seam.
 //
-// Large implementation (HTML scraping, regex parsing, entity decoding,
-// redirect URL resolution) behind the small searchDuckDuckGo() interface.
-// This adapter is always available: no API key, no MCP, no config.
+// Two implementations behind one interface:
+//   1. uvx ddgs — TLS fingerprinting, VQD tokens, no captcha (primary)
+//   2. HTML scraping — fallback when uvx unavailable
+//
+// Auto-installs uv on first use if missing.
 
 import type { SearchOptions, SearchResult } from "./search.ts";
+import { hasUvx, installUv, searchViaDdgs } from "./ddgs-uv.ts";
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 const TIMEOUT_MS = 25_000;
@@ -12,6 +15,23 @@ const TIMEOUT_MS = 25_000;
 // ── Public interface ─────────────────────────────────────────────────────────
 
 export async function searchDuckDuckGo(
+  query: string,
+  options: SearchOptions = {},
+): Promise<SearchResult[]> {
+  // Primary: uvx ddgs (TLS fingerprinting, no captcha)
+  if (hasUvx()) {
+    try {
+      return searchViaDdgs(query, options);
+    } catch {
+      // ddgs failed, fall through to HTML scraping
+    }
+  }
+
+  // Fallback: HTML scraping (may get captcha)
+  return searchViaHtml(query, options);
+}
+
+async function searchViaHtml(
   query: string,
   options: SearchOptions = {},
 ): Promise<SearchResult[]> {

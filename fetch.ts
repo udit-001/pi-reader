@@ -227,7 +227,42 @@ async function fetchViaMarkdownNew(
   return { title: firstHeading(content) || url, content };
 }
 
-const FREE_FALLBACKS = [fetchViaJinaReader, fetchViaMarkdownNew];
+async function fetchViaFirecrawl(
+  url: string,
+  signal?: AbortSignal,
+): Promise<{ title: string; content: string } | null> {
+  // Firecrawl keyless MCP — no API key required, rate-limited.
+  // Scrapes JS-rendered pages, bypasses Cloudflare.
+  const mcpUrl = "https://mcp.firecrawl.dev/v2/mcp";
+  const res = await fetchWithTimeout(mcpUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "firecrawl_scrape",
+        arguments: { url, formats: ["markdown"], onlyMainContent: true },
+      },
+    }),
+  }, FALLBACK_TIMEOUT_MS, signal);
+  if (!res.ok) throw new Error(`Firecrawl returned ${res.status}`);
+  const data = (await res.json()) as {
+    result?: { content?: Array<{ type?: string; text?: string }> };
+    error?: { message?: string };
+  };
+  if (data.error) throw new Error(data.error.message ?? "Firecrawl error");
+  const text = data.result?.content
+    ?.filter((c) => c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text!)
+    .join("\n")
+    .trim();
+  if (!text || !usableText(text)) return null;
+  return { title: firstHeading(text) || url, content: text };
+}
+
+const FREE_FALLBACKS = [fetchViaJinaReader, fetchViaMarkdownNew, fetchViaFirecrawl];
 
 // Fallback services sometimes return raw binary (markdown.new happily hands
 // back %PDF bytes) or boilerplate-thin shells — reject both.
@@ -344,6 +379,10 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
 }
 
 // ── Defuddle extraction (primary local path) ─────────────────────────────────
+// Scored main-content extraction: boilerplate, ads, and nav stripped properly.
+// Returns null on failure — the fallback chain (Jina, markdown.new, Exa) handles it.
+
+const MIN_CONTENT_LENGTH = 100;
 
 async function convertWithDefuddle(
   body: string,
@@ -354,9 +393,15 @@ async function convertWithDefuddle(
   if (contentType && !contentType.includes("html") && !looksLikeHtml(body)) return null;
   try {
     const { document } = parseHTML(body);
+    // Shim: Defuddle uses document.location for relative URL resolution.
+    Object.defineProperty(document, "location", {
+      value: new URL(url),
+      configurable: true,
+    });
     const result = await Defuddle(document, url, { markdown: true, useAsync: false });
     const content = typeof result?.content === "string" ? result.content.trim() : "";
-    if (!content) return null;
+    // Reject thin pages (shells, redirects, error pages).
+    if (content.length < MIN_CONTENT_LENGTH) return null;
     return { title: result.title || "", content };
   } catch {
     return null;

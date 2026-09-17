@@ -19,6 +19,7 @@
     "index.ts",
     "search.ts",
     "duckduckgo.ts",
+    "ddgs-uv.ts",
     "exa-mcp.ts",
     "exa-issue.ts",
     "exa-setup.ts",
