@@ -15,8 +15,25 @@ export async function searchDuckDuckGo(
   query: string,
   options: SearchOptions = {},
 ): Promise<SearchResult[]> {
+  // Build site: and -site: operators — DDG filters during search
+  // instead of us filtering after. Much more precise.
+  const includeDomains = (options.domains ?? [])
+    .filter((d) => !d.startsWith("-") && d.length > 0);
+  const excludeDomains = (options.domains ?? [])
+    .filter((d) => d.startsWith("-") && d.length > 1)
+    .map((d) => d.slice(1));
+
+  const siteOps: string[] = [];
+  if (includeDomains.length > 0) {
+    siteOps.push(includeDomains.map((d) => `site:${d}`).join(" OR "));
+  }
+  if (excludeDomains.length > 0) {
+    siteOps.push(excludeDomains.map((d) => `-site:${d}`).join(" "));
+  }
+  const siteQuery = siteOps.length > 0 ? `${query} ${siteOps.join(" ")}` : query;
+
   const url = new URL(DDG_HTML_URL);
-  url.searchParams.set("q", query);
+  url.searchParams.set("q", siteQuery);
   if (options.recency) {
     const map: Record<string, string> = { day: "d", week: "w", month: "m", year: "y" };
     url.searchParams.set("df", map[options.recency] ?? "");
