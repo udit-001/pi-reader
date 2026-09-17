@@ -274,7 +274,7 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
   try {
     res = await fetchWithTimeout(url, {
       redirect: "follow",
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; pi-web/0.1)" },
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; pi-reader/0.2)" },
     }, FETCH_TIMEOUT_MS, signal);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

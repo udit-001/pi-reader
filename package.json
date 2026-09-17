@@ -1,7 +1,7 @@
 {
-  "name": "pi-web",
+  "name": "pi-reader",
   "version": "0.2.0",
-  "description": "Lightweight web search (DuckDuckGo + Exa MCP) and URL-to-Markdown fetch for Pi coding agent. Zero config.",
+  "description": "Web search (DuckDuckGo + Exa MCP) and URL-to-Markdown fetch for Pi coding agent. Zero config.",
   "type": "module",
   "license": "MIT",
   "keywords": [

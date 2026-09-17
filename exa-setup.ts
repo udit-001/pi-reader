@@ -9,12 +9,12 @@
 //              esc closes
 //   Paste      hidden key entry                     → Validating
 //   Validating one cheap tools/call check           → Save
-//   Save       previews pi-web.json, enter writes   → Remove (if duplicate)
+//   Save       previews pi-reader.json, enter writes   → Remove (if duplicate)
 //   Remove     opt-in deletion of the mcp.json exa  → Done
 //   Done       what was written
 //
 // plus an Error place for the never-clobber path: a malformed mcp.json is
-// reported with manual instructions, never overwritten. pi-web.json is our
+// reported with manual instructions, never overwritten. pi-reader.json is our
 // own file and self-heals (malformed reads as null; the wizard's save
 // replaces it with valid JSON).
 //
@@ -57,7 +57,7 @@ export function mcpConfigPaths(): string[] {
 }
 
 // ── mcp.json detection & removal ─────────────────────────────────────────────
-// pi-web no longer reads mcp.json for credentials. findMcpExaEntry is the
+// pi-reader no longer reads mcp.json for credentials. findMcpExaEntry is the
 // read-only detector behind the wizard's import offer and the session-start
 // dedup warning; removeMcpExaEntry is the opt-in, confirmation-gated surgery
 // that deletes exactly the exa server and nothing else — never clobber.
@@ -94,7 +94,7 @@ export function findMcpExaEntry(path: string): McpExaEntry | null {
 
 /**
  * The duplication condition: an mcp.json exa entry that exposes exa tools
- * directly (directTools: true) while pi-web's own tools cover the same
+ * directly (directTools: true) while pi-reader's own tools cover the same
  * capability. Drives the session-start warning and the once-per-user prompt.
  */
 export function detectMcpDuplicate(): McpExaEntry | null {
@@ -413,7 +413,7 @@ export class ExaSetupWizard {
         if (this.mcpEntry?.apiKey) {
           add();
           wrap(`Found an Exa key in ${this.mcpEntry.path}.`, "accent");
-          wrap("i imports it (validated) into pi-web's own config, then offers to remove the duplicate entry.");
+          wrap("i imports it (validated) into pi-reader's own config, then offers to remove the duplicate entry.");
         }
         add();
         wrap("A key is only needed when you hit an Exa rate limit or want its results — DuckDuckGo and the free fetch chain keep working either way.");
@@ -456,20 +456,20 @@ export class ExaSetupWizard {
         break;
       }
       case "save": {
-        wrap("pi-web's config will become:", "text");
+        wrap("pi-reader's config will become:", "text");
         add();
         const preview = JSON.stringify(previewConfig(this.key.trim()), null, 2);
         for (const l of preview.split("\n")) {
           lines.push(`    ${this.theme.fg("text", truncateToWidth(l, W - 6, "…"))}`);
         }
         add();
-        wrap(`Written to ${configPath()} — pi-web's own file, replacing nothing else. No restart needed.`, "dim");
+        wrap(`Written to ${configPath()} — pi-reader's own file, replacing nothing else. No restart needed.`, "dim");
         break;
       }
       case "remove": {
         wrap("Found a duplicate: mcp.json still has an exa entry that exposes exa tools directly.");
         add();
-        wrap("Remove it? pi-web no longer reads that entry, and leaving it puts two Exa tool families in every session.", "text");
+        wrap("Remove it? pi-reader no longer reads that entry, and leaving it puts two Exa tool families in every session.", "text");
         add();
         if (this.mcpEntry) {
           wrap(`Target: ${this.mcpEntry.path} — every other server is untouched.`, "dim");

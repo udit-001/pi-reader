@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { redact, findMcpExaEntry, removeMcpExaEntry } from "../exa-setup.ts";
 
 test("exa-setup: findMcpExaEntry finds the key, url, and directTools flag", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-web-mcp-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-reader-mcp-"));
   const path = join(dir, "mcp.json");
   try {
     writeFileSync(path, JSON.stringify({
@@ -29,7 +29,7 @@ test("exa-setup: findMcpExaEntry finds the key, url, and directTools flag", () =
 });
 
 test("exa-setup: findMcpExaEntry returns null for malformed configs", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-web-mcp-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-reader-mcp-"));
   const path = join(dir, "mcp.json");
   try {
     writeFileSync(path, "{ oops");
@@ -40,7 +40,7 @@ test("exa-setup: findMcpExaEntry returns null for malformed configs", () => {
 });
 
 test("exa-setup: removeMcpExaEntry deletes only the exa server, never clobbers malformed", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-web-mcp-"));
+  const dir = mkdtempSync(join(tmpdir(), "pi-reader-mcp-"));
   const path = join(dir, "mcp.json");
   try {
     writeFileSync(path, JSON.stringify({

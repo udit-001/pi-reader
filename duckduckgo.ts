@@ -24,7 +24,7 @@ export async function searchDuckDuckGo(
 
   const res = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; pi-web/0.1)",
+      "User-Agent": "Mozilla/5.0 (compatible; pi-reader/0.2)",
       Accept: "text/html",
     },
     signal: AbortSignal.any(

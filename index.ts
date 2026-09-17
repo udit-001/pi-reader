@@ -1,4 +1,4 @@
-// pi-web — lightweight web search (DuckDuckGo + Exa MCP) and URL→Markdown
+// pi-reader — web search (DuckDuckGo + Exa MCP) and URL→Markdown
 // fetch for the Pi coding agent. Zero config: reads the Exa MCP key from the
 // same ~/.pi/agent/mcp.json pi uses; DuckDuckGo needs no key at all.
 //
@@ -125,11 +125,11 @@ export default function piWeb(pi: ExtensionAPI): void {
     if (!detectMcpDuplicate()) return;
     const config = loadConfig() ?? { version: 1 };
     if (config.hints?.mcpDuplicate) {
-      ctx.ui.notify("Exa configured in both mcp.json and pi-web — /exa-setup to dedupe", "info");
+      ctx.ui.notify("Exa configured in both mcp.json and pi-reader — /exa-setup to dedupe", "info");
       return;
     }
     ctx.ui.notify(
-      "Exa is configured in mcp.json, and pi-web's web_search/web_fetch already cover it. " +
+      "Exa is configured in mcp.json, and pi-reader's web_search/web_fetch already cover it. " +
         "Run /exa-setup to import the key and remove the duplicate.",
       "warning",
     );

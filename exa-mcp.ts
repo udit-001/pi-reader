@@ -7,7 +7,7 @@
 // results) are never retried — a rate-limited or invalid key won't heal by
 // reconnecting.
 //
-// Credentials come from pi-web's own config (~/.pi/agent/pi-web.json, written
+// Credentials come from pi-reader's own config (~/.pi/agent/pi-reader.json, written
 // by /exa-setup) with the EXA_API_KEY env var as fallback. mcp.json is not
 // read here — the wizard's opt-in import and the dedup detector own that file.
 //
@@ -27,7 +27,7 @@ const CALL_TIMEOUT_MS = 60_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 
 // ── Credential resolution ─────────────────────────────────────────────────────
-// pi-web.json is canonical; the environment is the fallback. Resolved lazily
+// pi-reader.json is canonical; the environment is the fallback. Resolved lazily
 // and cached, so rotating the key needs no restart.
 
 let cachedApiKey: string | null | undefined;
@@ -134,7 +134,7 @@ class ExaToolError extends Error {}
 let clientPromise: Promise<Client> | null = null;
 
 async function connectClient(key: string): Promise<Client> {
-  const client = new Client({ name: "pi-web", version: PI_WEB_VERSION });
+  const client = new Client({ name: "pi-reader", version: PI_WEB_VERSION });
   const transport = new StreamableHTTPClientTransport(new URL(endpointUrl(key)));
   await Promise.race([
     client.connect(transport),

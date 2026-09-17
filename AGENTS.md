@@ -1,4 +1,4 @@
-# AGENTS.md — pi-web
+# AGENTS.md — pi-reader
 
 Pi extension: web search (DuckDuckGo + Exa MCP) and URL→Markdown fetch. Two providers, zero config.
 
@@ -20,7 +20,7 @@ Typecheck and test must both pass before any commit. No build step — TypeScrip
 |--------|------|
 | `search.ts` | Provider seam: routing, fallback, answer synthesis |
 | `fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
-| `config.ts` | Config reads/writes: `~/.pi/agent/pi-web.json`, atomic |
+| `config.ts` | Config reads/writes: `~/.pi/agent/pi-reader.json`, atomic |
 | `exa-mcp.ts` | Exa MCP transport: JSON-RPC, SSE, key resolution |
 | `exa-setup.ts` | Wizard TUI: key validation, save, import-from-mcp.json |
 | `exa-issue.ts` | Shared state: classify Exa failures for one-shot hints |
