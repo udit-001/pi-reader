@@ -52,14 +52,27 @@ const domainSchema = Type.Optional(
 );
 
 const webSearchParams = Type.Object({
-  query: Type.String({ description: "Search query. Describe the page you want, not keywords." }),
+  query: Type.String({
+    description:
+      "Describe the page you want to find, not the fact you want to know. " +
+      "Example: 'category:company AI infrastructure startups San Francisco'",
+  }),
   provider: providerSchema,
-  numResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 25, description: "Results to return (default: 10)" })),
+  numResults: Type.Optional(Type.Integer({
+    minimum: 1,
+    maximum: 25,
+    description: "Results to return. Default: 10 with category, 15 without.",
+  })),
   recency: recencySchema,
   domains: domainSchema,
   category: Type.Optional(Type.Union(
     exaCategoryList().map((c) => Type.Literal(c)) as [ReturnType<typeof Type.Literal<string>>, ...ReturnType<typeof Type.Literal<string>>[]],
-    { description: "Exa category filter (company, publication, news, personal site, people, pdf, github, financial report)" },
+    {
+      description:
+        "Filter by content type. Use 'company' for company/funding data, " +
+        "'people' for LinkedIn/professional profiles, 'news' for recent events, " +
+        "'publication' for papers/articles, 'github' for code/repos.",
+    },
   )),
   includeContent: Type.Optional(Type.Boolean({
     description: "Exa: include full page text for each result (up to 50k chars each)",
@@ -146,8 +159,10 @@ export default function piWeb(pi: ExtensionAPI): void {
     description:
       "Search the web. DuckDuckGo by default (free, no key). " +
       "Exa for semantic search when you pass Exa params (category, domains, includeContent). " +
-      "Use descriptive queries with Exa: 'category:people VP Engineering startup' not 'VP jobs'.",
-    promptSnippet: "Use for web research questions. Prefer descriptive queries for Exa semantic search.",
+      "Describe the page you want to find, not the fact you want to know. " +
+      "Examples: 'category:company AI infrastructure startups San Francisco', " +
+      "'category:people VP Engineering at OpenAI', 'category:publication sparse attention mechanisms'",
+    promptSnippet: "Use for web research questions. Describe the target page, not the information you want.",
     parameters: webSearchParams,
     async execute(
       _callId: string,
@@ -158,9 +173,11 @@ export default function piWeb(pi: ExtensionAPI): void {
     ): Promise<AgentToolResult<Record<string, unknown>>> {
       try {
         const provider = (params.provider ?? "auto") as "auto" | SearchProviderName;
+        // Smart default: category present → precise (10), broad discovery → 15
+        const numResults = params.numResults ?? (params.category ? 10 : 15);
         const response = await webSearch(params.query, {
           provider,
-          numResults: params.numResults,
+          numResults,
           recency: params.recency,
           domains: params.domains,
           category: params.category as "company" | "publication" | "news" | "personal site" | "people" | "pdf" | "github" | "financial report" | undefined,
@@ -211,7 +228,8 @@ export default function piWeb(pi: ExtensionAPI): void {
     description:
       "Fetch a URL and return clean Markdown, not raw HTML. " +
       "Pass a single URL string or an array of URL strings. " +
-      "Add prompt to answer a question about the fetched content using the current model.",
+      "Add prompt to answer a question about the fetched content using the current model. " +
+      "Example: web_fetch({ urls: 'https://docs.example.com/guide', prompt: 'Summarize the key points' })",
     promptSnippet: "Use to read full page content from known URLs (docs, articles, issues).",
     parameters: webFetchParams,
     async execute(
