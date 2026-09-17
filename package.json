@@ -1,6 +1,6 @@
 {
   "name": "pi-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lightweight web search (DuckDuckGo + Exa MCP) and URL-to-Markdown fetch for Pi coding agent. Zero config.",
   "type": "module",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "exa-mcp.ts",
     "exa-issue.ts",
     "exa-setup.ts",
+    "config.ts",
     "fetch.ts",
     "README.md",
     "LICENSE"
@@ -51,6 +52,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "defuddle": "^0.19.3",
     "linkedom": "^0.18.13"
   }

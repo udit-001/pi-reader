@@ -2,26 +2,27 @@
 //
 // A wizard in the wizard-skill sense, rendered as an inline TUI component in
 // the pi-go-usage pattern (`ctx.ui.custom`, theme.fg styling, keyboard-only,
-// footer hints). Five places, per the breadboard:
+// footer hints). Places:
 //
-//   Intro      enter opens the dashboard, → Paste        esc closes
-//   Paste      hidden key entry            → Validating  esc back
-//   Validating one cheap tools/call check  → Save        invalid → Paste
-//   Save       preview, enter writes       → Done        esc back
-//   Done       what was written                          q close
+//   Intro      i imports a key found in mcp.json    → Validating
+//              enter opens the dashboard            → Paste
+//              esc closes
+//   Paste      hidden key entry                     → Validating
+//   Validating one cheap tools/call check           → Save
+//   Save       previews pi-web.json, enter writes   → Remove (if duplicate)
+//   Remove     opt-in deletion of the mcp.json exa  → Done
+//   Done       what was written
 //
 // plus an Error place for the never-clobber path: a malformed mcp.json is
-// reported with manual instructions, never overwritten.
+// reported with manual instructions, never overwritten. pi-web.json is our
+// own file and self-heals (malformed reads as null; the wizard's save
+// replaces it with valid JSON).
 //
-// Breadboard amendment: `tools/list` was planned as the zero-cost check, but
-// the remote server answers it 200 even for bogus keys — it proves nothing.
-// Validation instead issues one web_search_exa with numResults: 1, which
-// costs ~$0.005 of search credit when the key is valid and nothing when it
-// isn't (401s arrive before metering).
+// Validation issues one web_search_exa with numResults: 1 through the same
+// MCP client the adapter uses — it costs ~$0.005 of search credit when the
+// key is valid and nothing when it isn't (401s arrive before metering).
 //
-// The write seam is pure: withExaKey(configText, key) returns the new config
-// text; upsertExaKey is read → transform → atomic write. The key is never
-// rendered (masked in previews, redacted from error text).
+// The key is never rendered (masked in previews, redacted from error text).
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -29,7 +30,14 @@ import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
-import { EXA_MCP_URL, EXA_TOOLS, extractResultText, exaKeySource, resetExaKeyCache, mcpConfigPaths } from "./exa-mcp.ts";
+import {
+  EXA_MCP_URL,
+  EXA_TOOLS,
+  callExaTool,
+  exaKeySource,
+  resetExaKeyCache,
+} from "./exa-mcp.ts";
+import { configPath, loadConfig, saveConfig, type PiWebConfig } from "./config.ts";
 
 const DASHBOARD_URL = "https://dashboard.exa.ai/api-keys";
 const VALIDATE_TIMEOUT_MS = 20_000;
@@ -37,138 +45,100 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 const SPINNER_MS = 100;
 const WIZARD_WIDTH = 72;
 
-// ── Pure config transform (the write seam, exported for tests) ───────────────
+// ── mcp.json paths (the foreign config we detect in, import from, dedupe) ────
 
-export interface ExaTransform {
-  /** Full config text to write (2-space indent, trailing newline). */
-  text: string;
-  /** The exa server entry as it now stands, for the Save preview. */
-  entry: Record<string, unknown>;
+export function mcpConfigPaths(): string[] {
+  const home = homedir();
+  return [
+    join(home, ".pi", "agent", "mcp.json"),
+    join(home, ".pi", "mcp.json"),
+    join(process.cwd(), ".pi", "mcp.json"),
+  ];
 }
 
-/** The canonical destination: pi-native, first in the resolver's order. */
-export function canonicalConfigPath(): string {
-  return mcpConfigPaths()[0]!;
+// ── mcp.json detection & removal ─────────────────────────────────────────────
+// pi-web no longer reads mcp.json for credentials. findMcpExaEntry is the
+// read-only detector behind the wizard's import offer and the session-start
+// dedup warning; removeMcpExaEntry is the opt-in, confirmation-gated surgery
+// that deletes exactly the exa server and nothing else — never clobber.
+
+export interface McpExaEntry {
+  /** Config file the entry was found in. */
+  path: string;
+  url: string;
+  apiKey: string | null;
+  /** True when the entry exposes exa tools directly to the agent. */
+  directTools: boolean;
+}
+
+export function findMcpExaEntry(path: string): McpExaEntry | null {
+  let parsed: { mcpServers?: Record<string, { url?: unknown; directTools?: unknown }> };
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return null; // missing or unreadable — nothing to import or warn about
+  }
+  const entry = parsed?.mcpServers?.exa;
+  if (!entry || typeof entry !== "object") return null;
+  const url = typeof entry.url === "string" ? entry.url : null;
+  if (!url) return null;
+  const apiKey = (() => {
+    try {
+      return new URL(url).searchParams.get("exaApiKey");
+    } catch {
+      return null;
+    }
+  })();
+  return { path, url, apiKey, directTools: entry.directTools === true };
 }
 
 /**
- * Set the exa server's key in a config. `configText` is the current file
- * contents, or null when the file doesn't exist. Throws on malformed JSON —
- * the caller must treat that as never-clobber, not a crash.
- *
- * Existing exa entries keep every sibling field (type, directTools, …) and
- * every other URL param (tools=); only exaApiKey is replaced. Missing entries
- * are created with the same shape pi's own config uses.
+ * The duplication condition: an mcp.json exa entry that exposes exa tools
+ * directly (directTools: true) while pi-web's own tools cover the same
+ * capability. Drives the session-start warning and the once-per-user prompt.
  */
-export function withExaKey(configText: string | null, key: string): ExaTransform {
-  let config: Record<string, unknown>;
-  if (configText === null) {
-    config = {};
-  } else {
-    try {
-      config = JSON.parse(configText) as Record<string, unknown>;
-    } catch {
-      throw new Error("the file is not valid JSON");
-    }
+export function detectMcpDuplicate(): McpExaEntry | null {
+  for (const path of mcpConfigPaths()) {
+    const entry = findMcpExaEntry(path);
+    if (entry?.directTools) return entry;
   }
-  if (config === null || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error("the file does not contain a JSON object");
-  }
-
-  const servers = ((): Record<string, unknown> => {
-    if (config.mcpServers === undefined) {
-      const fresh: Record<string, unknown> = {};
-      config.mcpServers = fresh;
-      return fresh;
-    }
-    const existing = config.mcpServers as unknown;
-    if (existing === null || typeof existing !== "object" || Array.isArray(existing)) {
-      throw new Error("mcpServers is not an object");
-    }
-    return existing as Record<string, unknown>;
-  })();
-
-  const entry = ((): Record<string, unknown> => {
-    const existing = servers.exa as unknown;
-    if (existing !== null && typeof existing === "object" && !Array.isArray(existing)) {
-      return existing as Record<string, unknown>;
-    }
-    const fresh: Record<string, unknown> = {};
-    servers.exa = fresh;
-    fresh.type = "streamable-http";
-    return fresh;
-  })();
-
-  entry.url = exaUrlWithKey(typeof entry.url === "string" ? entry.url : undefined, key);
-
-  return {
-    text: `${JSON.stringify(config, null, 2)}\n`,
-    entry,
-  };
+  return null;
 }
 
-/** Put `key` into a URL's exaApiKey param, preserving everything else. */
-export function exaUrlWithKey(existingUrl: string | undefined, key: string): string {
-  const base = existingUrl ?? `${EXA_MCP_URL}?tools=${EXA_TOOLS}`;
-  const u = new URL(base);
-  u.searchParams.set("exaApiKey", key);
-  return u.toString();
+/** First mcp.json entry with an importable key (directTools or not). */
+export function findImportableMcpExaKey(): McpExaEntry | null {
+  for (const path of mcpConfigPaths()) {
+    const entry = findMcpExaEntry(path);
+    if (entry?.apiKey) return entry;
+  }
+  return null;
 }
 
-/** Mask the exaApiKey value in a URL so previews never show the key. */
-export function maskKeyInUrl(url: string, maxWidth = WIZARD_WIDTH - 8): string {
-  const u = new URL(url);
-  const key = u.searchParams.get("exaApiKey");
-  const mask = key ? "•".repeat(Math.min(key.length, 12)) : null;
-  // Rebuild the query by hand: a masked bullet must stay one visible cell,
-  // not percent-encode into nine characters that break the width budget.
-  const parts: string[] = [];
-  u.searchParams.forEach((value, name) => {
-    parts.push(`${name}=${name === "exaApiKey" && mask ? mask : value}`);
-  });
-  const assemble = () => `${u.origin}${u.pathname}${parts.length ? "?" : ""}${parts.join("&")}`;
-  let display = assemble();
-  // The tools list is the only long decoration — shorten it before the width
-  // cut can eat the key param, which is the whole point of the preview.
-  if (display.length > maxWidth) {
-    const i = parts.findIndex((p) => p.startsWith("tools="));
-    if (i >= 0) {
-      parts[i] = "tools=…";
-      display = assemble();
-    }
+/** Delete the exa server entry, preserving every other server. Never clobbers malformed JSON. */
+export function removeMcpExaEntry(path: string): void {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    throw new Error("the file is not valid JSON");
   }
-  return truncateToWidth(display, maxWidth, "…");
+  const servers = (parsed as { mcpServers?: unknown }).mcpServers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+    throw new Error("mcpServers is missing or not an object");
+  }
+  if (!("exa" in (servers as Record<string, unknown>))) return; // nothing to remove
+  delete (servers as Record<string, unknown>).exa;
+  const tmp = join(dirname(path), `.${Math.random().toString(16).slice(2)}.mcp.json.tmp`);
+  writeFileSync(tmp, `${JSON.stringify(parsed, null, 2)}\n`, "utf-8");
+  renameSync(tmp, path);
 }
+
+// ── Masking / redaction ──────────────────────────────────────────────────────
 
 /** Scrub a secret from text before it can reach an error surface. */
 export function redact(text: string, secret: string): string {
   if (secret.length > 4) return text.split(secret).join("[redacted]");
   return text;
-}
-
-/** Read, transform, atomic write. Throws with the reason; file untouched on error. */
-export function upsertExaKey(configPath: string, key: string): ExaTransform {
-  let configText: string | null = null;
-  if (readMayThrow(configPath) !== undefined) {
-    configText = readFileSync(configPath, "utf-8");
-  }
-  const transform = withExaKey(configText, key);
-  const tmp = join(dirname(configPath), `.${Math.random().toString(16).slice(2)}.mcp.json.tmp`);
-  writeFileSync(tmp, transform.text, "utf-8");
-  renameSync(tmp, configPath);
-  return transform;
-}
-
-// existsSync can't distinguish "missing" from "unreadable"; a permission
-// error should surface as a write error, not silently create a new file.
-function readMayThrow(path: string): string | undefined {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return undefined;
-    throw err;
-  }
 }
 
 // ── Key validation (one cheap search; 401s arrive before metering) ───────────
@@ -181,29 +151,12 @@ export type ValidationFail =
 export type ValidationResult = ValidationOk | ValidationFail;
 
 export async function validateExaKey(key: string, signal?: AbortSignal): Promise<ValidationResult> {
-  const url = `${EXA_MCP_URL}?exaApiKey=${encodeURIComponent(key)}&tools=${encodeURIComponent("web_search_exa")}`;
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name: "web_search_exa", arguments: { query: "test", numResults: 1 } },
-      }),
-      signal: AbortSignal.any(
-        signal ? [AbortSignal.timeout(VALIDATE_TIMEOUT_MS), signal] : [AbortSignal.timeout(VALIDATE_TIMEOUT_MS)],
-      ),
+    await callExaTool("web_search_exa", { query: "test", numResults: 1 }, {
+      apiKey: key,
+      signal,
+      timeoutMs: VALIDATE_TIMEOUT_MS,
     });
-    if (!res.ok) {
-      const reason = `HTTP ${res.status}`;
-      if (res.status === 401 || res.status === 403) return { ok: false, kind: "invalid", reason };
-      if (res.status === 429) return { ok: false, kind: "rate-limited", reason };
-      return { ok: false, kind: "unreachable", reason };
-    }
-    const text = extractResultText(await res.text()); // throws on isError/error envelopes
-    if (!text.trim()) return { ok: false, kind: "unreachable", reason: "empty response" };
     return { ok: true };
   } catch (err) {
     const reason = redact(err instanceof Error ? err.message : String(err), key);
@@ -219,7 +172,7 @@ export async function validateExaKey(key: string, signal?: AbortSignal): Promise
 
 // ── Wizard state ─────────────────────────────────────────────────────────────
 
-type WizardPhase = "intro" | "paste" | "validating" | "save" | "done" | "error";
+type WizardPhase = "intro" | "paste" | "validating" | "save" | "remove" | "done" | "error";
 
 const closeKeys = (data: string): boolean =>
   matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"));
@@ -231,12 +184,16 @@ export class ExaSetupWizard {
 
   private phase: WizardPhase = "intro";
   private key = "";
+  private imported = false; // true when the key came from the mcp.json import
   private pasteError: string | null = null; // last validation failure, shown at Paste
   private pasteErrorKind: "invalid" | "rate-limited" | "unreachable" | null = null;
   private spinnerFrame = 0;
   private spinnerTimer: NodeJS.Timeout | null = null;
   private validationAbort: AbortController | null = null;
-  private saveResult: { error: string | null; path: string } | null = null;
+  private mcpEntry: McpExaEntry | null = null; // set at Intro; removal target after save
+  private removeError: string | null = null;
+  private wrote: { configPath: string; removedMcp: boolean } | null = null;
+  private writeError: string | null = null;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -244,6 +201,7 @@ export class ExaSetupWizard {
     this.theme = options.theme;
     this.onClose = options.onClose;
     this.requestRender = options.requestRender;
+    this.mcpEntry = findImportableMcpExaKey();
   }
 
   dispose(): void {
@@ -256,6 +214,10 @@ export class ExaSetupWizard {
     switch (this.phase) {
       case "intro":
         if (closeKeys(data) || matchesKey(data, "q")) this.onClose();
+        else if (this.mcpEntry?.apiKey && (matchesKey(data, "i") || matchesKey(data, Key.enter))) {
+          if (matchesKey(data, "i")) this.startImport();
+          else this.enterFromIntro();
+        }
         else if (matchesKey(data, Key.enter)) this.enterFromIntro();
         return;
       case "paste":
@@ -267,6 +229,11 @@ export class ExaSetupWizard {
       case "save":
         if (closeKeys(data)) this.backToPaste();
         else if (matchesKey(data, Key.enter)) this.write();
+        return;
+      case "remove":
+        if (closeKeys(data)) this.go("done"); // skip removal
+        else if (matchesKey(data, Key.enter)) this.removeEntry();
+        else if (matchesKey(data, "s")) this.go("done");
         return;
       case "done":
       case "error":
@@ -280,6 +247,12 @@ export class ExaSetupWizard {
     this.pasteError = null;
     this.pasteErrorKind = null;
     this.go("paste");
+  }
+
+  private startImport(): void {
+    this.key = this.mcpEntry!.apiKey!.trim();
+    this.imported = true;
+    this.startValidation();
   }
 
   private handlePasteInput(data: string): void {
@@ -349,22 +322,50 @@ export class ExaSetupWizard {
   }
 
   private backToPaste(): void {
+    this.imported = false;
     this.go("paste");
   }
 
   private write(): void {
-    const path = canonicalConfigPath();
     try {
-      upsertExaKey(path, this.key.trim());
+      const current = loadConfig();
+      const next: PiWebConfig = {
+        ...(current ?? {}),
+        version: 1,
+        exa: {
+          url: current?.exa?.url ?? EXA_MCP_URL,
+          apiKey: this.key.trim(),
+        },
+      };
+      saveConfig(configPath(), next);
       resetExaKeyCache(); // lazy resolution: the next Exa call sees the new key
-      this.saveResult = { error: null, path };
-      this.go("done");
+      this.wrote = { configPath: configPath(), removedMcp: false };
+      // Offer dedup exactly when a live mcp.json exa entry would duplicate
+      // the agent-facing surface.
+      const duplicate = detectMcpDuplicate();
+      if (duplicate) {
+        this.mcpEntry = duplicate;
+        this.go("remove");
+      } else {
+        this.go("done");
+      }
     } catch (err) {
-      const reason = err instanceof Error && err.message
+      this.writeError = err instanceof Error && err.message
         ? redact(err.message, this.key)
         : String(err);
-      this.saveResult = { error: reason, path };
       this.go("error");
+    }
+  }
+
+  private removeEntry(): void {
+    try {
+      removeMcpExaEntry(this.mcpEntry!.path);
+      this.wrote = { configPath: this.wrote?.configPath ?? configPath(), removedMcp: true };
+      this.removeError = null;
+      this.go("done");
+    } catch (err) {
+      this.removeError = err instanceof Error && err.message ? err.message : String(err);
+      this.go("done"); // key is saved; removal failure is reported, not fatal
     }
   }
 
@@ -390,7 +391,7 @@ export class ExaSetupWizard {
     const W = Math.min(width, WIZARD_WIDTH);
     const lines: string[] = [];
     const add = (s = "") => lines.push(s);
-    const wrap = (text: string, style: "text" | "dim" | "error" | "warning" = "text", indent = 0) => {
+    const wrap = (text: string, style: "text" | "dim" | "error" | "warning" | "accent" = "text", indent = 0) => {
       const pad = " ".repeat(2 + indent);
       for (const l of wrapTextWithAnsi(text, W - 2 - indent)) {
         lines.push(`${pad}${this.theme.fg(style, l)}`);
@@ -409,6 +410,11 @@ export class ExaSetupWizard {
         wrap(source
           ? `Current key: set (${source})`
           : "Current key: none configured");
+        if (this.mcpEntry?.apiKey) {
+          add();
+          wrap(`Found an Exa key in ${this.mcpEntry.path}.`, "accent");
+          wrap("i imports it (validated) into pi-web's own config, then offers to remove the duplicate entry.");
+        }
         add();
         wrap("A key is only needed when you hit an Exa rate limit or want its results — DuckDuckGo and the free fetch chain keep working either way.");
         add();
@@ -418,9 +424,13 @@ export class ExaSetupWizard {
         break;
       }
       case "paste": {
-        wrap("On the dashboard: API Keys → Create key → copy it.");
-        add();
-        add(`  ${this.theme.fg("dim", DASHBOARD_URL)}`);
+        wrap(this.imported
+          ? "Re-enter a key (the imported one was rejected):"
+          : "On the dashboard: API Keys → Create key → copy it.");
+        if (!this.imported) {
+          add();
+          add(`  ${this.theme.fg("dim", DASHBOARD_URL)}`);
+        }
         add();
         if (this.pasteError) {
           const lead = this.pasteErrorKind === "rate-limited"
@@ -446,39 +456,55 @@ export class ExaSetupWizard {
         break;
       }
       case "save": {
-        wrap("The exa server entry in your MCP config will become:");
+        wrap("pi-web's config will become:", "text");
         add();
-        const preview = JSON.stringify(previewEntry(this.key.trim()), null, 2);
+        const preview = JSON.stringify(previewConfig(this.key.trim()), null, 2);
         for (const l of preview.split("\n")) {
           lines.push(`    ${this.theme.fg("text", truncateToWidth(l, W - 6, "…"))}`);
         }
         add();
-        wrap(`Written to ${canonicalConfigPath()} — other servers and settings are left untouched.`, "dim");
+        wrap(`Written to ${configPath()} — pi-web's own file, replacing nothing else. No restart needed.`, "dim");
+        break;
+      }
+      case "remove": {
+        wrap("Found a duplicate: mcp.json still has an exa entry that exposes exa tools directly.");
+        add();
+        wrap("Remove it? pi-web no longer reads that entry, and leaving it puts two Exa tool families in every session.", "text");
+        add();
+        if (this.mcpEntry) {
+          wrap(`Target: ${this.mcpEntry.path} — every other server is untouched.`, "dim");
+        }
         break;
       }
       case "done": {
-        const path = this.saveResult?.path ?? canonicalConfigPath();
+        const path = this.wrote?.configPath ?? configPath();
         add(`  ${this.theme.fg("accent", this.theme.bold("✓ Key saved"))}`);
         add();
         wrap(`Wrote ${path}. No restart needed — the next Exa call picks it up.`);
+        if (this.wrote?.removedMcp) {
+          add();
+          wrap(`Removed the exa entry from ${this.mcpEntry?.path} — duplicate tools are gone from your next session.`, "dim");
+        }
+        if (this.removeError) {
+          add();
+          wrap(`✗ Could not remove the mcp.json entry: ${this.removeError} — the key is saved; remove it by hand if you want the dedup.`, "warning");
+        }
         add();
         wrap("DuckDuckGo search and the free fetch chain keep working either way.", "dim");
         break;
       }
       case "error": {
-        const path = this.saveResult?.path ?? canonicalConfigPath();
-        add(`  ${this.theme.fg("error", this.theme.bold("✗ Could not update the config"))}`);
+        add(`  ${this.theme.fg("error", this.theme.bold("✗ Could not save the config"))}`);
         add();
-        wrap(`${this.saveResult?.error ?? "unknown error"} — ${path} was not changed.`);
+        wrap(`${this.writeError ?? "unknown error"} — nothing was changed.`);
         add();
-        wrap("To fix it by hand, set the exa server URL in your MCP config to:");
-        add(`  ${this.theme.fg("dim", `${EXA_MCP_URL}?exaApiKey=<your-key>&tools=${EXA_TOOLS}`)}`);
+        wrap("To fix it by hand, set EXA_API_KEY in your environment, or fix the permissions on ~/.pi/agent/ and re-run /exa-setup.");
         break;
       }
     }
 
     add();
-    add(`  ${this.theme.fg("dim", footerFor(this.phase))}`);
+    add(`  ${this.theme.fg("dim", footerFor(this.phase, this.mcpEntry?.apiKey != null))}`);
     add(this.theme.fg("border", "─".repeat(W)));
 
     this.cachedWidth = width;
@@ -487,34 +513,32 @@ export class ExaSetupWizard {
   }
 }
 
-function footerFor(phase: WizardPhase): string {
+function footerFor(phase: WizardPhase, importable: boolean): string {
   switch (phase) {
-    case "intro": return "enter open dashboard · esc close, nothing changes";
+    case "intro": return importable
+      ? "i import found key · enter open dashboard · esc close, nothing changes"
+      : "enter open dashboard · esc close, nothing changes";
     case "paste": return "enter validate · backspace edit · esc back";
     case "validating": return "esc cancel";
     case "save": return "enter write & finish · esc back";
+    case "remove": return "enter remove duplicate · s skip · esc skip";
     case "done": return "enter / q close";
     case "error": return "enter / q close";
   }
 }
 
-// The Save preview shows the exact entry upsert would produce, key masked.
-function previewEntry(key: string): Record<string, unknown> {
-  let configText: string | null = null;
-  try {
-    configText = readFileSync(canonicalConfigPath(), "utf-8");
-  } catch {
-    configText = null;
-  }
-  let entry: Record<string, unknown>;
-  try {
-    entry = withExaKey(configText, key).entry;
-  } catch {
-    entry = { type: "streamable-http", url: "" };
-  }
-  const previewed = { ...entry } as Record<string, unknown>;
-  if (typeof previewed.url === "string") previewed.url = maskKeyInUrl(previewed.url);
-  return previewed;
+// The Save preview shows the exact config the write would produce, key masked.
+function previewConfig(key: string): PiWebConfig {
+  const current = loadConfig();
+  const preview = {
+    ...(current ?? {}),
+    version: 1 as const,
+    exa: {
+      url: current?.exa?.url ?? EXA_MCP_URL,
+      apiKey: "•".repeat(Math.min(key.length, 12)),
+    },
+  };
+  return preview;
 }
 
 // ── Opening ──────────────────────────────────────────────────────────────────
@@ -525,8 +549,8 @@ export function openExaSetup(ctx: ExtensionCommandContext): void {
   if (ctx.mode !== "tui") {
     // Headless: no takeover possible — print the manual path instead.
     ctx.ui.notify(
-      `The Exa setup wizard needs TUI mode. To add the key by hand, put this in ${canonicalConfigPath()}:\n` +
-      `  "exa": { "type": "streamable-http", "url": "${EXA_MCP_URL}?exaApiKey=<your-key>&tools=${EXA_TOOLS}" }\n` +
+      `The Exa setup wizard needs TUI mode. To add the key by hand, either set EXA_API_KEY in your environment or create ${configPath()}:\n` +
+      `  { "version": 1, "exa": { "url": "${EXA_MCP_URL}", "apiKey": "<your-key>" } }\n` +
       `Create a key at ${DASHBOARD_URL}`,
       "info",
     );

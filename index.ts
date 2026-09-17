@@ -24,7 +24,8 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { consumeExaIssue } from "./exa-issue.ts";
 import { exaCategoryList } from "./exa-mcp.ts";
-import { openExaSetup } from "./exa-setup.ts";
+import { detectMcpDuplicate, openExaSetup } from "./exa-setup.ts";
+import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch.ts";
 
@@ -113,6 +114,30 @@ export default function piWeb(pi: ExtensionAPI): void {
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       openExaSetup(ctx);
     },
+  });
+
+  // Duplication hygiene: an mcp.json exa entry with directTools puts exa's
+  // raw tools next to web_search/web_fetch in every session. The detailed
+  // explanation fires once per user (persisted flag in our config); while the
+  // condition persists, later sessions get one brief reminder at start. Both
+  // self-heal the moment the entry is removed.
+  pi.on("session_start", (_event, ctx) => {
+    if (!detectMcpDuplicate()) return;
+    const config = loadConfig() ?? { version: 1 };
+    if (config.hints?.mcpDuplicate) {
+      ctx.ui.notify("Exa configured in both mcp.json and pi-web — /exa-setup to dedupe", "info");
+      return;
+    }
+    ctx.ui.notify(
+      "Exa is configured in mcp.json, and pi-web's web_search/web_fetch already cover it. " +
+        "Run /exa-setup to import the key and remove the duplicate.",
+      "warning",
+    );
+    saveConfig(configPath(), {
+      ...config,
+      version: 1,
+      hints: { ...config.hints, mcpDuplicate: new Date().toISOString() },
+    });
   });
 
   pi.registerTool({

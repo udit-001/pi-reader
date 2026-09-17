@@ -1,66 +1,50 @@
 // Exa MCP adapter — the second real adapter at the SearchProvider seam.
 //
-// Talks JSON-RPC to the remote MCP server (https://mcp.exa.ai/mcp) with the
-// API key the user already has in ~/.pi/agent/mcp.json, so this works with
-// zero extra setup. Exposes the three tools the remote server ships:
-//   web_search_exa          — simple search, formatted text result
-//   web_search_advanced_exa — filters/dates/domains, JSON result
-//   web_fetch_exa           — URL → markdown content
+// Consumed through the official MCP client (@modelcontextprotocol/client),
+// the same way pi-mcp-adapter consumes servers: a lazy singleton client over
+// StreamableHTTPClientTransport, kept alive for the process lifetime, with
+// one reconnect-and-retry on connection failure. Tool-level errors (isError
+// results) are never retried — a rate-limited or invalid key won't heal by
+// reconnecting.
+//
+// Credentials come from pi-web's own config (~/.pi/agent/pi-web.json, written
+// by /exa-setup) with the EXA_API_KEY env var as fallback. mcp.json is not
+// read here — the wizard's opt-in import and the dedup detector own that file.
 //
 // Response parsing is hidden behind two small functions: searchExaMcp and
-// searchExaAdvanced. Everything else (JSON-RPC framing, SSE vs JSON response
-// handling, sanitizing) is implementation detail.
+// searchExaAdvanced. Everything else (client lifecycle, result extraction,
+// sanitizing) is implementation detail.
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type { ExaCategory, SearchOptions, SearchResult } from "./search.ts";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { configPath, loadConfig } from "./config.ts";
 import { classifyExaError, noteExaIssue } from "./exa-issue.ts";
+import type { ExaCategory, SearchOptions, SearchResult } from "./search.ts";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const EXA_TOOLS = "web_search_exa,web_fetch_exa,web_search_advanced_exa";
-const TIMEOUT_MS = 60_000;
+const PI_WEB_VERSION = "0.2.0";
+const CALL_TIMEOUT_MS = 60_000;
+const CONNECT_TIMEOUT_MS = 20_000;
 
-// ── Credential / endpoint resolution ─────────────────────────────────────────
-// Where the Exa MCP lives and what key to use comes from the same place pi
-// gets it: ~/.pi/agent/mcp.json (or .pi/mcp.json), falling back to the
-// EXA_API_KEY env var. Resolved lazily and cached, so rotating the key needs
-// no restart.
+// ── Credential resolution ─────────────────────────────────────────────────────
+// pi-web.json is canonical; the environment is the fallback. Resolved lazily
+// and cached, so rotating the key needs no restart.
 
 let cachedApiKey: string | null | undefined;
-
-export function mcpConfigPaths(): string[] {
-  const home = homedir();
-  return [
-    join(home, ".pi", "agent", "mcp.json"),
-    join(home, ".pi", "mcp.json"),
-    join(process.cwd(), ".pi", "mcp.json"),
-  ];
-}
-
-function allExaApiKeys(): string[] {
-  const found: string[] = [];
-  for (const path of mcpConfigPaths()) {
-    if (!existsSync(path)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf-8")) as { mcpServers?: Record<string, { url?: string }> };
-      const url = parsed?.mcpServers?.exa?.url;
-      if (typeof url === "string") {
-        const key = new URL(url).searchParams.get("exaApiKey");
-        if (key) found.push(key);
-      }
-    } catch {
-      // unreadable config — try the next path
-    }
-  }
-  if (process.env.EXA_API_KEY) found.push(process.env.EXA_API_KEY);
-  return found;
-}
+let cachedBaseUrl: string | undefined;
 
 function resolveApiKey(): string | null {
-  if (cachedApiKey !== undefined) return cachedApiKey;
-  cachedApiKey = allExaApiKeys()[0] ?? null;
+  if (cachedApiKey === undefined) {
+    cachedApiKey = loadConfig()?.exa?.apiKey ?? (process.env.EXA_API_KEY || null);
+  }
   return cachedApiKey;
+}
+
+function resolveBaseUrl(): string {
+  if (cachedBaseUrl === undefined) {
+    cachedBaseUrl = loadConfig()?.exa?.url ?? EXA_MCP_URL;
+  }
+  return cachedBaseUrl;
 }
 
 // After the setup wizard writes a new key, the cache must forget the old
@@ -68,33 +52,19 @@ function resolveApiKey(): string | null {
 // the next Exa call with no restart.
 export function resetExaKeyCache(): void {
   cachedApiKey = undefined;
+  cachedBaseUrl = undefined;
 }
 
 // Where the current key came from, for diagnostics and the wizard's intro
 // screen. Returns null when nothing is configured.
 export function exaKeySource(): string | null {
-  for (const path of mcpConfigPaths()) {
-    if (!existsSync(path)) continue;
-    try {
-      const parsed = JSON.parse(readFileSync(path, "utf-8")) as { mcpServers?: Record<string, { url?: string }> };
-      const url = parsed?.mcpServers?.exa?.url;
-      if (typeof url === "string" && new URL(url).searchParams.get("exaApiKey")) return path;
-    } catch {
-      // unreadable config — try the next path
-    }
-  }
+  if (loadConfig()?.exa?.apiKey) return configPath();
   if (process.env.EXA_API_KEY) return "environment (EXA_API_KEY)";
   return null;
 }
 
-function endpointUrl(): string {
-  const key = resolveApiKey();
-  if (!key) {
-    throw new Error(
-      "No Exa MCP API key found. Add the exa server to ~/.pi/agent/mcp.json (url https://mcp.exa.ai/mcp?exaApiKey=<key>&tools=web_search_exa,web_fetch_exa,web_search_advanced_exa) or set EXA_API_KEY.",
-    );
-  }
-  return `${EXA_MCP_URL}?exaApiKey=${encodeURIComponent(key)}&tools=${encodeURIComponent(EXA_TOOLS)}`;
+function endpointUrl(key: string): string {
+  return `${resolveBaseUrl()}?exaApiKey=${encodeURIComponent(key)}&tools=${encodeURIComponent(EXA_TOOLS)}`;
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
@@ -103,10 +73,10 @@ export async function searchExaMcp(
   query: string,
   options: SearchOptions = {},
 ): Promise<SearchResult[]> {
-  const text = await mcpCall("web_search_exa", {
+  const text = await callExaTool("web_search_exa", {
     query,
     numResults: options.numResults ?? 10,
-  }, options.signal);
+  }, { signal: options.signal });
   return parseFormattedResults(text);
 }
 
@@ -122,7 +92,7 @@ export async function searchExaAdvanced(
     .map((d) => d.slice(1).trim())
     .filter((d) => d.length > 0);
 
-  const text = await mcpCall("web_search_advanced_exa", {
+  const text = await callExaTool("web_search_advanced_exa", {
     query,
     numResults: options.numResults ?? 10,
     ...(options.category ? { category: options.category } : {}),
@@ -132,7 +102,7 @@ export async function searchExaAdvanced(
     enableHighlights: true,
     ...(options.includeContent ? { textMaxCharacters: 50_000 } : {}),
     ...(options.includeSummary ? { enableSummary: true } : {}),
-  }, options.signal);
+  }, { signal: options.signal });
 
   return parseJsonResults(text);
 }
@@ -142,120 +112,152 @@ export async function fetchExaMcp(
   maxCharacters?: number,
   signal?: AbortSignal,
 ): Promise<Array<{ url: string; title: string; content: string; error: string | null }>> {
-  const text = await mcpCall("web_fetch_exa", {
+  const text = await callExaTool("web_fetch_exa", {
     urls,
     ...(maxCharacters ? { maxCharacters } : {}),
-  }, signal);
+  }, { signal });
   return parseCrawlResults(text, urls);
 }
 
-// ── JSON-RPC internals ───────────────────────────────────────────────────────
+// ── MCP client (lazy singleton, keep-alive, one reconnect) ───────────────────
 
-interface McpContentPart {
-  type?: string;
-  text?: string;
+export interface CallExaOptions {
+  /** Use this key instead of the resolved one (wizard validation). */
+  apiKey?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
-interface McpCallResult {
-  result?: {
-    content?: McpContentPart[];
-    isError?: boolean;
-  };
-  error?: {
-    code?: number;
-    message?: string;
-  };
+/** Thrown for tool-level errors (isError results) — reconnecting cannot help. */
+class ExaToolError extends Error {}
+
+let clientPromise: Promise<Client> | null = null;
+
+async function connectClient(key: string): Promise<Client> {
+  const client = new Client({ name: "pi-web", version: PI_WEB_VERSION });
+  const transport = new StreamableHTTPClientTransport(new URL(endpointUrl(key)));
+  await Promise.race([
+    client.connect(transport),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Exa MCP connection timed out")), CONNECT_TIMEOUT_MS).unref?.(),
+    ),
+  ]);
+  return client;
 }
 
-async function mcpCall(
+async function getExaClient(): Promise<Client> {
+  if (!clientPromise) {
+    const key = resolveApiKey();
+    if (!key) {
+      throw new Error(
+        "No Exa API key found. Run /exa-setup to set one up, or set the EXA_API_KEY environment variable.",
+      );
+    }
+    clientPromise = connectClient(key).catch((err) => {
+      clientPromise = null; // failed connect doesn't poison the cache
+      throw err;
+    });
+  }
+  return clientPromise;
+}
+
+async function resetExaClient(): Promise<void> {
+  const stale = clientPromise;
+  clientPromise = null;
+  try {
+    (await stale)?.close();
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+async function callOnce(
+  client: Client,
   tool: string,
   args: Record<string, unknown>,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
 ): Promise<string> {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const result = await client.callTool(
+    { name: tool, arguments: args },
+    { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
+  );
+  return resultText(result);
+}
+
+/**
+ * Call one Exa MCP tool. With `apiKey` (wizard validation) this opens a
+ * one-shot client for the candidate key; otherwise it uses the process
+ * singleton and retries exactly once on a connection-level failure.
+ */
+export async function callExaTool(
+  tool: string,
+  args: Record<string, unknown>,
+  options: CallExaOptions = {},
+): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? CALL_TIMEOUT_MS;
+
+  if (options.apiKey !== undefined) {
+    const client = await connectClient(options.apiKey);
+    try {
+      return await callOnce(client, tool, args, options.signal, timeoutMs);
+    } finally {
+      void client.close().catch(() => {});
+    }
+  }
+
   try {
-    return await mcpCallUnclassified(tool, args, signal);
+    const client = await getExaClient();
+    return await callOnce(client, tool, args, options.signal, timeoutMs);
   } catch (err) {
-    // Record the failure kind so the session can hint at /exa-setup once,
-    // even when callers auto-fallback to another provider and swallow this.
+    if (err instanceof ExaToolError) throw err; // server answered: reconnecting won't help
+    if (options.signal?.aborted) throw err;
+    // Connection-level failure: one fresh connection, then surface.
+    await resetExaClient();
+    const client = await getExaClient();
+    return await callOnce(client, tool, args, options.signal, timeoutMs);
+  }
+}
+
+// ── Result extraction ─────────────────────────────────────────────────────────
+
+/** Minimal shape of the SDK's CallToolResult — enough to extract text. */
+export interface ToolResultLike {
+  content?: Array<{ type?: string; text?: unknown }>;
+  isError?: boolean;
+}
+
+/** Turn an SDK callTool result into its text payload; throw on tool errors. */
+export function resultText(result: ToolResultLike): string {
+  if (result.isError) {
+    const msg = result.content
+      ?.find((c) => c.type === "text" && typeof c.text === "string")
+      ?.text;
+    throw new ExaToolError(
+      typeof msg === "string" && msg.trim() ? msg.trim() : "Exa MCP returned an error",
+    );
+  }
+  const text = result.content
+    ?.filter((c) => c.type === "text" && typeof c.text === "string" && c.text.trim().length > 0)
+    .map((c) => c.text as string)
+    .join("\n");
+  if (!text || !text.trim()) throw new ExaToolError("Exa MCP returned empty content");
+  return text;
+}
+
+// ── Issue noting (rate-limit / missing-key hints) ────────────────────────────
+// Wrapped at the public boundary rather than inside callExaTool so one-shot
+// validation clients (wizard, candidate keys) don't pollute session hints.
+
+async function withIssueNoting<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
     const issue = classifyExaError(err instanceof Error ? err.message : String(err));
     if (issue) noteExaIssue(issue);
     throw err;
   }
-}
-
-async function mcpCallUnclassified(
-  tool: string,
-  args: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<string> {
-  const url = endpointUrl();
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: tool, arguments: args },
-    }),
-    signal: AbortSignal.any(
-      signal ? [AbortSignal.timeout(TIMEOUT_MS), signal] : [AbortSignal.timeout(TIMEOUT_MS)],
-    ),
-  });
-  if (!res.ok) throw new Error(`Exa MCP error ${res.status}: ${(await res.text()).slice(0, 300)}`);
-
-  const body = await res.text();
-  return extractResultText(body);
-}
-
-// Shared with exa-setup.ts, whose key validation parses the same envelopes.
-export function extractResultText(body: string): string {
-  // Streamable-HTTP may answer with SSE (data: lines) or plain JSON.
-  let parsed: McpCallResult | null = null;
-
-  if (body.includes("data:")) {
-    for (const line of body.split("\n")) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload) continue;
-      try {
-        const candidate = JSON.parse(payload) as McpCallResult;
-        if (candidate?.result || candidate?.error) {
-          parsed = candidate;
-          break;
-        }
-      } catch {
-        // keep scanning
-      }
-    }
-  }
-
-  if (!parsed) {
-    try {
-      parsed = JSON.parse(body) as McpCallResult;
-    } catch {
-      throw new Error("Exa MCP returned an unparseable response");
-    }
-  }
-
-  if (parsed.error) {
-    throw new Error(`Exa MCP error ${parsed.error.code ?? ""}: ${parsed.error.message ?? "unknown"}`.trim());
-  }
-  if (parsed.result?.isError) {
-    const msg = parsed.result.content
-      ?.find((c) => c.type === "text" && typeof c.text === "string")
-      ?.text;
-    throw new Error(msg?.trim() || "Exa MCP returned an error");
-  }
-
-  const text = parsed.result?.content
-    ?.find((c) => c.type === "text" && typeof c.text === "string" && c.text.trim().length > 0)
-    ?.text;
-  if (!text) throw new Error("Exa MCP returned empty content");
-  return text;
 }
 
 // ── Response parsing ─────────────────────────────────────────────────────────

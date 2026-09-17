@@ -70,6 +70,23 @@ const exaProvider: SearchProvider = {
   },
 };
 
+// ── Intent-aware auto routing ───────────────────────────────────────────────
+// The agent expresses intent (category, content, domains); availability is
+// runtime state only the tool observes. So auto-routing is a pure function of
+// intent: Exa-shaped params that DuckDuckGo cannot honor route straight to
+// Exa (no wasted DDG attempt that silently ignores them); plain queries start
+// free. Either way the other provider remains the failure fallback.
+
+export type AutoRoute = "ddg-first" | "exa-first";
+
+export function resolveAutoRoute(options: SearchOptions): AutoRoute {
+  const exaShaped = options.category !== undefined
+    || options.includeContent === true
+    || options.includeSummary === true
+    || (options.domains !== undefined && options.domains.length > 0);
+  return exaShaped ? "exa-first" : "ddg-first";
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export async function webSearch(
@@ -85,11 +102,14 @@ export async function webSearch(
     return exaProvider.search(query, options);
   }
 
-  // auto: DuckDuckGo first (always available, zero-config), Exa MCP fallback
+  // auto: intent decides the order, availability decides the fallback
+  const [first, second] = resolveAutoRoute(options) === "exa-first"
+    ? [exaProvider, duckduckgoProvider]
+    : [duckduckgoProvider, exaProvider];
   try {
-    return await duckduckgoProvider.search(query, options);
+    return await first.search(query, options);
   } catch {
-    return exaProvider.search(query, options);
+    return second.search(query, options);
   }
 }
 
