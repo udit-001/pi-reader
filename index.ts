@@ -213,21 +213,24 @@ export default function piWeb(pi: ExtensionAPI): void {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Actionable errors: tell the agent what to do next
-        let hint = "";
+        let error: string;
         if (/DuckDuckGo/i.test(message)) {
-          hint = " Try provider: 'exa' or rephrase with a descriptive query.";
+          error = "Search failed. Try provider: 'exa' or rephrase with a descriptive query.";
         } else if (/rate.?limit/i.test(message)) {
-          hint = " Run /exa-setup to replace the key, or wait and retry.";
+          error = "Search failed. Run /exa-setup to replace the key, or wait and retry.";
         } else if (/no.*key|not.*configured|missing/i.test(message)) {
-          hint = " Run /exa-setup to configure an Exa API key.";
+          error = "Search failed. Run /exa-setup to configure an Exa API key.";
         } else if (/no.*results|parseable/i.test(message)) {
-          hint = " Try a longer, more descriptive query. Describe the page you want to find.";
+          error = "No results found. Try a longer, more descriptive query. Describe the page you want to find.";
         } else if (/timeout|ECONNREFUSED|fetch.*fail/i.test(message)) {
-          hint = " Check your network connection and retry.";
+          error = "Search failed. Check your network connection and retry.";
+        } else {
+          error = "Search failed. Try a different query or provider.";
         }
+        // Never expose raw internal errors — agent only sees actionable guidance
         return {
-          content: [{ type: "text", text: `web_search failed: ${message}${hint}` }],
-          details: { error: message, hint },
+          content: [{ type: "text", text: error }],
+          details: { error },
         };
       } finally {
         notifyExaIssueOnce(ctx);
@@ -300,19 +303,22 @@ export default function piWeb(pi: ExtensionAPI): void {
         const message = err instanceof Error ? err.message : String(err);
         let hint = "";
         if (/Failed to parse URL/i.test(message)) {
-          hint = " Check the URL format — must start with http:// or https://.";
+          hint = "Check the URL format — must start with http:// or https://.";
         } else if (/fetch.*fail|ECONNREFUSED|ENOTFOUND/i.test(message)) {
-          hint = " The URL may be unreachable. Verify it's correct and try again.";
+          hint = "The URL may be unreachable. Verify it's correct and try again.";
         } else if (/HTTP\s+(4[0-9]{2}|5[0-9]{2})/i.test(message)) {
-          hint = " The server returned an error. The URL may require authentication or be blocked.";
+          hint = "The server returned an error. The URL may require authentication or be blocked.";
         } else if (/Unsupported content type/i.test(message)) {
-          hint = " This content type is not supported locally. The URL may still work via remote fallback.";
+          hint = "This content type is not supported. The URL may still work via remote fallback.";
         } else if (/timeout/i.test(message)) {
-          hint = " The request timed out. Try again or use a different URL.";
+          hint = "The request timed out. Try again or use a different URL.";
+        } else {
+          hint = "The fetch failed. Check the URL and try again.";
         }
+        // Never expose raw internal errors — agent only sees actionable guidance
         return {
-          content: [{ type: "text", text: `web_fetch failed: ${message}${hint}` }],
-          details: { error: message, hint },
+          content: [{ type: "text", text: `web_fetch failed: ${hint}` }],
+          details: { error: hint },
         };
       } finally {
         notifyExaIssueOnce(ctx);

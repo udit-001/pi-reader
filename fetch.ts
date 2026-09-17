@@ -198,10 +198,7 @@ async function fetchViaJinaReader(
   const res = await fetchWithTimeout(`https://r.jina.ai/${url}`, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "text/plain" },
   }, FALLBACK_TIMEOUT_MS, signal);
-  if (!res.ok) {
-    const hint = res.status === 403 ? " Jina may be blocked by this site." : "";
-    throw new Error(`Jina Reader returned ${res.status}${hint}`);
-  }
+  if (!res.ok) throw new Error(`Remote service returned ${res.status}`);
   const text = await res.text();
   // Response shape: "Title: …\nURL Source: …\nMarkdown Content:\n<body>"
   const title = /^Title:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "";
@@ -219,10 +216,7 @@ async function fetchViaMarkdownNew(
     headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
     body: JSON.stringify({ url, method: "auto" }),
   }, FALLBACK_TIMEOUT_MS, signal);
-  if (!res.ok) {
-    const hint = res.status === 405 ? " markdown.new does not support this URL." : "";
-    throw new Error(`markdown.new returned ${res.status}${hint}`);
-  }
+  if (!res.ok) throw new Error(`Remote service returned ${res.status}`);
   const payload = (await res.json()) as { success?: boolean; content?: string };
   let content = (payload.content ?? "").trim();
   if (content.startsWith("---")) {
@@ -293,17 +287,23 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
     if (/ECONNREFUSED|ENOTFOUND/i.test(message)) {
       return { url, title: "", content: "", error: `Cannot connect to ${new URL(url).hostname}. Check the URL and your network.` };
     }
-    return { url, title: "", content: "", error: `Fetch failed: ${message}` };
+    return { url, title: "", content: "", error: `Could not reach the server. Check the URL and your network.` };
   }
   if (!res.ok) {
-    const hint = res.status === 403
-      ? " The server may be blocking automated requests."
-      : res.status === 404
-        ? " The page does not exist."
-        : res.status >= 500
-          ? " The server encountered an error."
-          : "";
-    return { url, title: "", content: "", error: `HTTP ${res.status}${hint}` };
+    // Translate HTTP status to actionable guidance — agent doesn't need raw codes
+    let error: string;
+    if (res.status === 403) {
+      error = "The server blocked this request. The URL may require authentication or block automated access.";
+    } else if (res.status === 404) {
+      error = "The page does not exist. Check the URL for typos.";
+    } else if (res.status === 429) {
+      error = "Too many requests. The server is rate-limiting. Try again later.";
+    } else if (res.status >= 500) {
+      error = "The server encountered an error. Try again later.";
+    } else {
+      error = "The request failed. The URL may be invalid or require special access.";
+    }
+    return { url, title: "", content: "", error };
   }
 
   const contentType = res.headers.get("content-type") ?? "";
