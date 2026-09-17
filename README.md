@@ -58,8 +58,8 @@ web_fetch({ urls: "https://long-article.com", prompt: "Summarize the security im
 
 None required. The Exa MCP key is resolved lazily from, in order:
 
-1. `~/.pi/agent/mcp.json` → `mcpServers.exa.url` → `exaApiKey` query param
-2. `~/.pi/mcp.json`, then `.pi/mcp.json` (same shape)
+1. `~/.pi/agent/pi-web.json` → `exa.apiKey` (pi-web's own config, written by the wizard)
+2. `~/.pi/agent/mcp.json` → `mcpServers.exa.url` → `exaApiKey` query param (legacy, auto-imported on first wizard run)
 3. `EXA_API_KEY` environment variable
 
 No key means DuckDuckGo still works; Exa calls return a clear setup hint.
@@ -77,7 +77,7 @@ Save        previews the exact mcp.json entry (key masked), then writes
 Done        what was written, where — no restart needed
 ```
 
-Safety properties: the existing `mcpServers.exa` entry is upserted — `tools=` filter and sibling fields survive; other servers are untouched; a malformed `mcp.json` is never overwritten (you get the manual instructions instead); the key is never rendered (masked in previews, redacted from errors); headless mode prints the manual path. Keys resolve lazily, so a saved key takes effect on the next Exa call without restarting pi.
+Safety properties: pi-web's config (`~/.pi/agent/pi-web.json`) is written atomically (tmp + rename) — a crash can't leave a half-written file. The existing `mcpServers.exa` entry is never modified; the wizard offers to **import** a found key into pi-web's own config, then optionally clean up the duplicate. Keys resolve lazily, so a saved key takes effect on the next Exa call without restarting pi.
 
 ## How it's organized
 
@@ -86,12 +86,13 @@ Following the codebase-design deep-module playbook (small interfaces, real seams
 | File | Role |
 |------|------|
 | `index.ts` | Thin entry: registers the two tools, maps params → modules, formats output |
-| `search.ts` | Deep module. The **SearchProvider seam**: provider resolution, `auto` fallback, answer synthesis. Callers interact with `webSearch()` only |
+| `config.ts` | pi-web's own config file (`~/.pi/agent/pi-web.json`). Atomic reads/writes, forgiving on missing/malformed. Exa credentials live here, decoupled from mcp.json |
+| `search.ts` | Deep module. The **SearchProvider seam**: intent-aware routing (`resolveAutoRoute`), provider resolution, `auto` fallback, answer synthesis |
 | `duckduckgo.ts` | Adapter at the seam: HTML scraping, regex parsing, entity decoding, redirect resolution |
-| `exa-mcp.ts` | Adapter at the seam: JSON-RPC to the remote MCP, SSE/JSON response handling, three tool wrappers, result sanitizing |
+| `exa-mcp.ts` | Adapter at the seam: JSON-RPC to the remote MCP, SSE/JSON response handling, three tool wrappers, result sanitizing. Key resolution via config.ts (lazy singleton) |
 | `fetch.ts` | Deep module. URL→Markdown seam: local fetch (sniffing, Defuddle, regex fallback) → free services (Jina, markdown.new) → Exa fallback, model summarization |
 | `exa-issue.ts` | Tiny shared module: classifies Exa failures (`rate-limited` vs `missing-key`) so the adapter can note them and the entry point can surface a one-shot hint, without depending on each other |
-| `exa-setup.ts` | The `/exa-setup` wizard: inline TUI (Intro → Paste → Validating → Save → Done), key validation, atomic mcp.json upsert (never clobber) |
+| `exa-setup.ts` | The `/exa-setup` wizard: inline TUI (Intro → Save preview → Done), key validation, import-from-mcp.json offer, atomic config.ts save |
 
 Two adapters means the SearchProvider seam is real (per codebase-design "one adapter is a hypothetical seam; two is a real one"). The converter and all parsers are pure functions exported as internal seams, tested directly.
 
