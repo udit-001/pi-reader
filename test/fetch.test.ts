@@ -1,0 +1,110 @@
+// Tests for the fetch module's converter — the pure part of the URL→Markdown
+// pipeline. Everything that needs the network is behind the fetchContent()
+// interface and is exercised as an integration test instead.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { htmlToMarkdown, convert, fitToBudget } from "../fetch.ts";
+
+test("fetch: converts a simple article to clean markdown", () => {
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><title>My Great Post</title></head>
+<body>
+<nav><a href="/">Home</a> <a href="/about">About</a></nav>
+<article>
+  <h1>Hello World</h1>
+  <p>This is a <strong>bold</strong> and <em>italic</em> sentence with a <a href="https://x.dev">link</a>.</p>
+  <ul>
+    <li>first item</li>
+    <li>second item</li>
+  </ul>
+  <pre><code>const x = 1;</code></pre>
+  <blockquote>A wise quote</blockquote>
+</article>
+<footer>Copyright 2026</footer>
+</body>
+</html>
+`;
+  const md = htmlToMarkdown(html);
+  assert.match(md, /^# Hello World/);
+  assert.match(md, /bold/i);
+  assert.match(md, /\[link\]\(https:\/\/x\.dev\)/);
+  assert.match(md, /- first item/);
+  assert.match(md, /```/);
+  assert.match(md, /> A wise quote/);
+  assert.ok(!md.includes("<script"));
+  // nav and footer removed — article landmark wins
+  assert.ok(!md.includes("Home"));
+  assert.ok(!md.includes("Copyright"));
+});
+
+test("fetch: convert() sniffs JSON content type", () => {
+  const { title, content } = convert(
+    '{"a": 1, "b": [1,2,3]}',
+    "application/json",
+    "https://api.example.com/data.json",
+  );
+  assert.match(content, /```json/);
+  assert.match(content, /"a": 1/);
+  assert.ok(title.endsWith("data.json"));
+});
+
+test("fetch: convert() treats plain text as text, preserving newlines", () => {
+  const { content } = convert(
+    "line one\nline two\n  spaced   text",
+    "text/plain",
+    "https://example.com/file.txt",
+  );
+  assert.match(content, /line one\nline two/);
+});
+
+test("fetch: convert() returns text/markdown verbatim with heading title", () => {
+  const body = "# Documentation\n\nSome *intro* text.\n\n## Installation\n\n```bash\nnpm install defuddle\n```\n";
+  const { title, content } = convert(body, "text/markdown; charset=utf-8", "https://defuddle.md/docs.md");
+  assert.equal(title, "Documentation");
+  assert.equal(content, body.trim());
+  assert.ok(content.includes("## Installation"));
+});
+
+test("fetch: convert() detects markdown by .md URL even without content type", () => {
+  const body = "# Title Here\n\nbody text\n";
+  const { title, content } = convert(body, "", "https://example.com/readme.md");
+  assert.equal(title, "Title Here");
+  assert.equal(content, body.trim());
+});
+
+test("fetch: convert() extracts title from HTML", () => {
+  const { title } = convert(
+    "<html><head><title>Document Title</title></head><body><p>Body text</p></body></html>",
+    "text/html",
+    "https://example.com/doc",
+  );
+  assert.equal(title, "Document Title");
+});
+
+test("fetch: convert() respects maxChars", () => {
+  const { content } = convert(
+    "<html><body><p>" + "a".repeat(10_000) + "</p></body></html>",
+    "text/html",
+    "https://example.com/big",
+    500,
+  );
+  assert.ok(content.length <= 500);
+});
+test("fetch: fitToBudget keeps short content as-is", () => {
+  const fit = fitToBudget("short content", 100);
+  assert.equal(fit.truncated, false);
+  assert.equal(fit.text, "short content");
+});
+
+test("fetch: fitToBudget keeps head+tail with an explicit marker", () => {
+  const body = "H".repeat(9000) + "T".repeat(1000);
+  const fit = fitToBudget(body, 2000);
+  assert.equal(fit.truncated, true);
+  assert.ok(fit.text.startsWith("H".repeat(10)));
+  assert.ok(fit.text.endsWith("T".repeat(10)));
+  assert.match(fit.text, /\[\.\.\.TRUNCATED 8100 characters\.\.\.\]/);
+  assert.ok(fit.text.length <= 2000 + 50); // marker overhead only
+});

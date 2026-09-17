@@ -1,0 +1,57 @@
+{
+  "name": "pi-web",
+  "version": "0.1.0",
+  "description": "Lightweight web search (DuckDuckGo + Exa MCP) and URL-to-Markdown fetch for Pi coding agent. Zero config.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "web-search",
+    "duckduckgo",
+    "exa",
+    "mcp",
+    "web-fetch",
+    "markdown",
+    "summarize"
+  ],
+  "files": [
+    "index.ts",
+    "search.ts",
+    "duckduckgo.ts",
+    "exa-mcp.ts",
+    "exa-issue.ts",
+    "exa-setup.ts",
+    "fetch.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "^22.10.0",
+    "typebox": "^1.3.7",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "defuddle": "^0.19.3",
+    "linkedom": "^0.18.13"
+  }
+}
