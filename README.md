@@ -1,6 +1,6 @@
 # pi-reader
 
-Web search and URL→Markdown fetch for the [Pi coding agent](https://github.com/earendil-works/pi-coding-agent). DuckDuckGo free, Exa for semantic search. Zero config.
+Web search and URL→Markdown fetch for the [Pi coding agent](https://pi.dev). DuckDuckGo free, Exa for semantic search. Zero config.
 
 ## Install
 
