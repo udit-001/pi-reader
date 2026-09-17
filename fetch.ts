@@ -252,9 +252,24 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   });
 }
 
+// Normalize a URL that may arrive as a JSON-stringified array from the MCP
+// layer (e.g. `["https://..."]`). Returns the first valid URL string,
+// or the original input if it's already clean.
+export function normalizeUrl(raw: string): string {
+  if (!raw.startsWith("[")) return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && typeof parsed[0] === "string") return parsed[0]!;
+  } catch {
+    // not valid JSON — treat as a literal URL
+  }
+  return raw;
+}
+
 // Total: never throws — failures come back in band via FetchResult.error, so
 // one bad response can't discard the rest of a batch.
 async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Promise<FetchResult> {
+  url = normalizeUrl(url);
   let res: Response;
   try {
     res = await fetchWithTimeout(url, {

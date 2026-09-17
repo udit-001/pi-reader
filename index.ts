@@ -72,10 +72,10 @@ const webSearchParams = Type.Object({
 const webFetchParams = Type.Object({
   urls: Type.Union(
     [
-      Type.String({ description: "Single URL to fetch" }),
+      Type.String({ description: "URL to fetch as Markdown" }),
       Type.Array(Type.String(), { description: "Multiple URLs to fetch in parallel" }),
     ],
-    { description: "URL(s) to fetch as Markdown" },
+    { description: "URL(s) to fetch. Pass a plain string, not a JSON-encoded array." },
   ),
   maxChars: Type.Optional(Type.Integer({
     minimum: 500,
@@ -144,11 +144,9 @@ export default function piWeb(pi: ExtensionAPI): void {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the web with DuckDuckGo (free, no key) or Exa MCP (semantic, filters, full content). " +
-      "DuckDuckGo returns keyword results; Exa returns semantic results with highlights. " +
-      "For Exa, use category filters and descriptive queries (" +
-      "'category:people VP Engineering startup' rather than 'VP jobs'). " +
-      "auto uses DuckDuckGo first and falls back to Exa MCP when DuckDuckGo fails.",
+      "Search the web. DuckDuckGo by default (free, no key). " +
+      "Exa for semantic search when you pass Exa params (category, domains, includeContent). " +
+      "Use descriptive queries with Exa: 'category:people VP Engineering startup' not 'VP jobs'.",
     promptSnippet: "Use for web research questions. Prefer descriptive queries for Exa semantic search.",
     parameters: webSearchParams,
     async execute(
@@ -211,10 +209,9 @@ export default function piWeb(pi: ExtensionAPI): void {
     name: "web_fetch",
     label: "Fetch as Markdown",
     description:
-      "Fetch a URL (or batch of URLs) and return clean Markdown content, not raw HTML. " +
-      "Fetches locally first (Defuddle extraction; verbatim for markdown/text/JSON pages), then falls back to " +
-      "Exa MCP for dynamic/JS-heavy pages, anti-bot blocks, and PDFs. " +
-      "Set prompt to summarize or answer a question about the page(s) with the current pi model.",
+      "Fetch a URL and return clean Markdown, not raw HTML. " +
+      "Pass a single URL string or an array of URL strings. " +
+      "Add prompt to answer a question about the fetched content using the current model.",
     promptSnippet: "Use to read full page content from known URLs (docs, articles, issues).",
     parameters: webFetchParams,
     async execute(

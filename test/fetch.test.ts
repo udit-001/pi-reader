@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { htmlToMarkdown, convert, fitToBudget } from "../fetch.ts";
+import { htmlToMarkdown, convert, fitToBudget, normalizeUrl } from "../fetch.ts";
 
 test("fetch: converts a simple article to clean markdown", () => {
   const html = `
@@ -93,6 +93,23 @@ test("fetch: convert() respects maxChars", () => {
   );
   assert.ok(content.length <= 500);
 });
+test("normalizeUrl: passes through clean URLs", () => {
+  assert.equal(normalizeUrl("https://example.com"), "https://example.com");
+  assert.equal(normalizeUrl("http://localhost:3000"), "http://localhost:3000");
+});
+
+test("normalizeUrl: extracts URL from JSON-stringified array", () => {
+  // The MCP layer sometimes stringifies URL arrays before they reach us.
+  // This is the exact error pattern: [\"https://...\"] gets passed to fetch().
+  const stringified = JSON.stringify(["https://example.com"]);
+  assert.equal(normalizeUrl(stringified), "https://example.com");
+});
+
+test("normalizeUrl: handles malformed JSON gracefully", () => {
+  assert.equal(normalizeUrl("[not-json"), "[not-json");
+  assert.equal(normalizeUrl("[]"), "[]");
+});
+
 test("fetch: fitToBudget keeps short content as-is", () => {
   const fit = fitToBudget("short content", 100);
   assert.equal(fit.truncated, false);
