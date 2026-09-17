@@ -212,9 +212,22 @@ export default function piWeb(pi: ExtensionAPI): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        // Actionable errors: tell the agent what to do next
+        let hint = "";
+        if (/DuckDuckGo/i.test(message)) {
+          hint = " Try provider: 'exa' or rephrase with a descriptive query.";
+        } else if (/rate.?limit/i.test(message)) {
+          hint = " Run /exa-setup to replace the key, or wait and retry.";
+        } else if (/no.*key|not.*configured|missing/i.test(message)) {
+          hint = " Run /exa-setup to configure an Exa API key.";
+        } else if (/no.*results|parseable/i.test(message)) {
+          hint = " Try a longer, more descriptive query. Describe the page you want to find.";
+        } else if (/timeout|ECONNREFUSED|fetch.*fail/i.test(message)) {
+          hint = " Check your network connection and retry.";
+        }
         return {
-          content: [{ type: "text", text: `web_search failed: ${message}` }],
-          details: { error: message },
+          content: [{ type: "text", text: `web_search failed: ${message}${hint}` }],
+          details: { error: message, hint },
         };
       } finally {
         notifyExaIssueOnce(ctx);
@@ -285,9 +298,21 @@ export default function piWeb(pi: ExtensionAPI): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        let hint = "";
+        if (/Failed to parse URL/i.test(message)) {
+          hint = " Check the URL format — must start with http:// or https://.";
+        } else if (/fetch.*fail|ECONNREFUSED|ENOTFOUND/i.test(message)) {
+          hint = " The URL may be unreachable. Verify it's correct and try again.";
+        } else if (/HTTP\s+(4[0-9]{2}|5[0-9]{2})/i.test(message)) {
+          hint = " The server returned an error. The URL may require authentication or be blocked.";
+        } else if (/Unsupported content type/i.test(message)) {
+          hint = " This content type is not supported locally. The URL may still work via remote fallback.";
+        } else if (/timeout/i.test(message)) {
+          hint = " The request timed out. Try again or use a different URL.";
+        }
         return {
-          content: [{ type: "text", text: `web_fetch failed: ${message}` }],
-          details: { error: message },
+          content: [{ type: "text", text: `web_fetch failed: ${message}${hint}` }],
+          details: { error: message, hint },
         };
       } finally {
         notifyExaIssueOnce(ctx);

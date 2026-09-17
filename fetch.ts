@@ -198,7 +198,10 @@ async function fetchViaJinaReader(
   const res = await fetchWithTimeout(`https://r.jina.ai/${url}`, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "text/plain" },
   }, FALLBACK_TIMEOUT_MS, signal);
-  if (!res.ok) throw new Error(`jina returned ${res.status}`);
+  if (!res.ok) {
+    const hint = res.status === 403 ? " Jina may be blocked by this site." : "";
+    throw new Error(`Jina Reader returned ${res.status}${hint}`);
+  }
   const text = await res.text();
   // Response shape: "Title: …\nURL Source: …\nMarkdown Content:\n<body>"
   const title = /^Title:\s*(.+)$/m.exec(text)?.[1]?.trim() ?? "";
@@ -216,7 +219,10 @@ async function fetchViaMarkdownNew(
     headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
     body: JSON.stringify({ url, method: "auto" }),
   }, FALLBACK_TIMEOUT_MS, signal);
-  if (!res.ok) throw new Error(`markdown.new returned ${res.status}`);
+  if (!res.ok) {
+    const hint = res.status === 405 ? " markdown.new does not support this URL." : "";
+    throw new Error(`markdown.new returned ${res.status}${hint}`);
+  }
   const payload = (await res.json()) as { success?: boolean; content?: string };
   let content = (payload.content ?? "").trim();
   if (content.startsWith("---")) {
@@ -278,10 +284,26 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
     }, FETCH_TIMEOUT_MS, signal);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    if (/Failed to parse URL/i.test(message)) {
+      return { url, title: "", content: "", error: `Invalid URL format: ${url}. Must start with http:// or https://.` };
+    }
+    if (/timeout/i.test(message)) {
+      return { url, title: "", content: "", error: `Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s. The server may be slow or unreachable.` };
+    }
+    if (/ECONNREFUSED|ENOTFOUND/i.test(message)) {
+      return { url, title: "", content: "", error: `Cannot connect to ${new URL(url).hostname}. Check the URL and your network.` };
+    }
     return { url, title: "", content: "", error: `Fetch failed: ${message}` };
   }
   if (!res.ok) {
-    return { url, title: "", content: "", error: `HTTP ${res.status}` };
+    const hint = res.status === 403
+      ? " The server may be blocking automated requests."
+      : res.status === 404
+        ? " The page does not exist."
+        : res.status >= 500
+          ? " The server encountered an error."
+          : "";
+    return { url, title: "", content: "", error: `HTTP ${res.status}${hint}` };
   }
 
   const contentType = res.headers.get("content-type") ?? "";
