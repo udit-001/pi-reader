@@ -6,7 +6,6 @@
 
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
-import { searchGrepCode } from "./grep-mcp.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
 import * as cache from "./cache.ts";
 import { join } from "node:path";
@@ -15,7 +14,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "grep";
+export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7";
 
 export type ExaCategory =
   | "company"
@@ -34,11 +33,6 @@ export interface SearchOptions {
   category?: ExaCategory;
   includeContent?: boolean;
   includeSummary?: boolean;
-  /** Code-search filters — used by provider "grep". */
-  repo?: string;
-  path?: string;
-  language?: string[];
-  regexp?: boolean;
   signal?: AbortSignal;
 }
 
@@ -83,22 +77,6 @@ const exaProvider: SearchProvider = {
 
 // Free providers: Wikipedia, HN, Context7 (no API key needed)
 // Used as fallback when DDG and Exa both fail.
-// grep: explicit-only (curated GitHub index — never auto-routed; Exa keeps
-// the broad code case).
-const grepProvider: SearchProvider = {
-  async search(query, options) {
-    const results = await searchGrepCode({
-      query,
-      repo: options.repo,
-      path: options.path,
-      language: options.language,
-      useRegexp: options.regexp,
-      signal: options.signal,
-    });
-    return { answer: buildAnswer(results), results, provider: "grep" };
-  },
-};
-
 const freeProviders: SearchProvider = {
   async search(query, options) {
     // Determine source from options or default to auto
@@ -153,12 +131,6 @@ function getSearchCacheKey(query: string, options: SearchOptions & { provider?: 
     (options.domains ?? []).sort().join(","),
     String(options.includeContent ?? false),
     String(options.includeSummary ?? false),
-    // code-search filters (provider "grep") — filtered and unfiltered
-    // searches over the same query are different results
-    options.repo ?? "",
-    options.path ?? "",
-    (options.language ?? []).sort().join(","),
-    String(options.regexp ?? false),
   ];
   // Simple hash
   let hash = 0;
@@ -219,9 +191,6 @@ export async function webSearch(
   } else if (requested === "wikipedia" || requested === "hn" || requested === "context7") {
     // Domain-specific providers — only when explicitly requested
     response = await freeProviders.search(query, { ...options, source: requested } as any);
-  } else if (requested === "grep") {
-    // Code search — explicit-only, never in the auto-fallback chain
-    response = await grepProvider.search(query, options);
   } else {
     // auto: DDG first, Exa fallback. No domain-specific fallback.
     const [first, second] = resolveAutoRoute(options) === "exa-first"
