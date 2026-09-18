@@ -3,9 +3,10 @@
 // The seam is fetchContent(): a list of URLs in, a list of {url,title,content}
 // out. Tiers, tried until one serves the URL: local (verbatim markdown/text/
 // JSON; Defuddle → Markdown for HTML; Next.js RSC flight decode when
-// Readability finds nothing; regex last resort) → Jina Reader → markdown.new
-// (free services for dynamic pages, blocks, PDFs) → Exa MCP (quota'd; last
-// resort). Plus a summarization pass on the current pi model.
+// Readability finds nothing; regex last resort; bot-walled pages get one curl
+// retry with a real Chrome profile before leaving the machine) → Jina Reader
+// → markdown.new (free services for dynamic pages, blocks, PDFs) → Exa MCP
+// (quota'd; last resort). Plus a summarization pass on the current pi model.
 // Borrowed the "everything becomes Markdown" idea from mitsuhiko's markitdown
 // summarize skill — the caller gets quotable text, never raw HTML.
 //
@@ -19,6 +20,7 @@ import { Defuddle } from "defuddle/node";
 import { fetchExaMcp } from "./exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
 import { extractNextFlightContent } from "./handlers/next-flight.ts";
+import { curlGetText } from "./curl-fetch.ts";
 import { type FetchContext } from "./handlers/handler.ts";
 import { matchTopic } from "./topic.ts";
 import * as cache from "./cache.ts";
@@ -373,6 +375,10 @@ export function normalizeUrl(raw: string): string {
 
 // Total: never throws — failures come back in band via FetchResult.error, so
 // one bad response can't discard the rest of a batch.
+// Bot-wall statuses worth one local curl retry with a real Chrome profile
+// before the page is handed to remote fallback services.
+const BLOCKED_STATUSES = new Set([401, 403, 406, 429, 503]);
+
 async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Promise<FetchResult> {
   url = normalizeUrl(url);
   let res: Response;
@@ -395,6 +401,16 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
     return { url, title: "", content: "", error: `Could not reach the server. Check the URL and your network.` };
   }
   if (!res.ok) {
+    // Bot walls: one local curl retry with a real Chrome profile (headers,
+    // HTTP/2 shape, and a true Chrome TLS fingerprint when curl-impersonate is
+    // installed) rescues many blocked pages without leaving the machine.
+    if (BLOCKED_STATUSES.has(res.status)) {
+      const curl = await curlGetText(url, { signal, timeoutMs: FETCH_TIMEOUT_MS });
+      if (curl && curl.status === 200 && curl.text.trim().length > 0) {
+        const rescued = await extractFromText(url, curl.contentType || "text/html", curl.text, maxChars);
+        if (!rescued.error && rescued.content.trim()) return rescued;
+      }
+    }
     // Translate HTTP status to actionable guidance — agent doesn't need raw codes
     let error: string;
     if (res.status === 403) {
@@ -428,6 +444,21 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { url, title: "", content: "", error: `Read failed: ${message}` };
+  }
+
+  return extractFromText(url, contentType, text, maxChars);
+}
+
+/** The local extraction chain shared by the direct and curl-rescued paths. */
+async function extractFromText(url: string, contentType: string, text: string, maxChars: number): Promise<FetchResult> {
+  if (isUnsupportedBinary(contentType, url)) {
+    const ct = contentType.split(";")[0] || "binary";
+    return {
+      url,
+      title: "",
+      content: "",
+      error: `Unsupported content type (${ct}): the local converter handles HTML, JSON, and text only. Remote fallbacks may still extract this content.`,
+    };
   }
 
   // Markdown/plain text/JSON need no extraction or conversion — return as-is.

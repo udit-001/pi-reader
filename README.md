@@ -49,7 +49,7 @@ web_fetch({ urls: "https://large-doc.com/api", topic: "authentication" })
 
 ## How fetching works
 
-The fetch chain tries local extraction first (Defuddle for HTML, regex for edge cases), then free remote services (Jina Reader for JS-rendered pages, markdown.new for PDFs), then Exa MCP as last resort. Specialized handlers exist for GitHub, GitLab, Reddit, HackerNews, StackExchange, Wikipedia, arXiv, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems) — these return structured content instead of scraped HTML.
+The fetch chain tries local extraction first (Defuddle for HTML, Next.js RSC flight payloads for client-rendered pages, regex for edge cases, and a curl retry with a real Chrome profile for bot-walled pages), then free remote services (Jina Reader for JS-rendered pages, markdown.new for PDFs), then Exa MCP as last resort. Specialized handlers exist for GitHub, GitLab, Reddit, HackerNews, StackExchange, Wikipedia, arXiv, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems) — these return structured content instead of scraped HTML.
 
 Fetched pages are cached locally for 7 days. Search results are cached for 1 hour.
 
