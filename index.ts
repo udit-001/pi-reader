@@ -7,9 +7,12 @@
 //     fallback), "duckduckgo", or "exa". Exa supports category filters,
 //     domains, recency, and full content/summary extraction via the
 //     web_search_advanced_exa tool on the remote MCP.
-//   web_fetch — fetch URL(s) as clean Markdown (Exa MCP web_fetch_exa with a
-//     local regex converter fallback). Optional: answer a prompt about the
-//     pages using the current pi model (markitdown-style summarize).
+//   web_fetch — fetch URL(s) as clean Markdown. Structured handlers render
+//     known sites directly (GitHub/GitLab repos: metadata+README, releases,
+//     issues/PRs, raw files; package registries; Wikipedia, HN, Reddit,
+//     Stack Exchange, arXiv); everything else falls through the free remote
+//     fallback chain (Jina, markdown.new) to Exa MCP. Optional: answer a
+//     prompt about the pages using the current pi model.
 //
 // Shape: thin entry. The depth lives in search.ts (provider seam + result
 // normalization) and fetch.ts (content-type sniffing + conversion).
@@ -258,9 +261,18 @@ export default function piWeb(pi: ExtensionAPI): void {
     label: "Fetch as Markdown",
     description:
       "Fetch a URL and return clean Markdown, not raw HTML. " +
+      "Known sites return structured Markdown automatically: a GitHub repo URL includes a metadata header " +
+      "(description, stars, forks, language, license, default branch, homepage, topics) above the full README, " +
+      "so it covers 'fetch details about <repo>' requests in one call. " +
+      "GitHub /releases, /releases/latest, and /releases/tag/<tag> URLs return release notes and assets; " +
+      "issue and PR URLs return the full thread with comments; blob URLs return the raw file. " +
+      "GitLab, package registries (npm, PyPI, crates.io, and more), Wikipedia, Hacker News, Reddit, " +
+      "Stack Exchange, and arXiv are structured the same way. " +
       "Add topic to extract only relevant sections from long pages. " +
       "Add prompt to answer a question about the fetched content.",
-    promptSnippet: "Use to read full page content from known URLs (docs, articles, issues).",
+    promptSnippet:
+      "Use to read full page content from known URLs (docs, articles, issues). " +
+      "GitHub repo URLs include metadata + README in one call, and /releases URLs return release details.",
     parameters: webFetchParams,
     async execute(
       _callId: string,
