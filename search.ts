@@ -1,15 +1,16 @@
 // search.ts — deep module: provider seam + result normalization + answer synthesis
 //
-// The SearchProvider seam sits here. Two adapters (DuckDuckGo, Exa MCP) are
-// real adapters behind a small interface. Everything the caller needs to know
-// is in SearchResponse; everything behind the seam is an implementation detail.
+// The SearchProvider seam sits here. Multiple adapters are real adapters
+// behind a small interface. Everything the caller needs to know is in
+// SearchResponse; everything behind the seam is an implementation detail.
 
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
+import { webSearch as searchFreeProviders } from "./search-providers.ts";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa";
+export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7";
 
 export type ExaCategory =
   | "company"
@@ -70,6 +71,20 @@ const exaProvider: SearchProvider = {
   },
 };
 
+// Free providers: Wikipedia, HN, Context7 (no API key needed)
+// Used as fallback when DDG and Exa both fail.
+const freeProviders: SearchProvider = {
+  async search(query, options) {
+    const outcome = await searchFreeProviders(query, "auto", options.signal);
+    const results = outcome.results.map((r) => ({
+      title: r.title,
+      url: r.url,
+      snippet: r.snippet ?? "",
+    }));
+    return { answer: buildAnswer(results), results, provider: "duckduckgo" };
+  },
+};
+
 // ── Intent-aware auto routing ───────────────────────────────────────────────
 // The agent expresses intent (category, content, domains); availability is
 // runtime state only the tool observes. So auto-routing is a pure function of
@@ -103,13 +118,19 @@ export async function webSearch(
   }
 
   // auto: intent decides the order, availability decides the fallback
+  // Three layers: primary (DDG or Exa) → secondary → free providers (Wikipedia, HN, Context7)
   const [first, second] = resolveAutoRoute(options) === "exa-first"
     ? [exaProvider, duckduckgoProvider]
     : [duckduckgoProvider, exaProvider];
   try {
     return await first.search(query, options);
   } catch {
-    return second.search(query, options);
+    try {
+      return await second.search(query, options);
+    } catch {
+      // Both primary and secondary failed — try free providers
+      return freeProviders.search(query, options);
+    }
   }
 }
 

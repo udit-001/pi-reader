@@ -19,6 +19,9 @@ import { fetchExaMcp } from "./exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
 import { type FetchContext } from "./handlers/handler.ts";
 import { matchTopic } from "./topic.ts";
+import * as cache from "./cache.ts";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 const FETCH_TIMEOUT_MS = 30_000;
 const FALLBACK_TIMEOUT_MS = 20_000;
@@ -30,6 +33,10 @@ const DEFAULT_MAX_CHARS = 20_000;
 const OUTPUT_TOKENS = 2000;
 const CONTEXT_FRACTION = 0.6;
 const CHARS_PER_TOKEN = 3;
+
+// Cache configuration
+const CACHE_TTL_HOURS = 24 * 7; // 7 days
+const CACHE_ROOT = join(homedir(), ".pi", "agent", "pi-reader-cache");
 
 export interface FetchResult {
   url: string;
@@ -53,8 +60,39 @@ export async function fetchContent(
 ): Promise<FetchResult[]> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
 
+  // Check cache first
+  const cachedResults = new Map<string, FetchResult>();
+  const uncachedUrls: string[] = [];
+
+  for (const urlStr of urls) {
+    try {
+      const cached = cache.lookupAny([CACHE_ROOT], urlStr, "light", CACHE_TTL_HOURS);
+      if (cached) {
+        const content = cached.meta.title ? cached.meta.title : "";
+        // Read content from disk
+        const { readFileSync } = await import("node:fs");
+        const diskContent = readFileSync(cached.contentPath, "utf-8").slice(0, maxChars);
+        if (diskContent.length > 0) {
+          cachedResults.set(urlStr, {
+            url: urlStr,
+            title: cached.meta.title ?? "",
+            content: diskContent,
+            error: null,
+          });
+          continue;
+        }
+      }
+    } catch {
+      // Cache lookup failed — fetch normally
+    }
+    uncachedUrls.push(urlStr);
+  }
+
+  if (uncachedUrls.length === 0) {
+    return urls.map((u) => cachedResults.get(u)!);
+  }
+
   // Try structured handlers first (GitHub, npm, Wikipedia, etc.)
-  // These know the smartest way to fetch specific URL types.
   const handlerResults = new Map<string, FetchResult>();
   const unhandledUrls: string[] = [];
 
@@ -131,8 +169,9 @@ export async function fetchContent(
   const results = urls.map((u) => handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
 
   // Apply topic extraction if a topic is provided
+  let finalResults = results;
   if (options.topic) {
-    return results.map((r) => {
+    finalResults = results.map((r) => {
       if (r.error || !r.content) return r;
       const extracted = matchTopic(r.content, options.topic!, maxChars);
       if (!extracted) return r;
@@ -140,7 +179,24 @@ export async function fetchContent(
     });
   }
 
-  return results;
+  // Store successful results in cache
+  for (const r of finalResults) {
+    if (!r.error && r.content.length > 0) {
+      try {
+        cache.store(CACHE_ROOT, r.url, "light", {
+          handler: "default",
+          kind: "webpage",
+          title: r.title,
+          content: r.content,
+          hasTree: false,
+        });
+      } catch {
+        // Cache store failed — not critical
+      }
+    }
+  }
+
+  return finalResults;
 }
 
 // ── Summarization ────────────────────────────────────────────────────────────
