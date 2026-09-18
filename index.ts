@@ -244,7 +244,7 @@ export default function piWeb(pi: ExtensionAPI): void {
         } else if (/timeout|ECONNREFUSED|fetch.*fail/i.test(message)) {
           error = "Search failed. Check your network connection and retry.";
         } else {
-          error = "Search failed. Try a different query or provider.";
+          error = `Search failed (${message}). Try a different query or provider.`;
         }
         // Never expose raw internal errors — agent only sees actionable guidance
         return {
@@ -344,7 +344,7 @@ export default function piWeb(pi: ExtensionAPI): void {
         } else if (/timeout/i.test(message)) {
           hint = "The request timed out. Try again or use a different URL.";
         } else {
-          hint = "The fetch failed. Check the URL and try again.";
+          hint = `The fetch failed (${message}). Check the URL and try again.`;
         }
         // Never expose raw internal errors — agent only sees actionable guidance
         return {
