@@ -54,6 +54,8 @@ export interface FetchOptions {
   signal?: AbortSignal;
   /** Extract sections matching this topic instead of returning full content. */
   topic?: string;
+  /** "raw" returns the exact response body (skips handlers, extraction, topic, and cache). */
+  mode?: "markdown" | "raw";
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
@@ -63,12 +65,19 @@ export async function fetchContent(
   options: FetchOptions = {},
 ): Promise<FetchResult[]> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  const raw = options.mode === "raw";
 
-  // Check cache first
+  // Check cache first (raw mode reads the live response — cached markdown
+  // would be the wrong projection, and raw bodies must not poison later
+  // markdown fetches).
   const cachedResults = new Map<string, FetchResult>();
   const uncachedUrls: string[] = [];
 
   for (const urlStr of urls) {
+    if (raw) {
+      uncachedUrls.push(urlStr);
+      continue;
+    }
     try {
       const cached = cache.lookupAny([CACHE_ROOT], urlStr, "light", CACHE_TTL_HOURS);
       if (cached) {
@@ -96,11 +105,16 @@ export async function fetchContent(
     return urls.map((u) => cachedResults.get(u)!);
   }
 
-  // Try structured handlers first (GitHub, npm, Wikipedia, etc.)
+  // Try structured handlers first (GitHub, npm, Wikipedia, etc.) — raw mode
+  // bypasses them: raw means the HTTP response body, not a derived view.
   const handlerResults = new Map<string, FetchResult>();
   const unhandledUrls: string[] = [];
 
   for (const urlStr of urls) {
+    if (raw) {
+      unhandledUrls.push(urlStr);
+      continue;
+    }
     try {
       const url = new URL(urlStr);
       const handler = resolveHandler(url);
@@ -128,7 +142,7 @@ export async function fetchContent(
   }
 
   // Regular fetch chain for unhandled URLs: local → Jina → markdown.new → Exa
-  const local = await Promise.all(unhandledUrls.map((url) => fetchOne(url, maxChars, options.signal)));
+  const local = await Promise.all(unhandledUrls.map((url) => fetchOne(url, maxChars, options.signal, raw)));
 
   const failedUrls = [...new Set(
     local.filter((r) => r.error || !r.content.trim()).map((r) => r.url),
@@ -172,9 +186,10 @@ export async function fetchContent(
   // Merge handler results with regular results, preserving original URL order
   const results = urls.map((u) => handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
 
-  // Apply topic extraction if a topic is provided
+  // Apply topic extraction if a topic is provided (markdown mode only — raw
+  // returns the body untouched).
   let finalResults = results;
-  if (options.topic) {
+  if (options.topic && !raw) {
     finalResults = results.map((r) => {
       if (r.error || !r.content) return r;
       const extracted = matchTopic(r.content, options.topic!, maxChars);
@@ -183,9 +198,9 @@ export async function fetchContent(
     });
   }
 
-  // Store successful results in cache
+  // Store successful results in cache (never in raw mode — see cache lookup).
   for (const r of finalResults) {
-    if (!r.error && r.content.length > 0) {
+    if (!raw && !r.error && r.content.length > 0) {
       try {
         cache.store(CACHE_ROOT, r.url, "light", {
           handler: "default",
@@ -379,7 +394,12 @@ export function normalizeUrl(raw: string): string {
 // before the page is handed to remote fallback services.
 const BLOCKED_STATUSES = new Set([401, 403, 406, 429, 503]);
 
-async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Promise<FetchResult> {
+async function fetchOne(
+  url: string,
+  maxChars: number,
+  signal?: AbortSignal,
+  raw = false,
+): Promise<FetchResult> {
   url = normalizeUrl(url);
   let res: Response;
   try {
@@ -400,6 +420,39 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
     }
     return { url, title: "", content: "", error: `Could not reach the server. Check the URL and your network.` };
   }
+  // Raw mode: the exact response body, labeled with status and content type.
+  // A bot-wall status is retried via curl so the challenge page itself is
+  // visible and diagnosable instead of an opaque error.
+  if (raw) {
+    let status = res.status;
+    let contentType = res.headers.get("content-type") ?? "";
+    let text = "";
+    if (res.ok) {
+      try {
+        text = await res.text();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { url, title: "", content: "", error: `Read failed: ${message}` };
+      }
+    } else if (BLOCKED_STATUSES.has(res.status)) {
+      const curl = await curlGetText(url, { signal, timeoutMs: FETCH_TIMEOUT_MS });
+      if (curl) {
+        status = curl.status;
+        contentType = curl.contentType || contentType;
+        text = curl.text;
+      }
+    }
+    if (!text.trim()) {
+      return { url, title: "", content: "", error: `HTTP ${status}: the server returned no body to inspect.` };
+    }
+    return {
+      url,
+      title: url,
+      content: `${rawContentLabel(status, contentType)}\n\n${text.slice(0, maxChars)}`,
+      error: null,
+    };
+  }
+
   if (!res.ok) {
     // Bot walls: one local curl retry with a real Chrome profile (headers,
     // HTTP/2 shape, and a true Chrome TLS fingerprint when curl-impersonate is
@@ -447,6 +500,11 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
   }
 
   return extractFromText(url, contentType, text, maxChars);
+}
+
+/** Label heading for raw mode output. Pure; exported for tests. */
+export function rawContentLabel(status: number, contentType: string): string {
+  return `[status: ${status} | content-type: ${contentType || "unknown"}]`;
 }
 
 /** The local extraction chain shared by the direct and curl-rescued paths. */

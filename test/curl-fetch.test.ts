@@ -37,3 +37,21 @@ test("curl: handles LF-only header blocks and non-200 statuses", () => {
   assert.equal(out.text, "blocked");
   assert.equal(parseCurlResponse("garbage without headers"), null);
 });
+
+test("curl: redirect chains keep the final response, not the hop", () => {
+  const raw = [
+    "HTTP/1.1 307 Temporary Redirect",
+    "location: https://example.com/final",
+    "",
+    "",
+    "HTTP/2 200",
+    "content-type: text/html; charset=utf-8",
+    "",
+    "<html>final body</html>",
+  ].join("\r\n");
+  const out = parseCurlResponse(raw);
+  assert.ok(out);
+  assert.equal(out.status, 200);
+  assert.equal(out.contentType, "text/html; charset=utf-8");
+  assert.equal(out.text, "<html>final body</html>");
+});

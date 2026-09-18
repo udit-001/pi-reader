@@ -109,6 +109,12 @@ const webFetchParams = Type.Object({
     maximum: 100_000,
     description: "Max characters per page (default: 3000)",
   })),
+  mode: Type.Optional(Type.Union([Type.Literal("markdown"), Type.Literal("raw")], {
+    description:
+      "Response format. 'markdown' (default) extracts readable content. " +
+      "'raw' returns the exact response body — HTML/XML/JSON with a status and content-type label — " +
+      "for metadata inspection, structured data in pages, or debugging extraction.",
+  })),
   prompt: Type.Optional(Type.String({
     description: "If set, answer this prompt about the page(s) using the current pi model",
   })),
@@ -273,6 +279,8 @@ export default function piWeb(pi: ExtensionAPI): void {
       "GitLab, package registries (npm, PyPI, crates.io, and more), Wikipedia, Reddit, " +
       "Stack Exchange, and arXiv are structured the same way. " +
       "RSS/Atom feed URLs (ending in .xml, .rss, .atom, or /feed) return the channel title and recent posts. " +
+      "Add mode: 'raw' to get the exact response body — HTML/XML/JSON with a status and content-type label — " +
+      "for metadata inspection, structured data in pages, or debugging extraction. " +
       "Add topic to extract only relevant sections from long pages. " +
       "Add prompt to answer a question about the fetched content.",
     promptSnippet:
@@ -292,6 +300,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           maxChars: params.maxChars,
           signal,
           topic: params.topic,
+          mode: params.mode,
         });
 
         // Summarize the pages if a prompt was given.

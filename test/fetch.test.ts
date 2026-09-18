@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { htmlToMarkdown, convert, fitToBudget, normalizeUrl } from "../fetch.ts";
+import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel } from "../fetch.ts";
 
 test("fetch: converts a simple article to clean markdown", () => {
   const html = `
@@ -124,4 +124,9 @@ test("fetch: fitToBudget keeps head+tail with an explicit marker", () => {
   assert.ok(fit.text.endsWith("T".repeat(10)));
   assert.match(fit.text, /\[\.\.\.TRUNCATED 8100 characters\.\.\.\]/);
   assert.ok(fit.text.length <= 2000 + 50); // marker overhead only
+});
+
+test("fetch: rawContentLabel formats status and content type", () => {
+  assert.equal(rawContentLabel(200, "text/html; charset=utf-8"), "[status: 200 | content-type: text/html; charset=utf-8]");
+  assert.equal(rawContentLabel(403, ""), "[status: 403 | content-type: unknown]");
 });

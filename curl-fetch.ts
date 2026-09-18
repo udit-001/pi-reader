@@ -100,19 +100,37 @@ export interface CurlResponse {
   text: string;
 }
 
-/** Parse `-i` output into status line + headers + body. Pure; exported for tests. */
+/** Parse `-i` output into status, content type, and body. Pure; exported for tests.
+ * Redirect chains (`--location`) emit one header block per hop — the final
+ * response wins; each intermediate head is stripped. */
 export function parseCurlResponse(raw: string): CurlResponse | null {
-  const sep = raw.indexOf("\r\n\r\n");
-  const sepAlt = raw.indexOf("\n\n");
-  const splitAt = sep !== -1 ? sep + 4 : sepAlt !== -1 ? sepAlt + 2 : -1;
-  if (splitAt === -1) return null;
-  const headerBlock = raw.slice(0, splitAt);
-  const body = raw.slice(splitAt);
-  const statusLine = headerBlock.split("\n")[0]?.trim() ?? "";
-  const status = Number.parseInt(statusLine.split(" ")[1] ?? "", 10);
-  if (!Number.isFinite(status)) return null;
-  const contentType = /content-type:\s*(.+)/i.exec(headerBlock)?.[1]?.trim() ?? "";
-  return { status, contentType, text: body };
+  let rest = raw;
+  let status = 0;
+  let contentType = "";
+  for (;;) {
+    const sep = headerEnd(rest);
+    if (sep === -1) return null;
+    const headerBlock = rest.slice(0, sep);
+    const body = rest.slice(sep);
+    // A hop boundary can leave a leading "\r\n" — the status line is the first
+    // HTTP/… line in the block, not necessarily line 0.
+    const statusLine = headerBlock.split("\n").map((l) => l.trim()).find((l) => /^HTTP\//i.test(l)) ?? "";
+    const parsedStatus = Number.parseInt(statusLine.split(" ")[1] ?? "", 10);
+    if (!Number.isFinite(parsedStatus)) return null;
+    status = parsedStatus;
+    contentType = /content-type:\s*(.+)/i.exec(headerBlock)?.[1]?.trim() ?? "";
+    if (!/^\s*HTTP\//i.test(body)) return { status, contentType, text: body.replace(/^\s+/, "") };
+    rest = body; // redirect hop: strip this head, parse the next response
+  }
+}
+
+/** Index just past the header block (first blank line), CRLF or LF. */
+function headerEnd(s: string): number {
+  const crlf = s.indexOf("\r\n\r\n");
+  const lf = s.indexOf("\n\n");
+  if (crlf === -1) return lf === -1 ? -1 : lf + 2;
+  if (lf === -1) return crlf + 4;
+  return Math.min(crlf + 4, lf + 2);
 }
 
 export interface CurlGetOptions {
