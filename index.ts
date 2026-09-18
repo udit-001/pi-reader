@@ -47,7 +47,7 @@ const providerSchema = Type.Optional(
     {
       description:
         "Search provider. 'auto' tries DDG then Exa. " +
-        "'wikipedia' for factual queries, 'hn' for tech opinions, 'context7' for library docs.",
+        "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
     },
   ),
 );
@@ -177,7 +177,8 @@ export default function piWeb(pi: ExtensionAPI): void {
       "Search the web. DuckDuckGo by default (free, no key). " +
       "Exa for semantic search when you pass Exa params (category, domains, includeContent). " +
       "Use 'wikipedia' for factual 'what is X' queries. " +
-      "Use 'hn' for community opinions on tech topics. " +
+      "Use 'hn' to keyword-search Hacker News discussions; current listings (front page, latest Show HN posts) " +
+      "come from fetching news.ycombinator.com with web_fetch. " +
       "Use 'context7' for library/framework documentation. " +
       "Describe the page you want to find, not the fact you want to know.",
     promptSnippet: "Use for web research questions. Describe the target page, not the information you want.",
@@ -266,7 +267,10 @@ export default function piWeb(pi: ExtensionAPI): void {
       "so it covers 'fetch details about <repo>' requests in one call. " +
       "GitHub /releases, /releases/latest, and /releases/tag/<tag> URLs return release notes and assets; " +
       "issue and PR URLs return the full thread with comments; blob URLs return the raw file. " +
-      "GitLab, package registries (npm, PyPI, crates.io, and more), Wikipedia, Hacker News, Reddit, " +
+      "Hacker News item URLs return the story with top comments; category listing pages " +
+      "(front page, /newest, /show, /ask, /jobs — e.g. 'latest Show HN posts') return the current story list " +
+      "with points and comment counts. " +
+      "GitLab, package registries (npm, PyPI, crates.io, and more), Wikipedia, Reddit, " +
       "Stack Exchange, and arXiv are structured the same way. " +
       "Add topic to extract only relevant sections from long pages. " +
       "Add prompt to answer a question about the fetched content.",
