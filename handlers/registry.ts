@@ -1,5 +1,6 @@
 import type { MagpiHandler } from "./handler.ts";
 import { arxivHandler } from "./arxiv.ts";
+import { feedHandler } from "./feed.ts";
 import { defaultHandler } from "./default.ts";
 import { githubHandler } from "./github.ts";
 import { gitlabHandler } from "./gitlab.ts";
@@ -19,6 +20,7 @@ const handlers: MagpiHandler[] = [
   hackerNewsHandler,
   arxivHandler,
   registryHandler,
+  feedHandler,
   defaultHandler,
 ];
 

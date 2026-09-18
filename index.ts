@@ -272,6 +272,7 @@ export default function piWeb(pi: ExtensionAPI): void {
       "with points and comment counts. " +
       "GitLab, package registries (npm, PyPI, crates.io, and more), Wikipedia, Reddit, " +
       "Stack Exchange, and arXiv are structured the same way. " +
+      "RSS/Atom feed URLs (ending in .xml, .rss, .atom, or /feed) return the channel title and recent posts. " +
       "Add topic to extract only relevant sections from long pages. " +
       "Add prompt to answer a question about the fetched content.",
     promptSnippet:
