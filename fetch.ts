@@ -16,6 +16,8 @@ import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
 import { parseHTML } from "linkedom";
 import { Defuddle } from "defuddle/node";
 import { fetchExaMcp } from "./exa-mcp.ts";
+import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
+import { type FetchContext } from "./handlers/handler.ts";
 
 const FETCH_TIMEOUT_MS = 30_000;
 const FALLBACK_TIMEOUT_MS = 20_000;
@@ -48,13 +50,40 @@ export async function fetchContent(
 ): Promise<FetchResult[]> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
 
-  // Local first: direct fetch + Defuddle is free, fast, and faithful
-  // (verbatim markdown/text/JSON, scored extraction for HTML). Then free
-  // hosted converters (Jina Reader renders JS, bypasses Cloudflare, parses
-  // PDFs; markdown.new survives sites Jina can't reach). Exa MCP is the last
-  // resort — cleanest output, but quota'd — spent only on what nothing free
-  // could fetch.
-  const local = await Promise.all(urls.map((url) => fetchOne(url, maxChars, options.signal)));
+  // Try structured handlers first (GitHub, npm, Wikipedia, etc.)
+  // These know the smartest way to fetch specific URL types.
+  const handlerResults = new Map<string, FetchResult>();
+  const unhandledUrls: string[] = [];
+
+  for (const urlStr of urls) {
+    try {
+      const url = new URL(urlStr);
+      const handler = resolveHandler(url);
+      if (handler) {
+        const ctx: FetchContext = { mode: "light", entryDir: "", signal: options.signal };
+        const result = await fetchWithHandler(url, ctx);
+        if (result) {
+          handlerResults.set(urlStr, {
+            url: urlStr,
+            title: result.title ?? "",
+            content: result.content.slice(0, maxChars),
+            error: null,
+          });
+          continue;
+        }
+      }
+    } catch {
+      // URL parse failed or handler failed — fall through to regular fetch
+    }
+    unhandledUrls.push(urlStr);
+  }
+
+  if (unhandledUrls.length === 0) {
+    return urls.map((u) => handlerResults.get(u)!);
+  }
+
+  // Regular fetch chain for unhandled URLs: local → Jina → markdown.new → Exa
+  const local = await Promise.all(unhandledUrls.map((url) => fetchOne(url, maxChars, options.signal)));
 
   const failedUrls = [...new Set(
     local.filter((r) => r.error || !r.content.trim()).map((r) => r.url),
@@ -92,8 +121,11 @@ export async function fetchContent(
     }
   }
 
-  if (rescued.size === 0) return local;
-  return local.map((r) => rescued.get(r.url) ?? r);
+  if (rescued.size === 0 && handlerResults.size === 0) return local;
+  const regularResults = local.map((r) => rescued.get(r.url) ?? r);
+
+  // Merge handler results with regular results, preserving original URL order
+  return urls.map((u) => handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
 }
 
 // ── Summarization ────────────────────────────────────────────────────────────
