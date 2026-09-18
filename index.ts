@@ -43,11 +43,13 @@ const providerSchema = Type.Optional(
       Type.Literal("wikipedia"),
       Type.Literal("hn"),
       Type.Literal("context7"),
+      Type.Literal("grep"),
     ],
     {
       description:
         "Search provider. 'auto' tries DDG then Exa. " +
-        "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
+        "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs. " +
+        "'grep' for real-world code usage across GitHub repos (literal code patterns).",
     },
   ),
 );
@@ -69,7 +71,9 @@ const webSearchParams = Type.Object({
   query: Type.String({
     description:
       "Describe the page you want to find, not the fact you want to know. " +
-      "Example: 'category:company AI infrastructure startups San Francisco'",
+      "Example: 'category:company AI infrastructure startups San Francisco'. " +
+      "With provider 'grep', the query is matched verbatim against source code — " +
+      "e.g. 'useState(', or with regexp set, '(?s)useState\\(.*loading'.",
   }),
   provider: providerSchema,
   numResults: Type.Optional(Type.Integer({
@@ -93,6 +97,18 @@ const webSearchParams = Type.Object({
   })),
   includeSummary: Type.Optional(Type.Boolean({
     description: "Exa: generate an AI summary for each result",
+  })),
+  repo: Type.Optional(Type.String({
+    description: "Filter code results by repository ('owner/repo' or org prefix 'owner/'). Used by provider 'grep'.",
+  })),
+  path: Type.Optional(Type.String({
+    description: "Filter code results by file path (e.g. 'src/', '*.test.ts'). Used by provider 'grep'.",
+  })),
+  language: Type.Optional(Type.Array(Type.String(), {
+    description: "Filter code results by language, e.g. ['TypeScript', 'TSX']. Used by provider 'grep'.",
+  })),
+  regexp: Type.Optional(Type.Boolean({
+    description: "Treat the query as a regular expression; prefix '(?s)' to match across lines. Used by provider 'grep'.",
   })),
 });
 
@@ -180,6 +196,9 @@ export default function piWeb(pi: ExtensionAPI): void {
       "Use 'hn' to keyword-search Hacker News discussions; current listings (front page, latest Show HN posts) " +
       "come from fetching news.ycombinator.com with web_fetch. " +
       "Use 'context7' for library/framework documentation. " +
+      "Use 'grep' to find real-world code usage across GitHub repos — the query is a literal code pattern " +
+      "like 'useState(' or 'getServerSession', optionally filtered by repo, path, or language; " +
+      "results carry repo, file path, and the matched code. " +
       "Describe the page you want to find, not the fact you want to know.",
     promptSnippet: "Use for web research questions. Describe the target page, not the information you want.",
     parameters: webSearchParams,
@@ -202,6 +221,10 @@ export default function piWeb(pi: ExtensionAPI): void {
           category: params.category as "company" | "publication" | "news" | "personal site" | "people" | "pdf" | "github" | "financial report" | undefined,
           includeContent: params.includeContent,
           includeSummary: params.includeSummary,
+          repo: params.repo,
+          path: params.path,
+          language: params.language,
+          regexp: params.regexp,
           signal,
         });
 
@@ -233,7 +256,9 @@ export default function piWeb(pi: ExtensionAPI): void {
         const message = err instanceof Error ? err.message : String(err);
         // Actionable errors: tell the agent what to do next
         let error: string;
-        if (/DuckDuckGo/i.test(message)) {
+        if (/grep\.app/i.test(message)) {
+          error = message; // grep adapter messages are already actionable
+        } else if (/DuckDuckGo/i.test(message)) {
           error = "Search failed. Try provider: 'exa' or rephrase with a descriptive query.";
         } else if (/rate.?limit/i.test(message)) {
           error = "Search failed. Run /exa-setup to replace the key, or wait and retry.";
