@@ -176,9 +176,7 @@ export default function piWeb(pi: ExtensionAPI): void {
       "Use 'wikipedia' for factual 'what is X' queries. " +
       "Use 'hn' for community opinions on tech topics. " +
       "Use 'context7' for library/framework documentation. " +
-      "Describe the page you want to find, not the fact you want to know. " +
-      "Examples: 'category:company AI infrastructure startups San Francisco', " +
-      "'category:people VP Engineering at OpenAI', 'category:publication sparse attention mechanisms'",
+      "Describe the page you want to find, not the fact you want to know.",
     promptSnippet: "Use for web research questions. Describe the target page, not the information you want.",
     parameters: webSearchParams,
     async execute(
@@ -260,9 +258,8 @@ export default function piWeb(pi: ExtensionAPI): void {
     label: "Fetch as Markdown",
     description:
       "Fetch a URL and return clean Markdown, not raw HTML. " +
-      "Pass a single URL string or an array of URL strings. " +
-      "Add prompt to answer a question about the fetched content using the current model. " +
-      "Example: web_fetch({ urls: 'https://docs.example.com/guide', prompt: 'Summarize the key points' })",
+      "Add topic to extract only relevant sections from long pages. " +
+      "Add prompt to answer a question about the fetched content.",
     promptSnippet: "Use to read full page content from known URLs (docs, articles, issues).",
     parameters: webFetchParams,
     async execute(
