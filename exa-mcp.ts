@@ -1,11 +1,10 @@
 // Exa MCP adapter — the second real adapter at the SearchProvider seam.
 //
-// Consumed through the official MCP client (@modelcontextprotocol/client),
-// the same way pi-mcp-adapter consumes servers: a lazy singleton client over
-// StreamableHTTPClientTransport, kept alive for the process lifetime, with
-// one reconnect-and-retry on connection failure. Tool-level errors (isError
-// results) are never retried — a rate-limited or invalid key won't heal by
-// reconnecting.
+// Policy layered over the shared MCP client glue (mcp-client.ts): a lazy
+// singleton client over StreamableHTTP, kept alive for the process lifetime,
+// with one reconnect-and-retry on connection failure. Tool-level errors
+// (McpToolError) are never retried — a rate-limited or invalid key won't heal
+// by reconnecting.
 //
 // Credentials come from pi-reader's own config (~/.pi/agent/pi-reader.json, written
 // by /exa-setup) with the EXA_API_KEY env var as fallback. mcp.json is not
@@ -15,16 +14,15 @@
 // searchExaAdvanced. Everything else (client lifecycle, result extraction,
 // sanitizing) is implementation detail.
 
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { Client } from "@modelcontextprotocol/client";
+import { callMcpTool, connectMcp, McpToolError } from "./mcp-client.ts";
 import { configPath, loadConfig } from "./config.ts";
 import { classifyExaError, noteExaIssue } from "./exa-issue.ts";
 import type { ExaCategory, SearchOptions, SearchResult } from "./search.ts";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const EXA_TOOLS = "web_search_exa,web_fetch_exa,web_search_advanced_exa";
-const PI_WEB_VERSION = "0.2.0";
 const CALL_TIMEOUT_MS = 60_000;
-const CONNECT_TIMEOUT_MS = 20_000;
 
 // ── Credential resolution ─────────────────────────────────────────────────────
 // pi-reader.json is canonical; the environment is the fallback. Resolved lazily
@@ -128,22 +126,7 @@ export interface CallExaOptions {
   timeoutMs?: number;
 }
 
-/** Thrown for tool-level errors (isError results) — reconnecting cannot help. */
-class ExaToolError extends Error {}
-
 let clientPromise: Promise<Client> | null = null;
-
-async function connectClient(key: string): Promise<Client> {
-  const client = new Client({ name: "pi-reader", version: PI_WEB_VERSION });
-  const transport = new StreamableHTTPClientTransport(new URL(endpointUrl(key)));
-  await Promise.race([
-    client.connect(transport),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Exa MCP connection timed out")), CONNECT_TIMEOUT_MS).unref?.(),
-    ),
-  ]);
-  return client;
-}
 
 async function getExaClient(): Promise<Client> {
   if (!clientPromise) {
@@ -153,7 +136,7 @@ async function getExaClient(): Promise<Client> {
         "No Exa API key found. Run /exa-setup to set one up, or set the EXA_API_KEY environment variable.",
       );
     }
-    clientPromise = connectClient(key).catch((err) => {
+    clientPromise = connectMcp(endpointUrl(key)).catch((err) => {
       clientPromise = null; // failed connect doesn't poison the cache
       throw err;
     });
@@ -171,21 +154,6 @@ async function resetExaClient(): Promise<void> {
   }
 }
 
-async function callOnce(
-  client: Client,
-  tool: string,
-  args: Record<string, unknown>,
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<string> {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const result = await client.callTool(
-    { name: tool, arguments: args },
-    { signal: signal ? AbortSignal.any([signal, timeout]) : timeout },
-  );
-  return resultText(result);
-}
-
 /**
  * Call one Exa MCP tool. With `apiKey` (wizard validation) this opens a
  * one-shot client for the candidate key; otherwise it uses the process
@@ -199,9 +167,9 @@ export async function callExaTool(
   const timeoutMs = options.timeoutMs ?? CALL_TIMEOUT_MS;
 
   if (options.apiKey !== undefined) {
-    const client = await connectClient(options.apiKey);
+    const client = await connectMcp(endpointUrl(options.apiKey));
     try {
-      return await callOnce(client, tool, args, options.signal, timeoutMs);
+      return await callMcpTool(client, tool, args, { signal: options.signal, timeoutMs });
     } finally {
       void client.close().catch(() => {});
     }
@@ -209,41 +177,15 @@ export async function callExaTool(
 
   try {
     const client = await getExaClient();
-    return await callOnce(client, tool, args, options.signal, timeoutMs);
+    return await callMcpTool(client, tool, args, { signal: options.signal, timeoutMs });
   } catch (err) {
-    if (err instanceof ExaToolError) throw err; // server answered: reconnecting won't help
+    if (err instanceof McpToolError) throw err; // server answered: reconnecting won't help
     if (options.signal?.aborted) throw err;
     // Connection-level failure: one fresh connection, then surface.
     await resetExaClient();
     const client = await getExaClient();
-    return await callOnce(client, tool, args, options.signal, timeoutMs);
+    return await callMcpTool(client, tool, args, { signal: options.signal, timeoutMs });
   }
-}
-
-// ── Result extraction ─────────────────────────────────────────────────────────
-
-/** Minimal shape of the SDK's CallToolResult — enough to extract text. */
-export interface ToolResultLike {
-  content?: Array<{ type?: string; text?: unknown }>;
-  isError?: boolean;
-}
-
-/** Turn an SDK callTool result into its text payload; throw on tool errors. */
-export function resultText(result: ToolResultLike): string {
-  if (result.isError) {
-    const msg = result.content
-      ?.find((c) => c.type === "text" && typeof c.text === "string")
-      ?.text;
-    throw new ExaToolError(
-      typeof msg === "string" && msg.trim() ? msg.trim() : "Exa MCP returned an error",
-    );
-  }
-  const text = result.content
-    ?.filter((c) => c.type === "text" && typeof c.text === "string" && c.text.trim().length > 0)
-    .map((c) => c.text as string)
-    .join("\n");
-  if (!text || !text.trim()) throw new ExaToolError("Exa MCP returned empty content");
-  return text;
 }
 
 // ── Issue noting (rate-limit / missing-key hints) ────────────────────────────

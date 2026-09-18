@@ -3,26 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseFormattedResults, parseJsonResults, parseCrawlResults, resultText } from "../exa-mcp.ts";
-
-test("exa: resultText joins text content blocks from an SDK callTool result", () => {
-  assert.equal(
-    resultText({ content: [{ type: "text", text: "Title: A" }, { type: "text", text: "URL: https://a" }] }),
-    "Title: A\nURL: https://a",
-  );
-});
-
-test("exa: resultText throws on isError with the server's message", () => {
-  assert.throws(
-    () => resultText({ content: [{ type: "text", text: "web_search_exa error (401): Invalid API key" }], isError: true }),
-    /Invalid API key/,
-  );
-});
-
-test("exa: resultText throws on empty content", () => {
-  assert.throws(() => resultText({ content: [] }), /empty content/);
-  assert.throws(() => resultText({ content: [{ type: "text", text: "  " }] }), /empty content/);
-});
+import { parseFormattedResults, parseJsonResults, parseCrawlResults } from "../exa-mcp.ts";
 
 test("exa: parses formatted web_search_exa result blocks", () => {
   const text = [
