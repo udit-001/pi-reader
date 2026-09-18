@@ -18,6 +18,7 @@ import { Defuddle } from "defuddle/node";
 import { fetchExaMcp } from "./exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
 import { type FetchContext } from "./handlers/handler.ts";
+import { matchTopic } from "./topic.ts";
 
 const FETCH_TIMEOUT_MS = 30_000;
 const FALLBACK_TIMEOUT_MS = 20_000;
@@ -40,6 +41,8 @@ export interface FetchResult {
 export interface FetchOptions {
   maxChars?: number;
   signal?: AbortSignal;
+  /** Extract sections matching this topic instead of returning full content. */
+  topic?: string;
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
@@ -125,7 +128,19 @@ export async function fetchContent(
   const regularResults = local.map((r) => rescued.get(r.url) ?? r);
 
   // Merge handler results with regular results, preserving original URL order
-  return urls.map((u) => handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
+  const results = urls.map((u) => handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
+
+  // Apply topic extraction if a topic is provided
+  if (options.topic) {
+    return results.map((r) => {
+      if (r.error || !r.content) return r;
+      const extracted = matchTopic(r.content, options.topic!, maxChars);
+      if (!extracted) return r;
+      return { ...r, content: extracted.content };
+    });
+  }
+
+  return results;
 }
 
 // ── Summarization ────────────────────────────────────────────────────────────

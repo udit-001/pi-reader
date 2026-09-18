@@ -98,6 +98,9 @@ const webFetchParams = Type.Object({
   prompt: Type.Optional(Type.String({
     description: "If set, answer this prompt about the page(s) using the current pi model",
   })),
+  topic: Type.Optional(Type.String({
+    description: "Extract sections matching this topic instead of returning full content",
+  })),
   model: Type.Optional(Type.String({
     description: "Override for the summarizing model (provider/model-id). Requires prompt.",
   })),
@@ -260,6 +263,7 @@ export default function piWeb(pi: ExtensionAPI): void {
         const results = await fetchContent(urls, {
           maxChars: params.maxChars,
           signal,
+          topic: params.topic,
         });
 
         // Summarize the pages if a prompt was given.
