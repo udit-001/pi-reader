@@ -33,8 +33,19 @@ import { fetchContent, summarizeContent, type FetchResult } from "./fetch.ts";
 
 const providerSchema = Type.Optional(
   Type.Union(
-    [Type.Literal("auto"), Type.Literal("duckduckgo"), Type.Literal("exa")],
-    { description: "Search provider. Default auto: DuckDuckGo first, Exa MCP fallback." },
+    [
+      Type.Literal("auto"),
+      Type.Literal("duckduckgo"),
+      Type.Literal("exa"),
+      Type.Literal("wikipedia"),
+      Type.Literal("hn"),
+      Type.Literal("context7"),
+    ],
+    {
+      description:
+        "Search provider. 'auto' tries DDG then Exa. " +
+        "'wikipedia' for factual queries, 'hn' for tech opinions, 'context7' for library docs.",
+    },
   ),
 );
 
@@ -162,6 +173,9 @@ export default function piWeb(pi: ExtensionAPI): void {
     description:
       "Search the web. DuckDuckGo by default (free, no key). " +
       "Exa for semantic search when you pass Exa params (category, domains, includeContent). " +
+      "Use 'wikipedia' for factual 'what is X' queries. " +
+      "Use 'hn' for community opinions on tech topics. " +
+      "Use 'context7' for library/framework documentation. " +
       "Describe the page you want to find, not the fact you want to know. " +
       "Examples: 'category:company AI infrastructure startups San Francisco', " +
       "'category:people VP Engineering at OpenAI', 'category:publication sparse attention mechanisms'",
