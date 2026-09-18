@@ -2,9 +2,10 @@
 //
 // The seam is fetchContent(): a list of URLs in, a list of {url,title,content}
 // out. Tiers, tried until one serves the URL: local (verbatim markdown/text/
-// JSON; Defuddle → Markdown for HTML; regex last resort) → Jina Reader →
-// markdown.new (free services for dynamic pages, blocks, PDFs) → Exa MCP
-// (quota'd; last resort). Plus a summarization pass on the current pi model.
+// JSON; Defuddle → Markdown for HTML; Next.js RSC flight decode when
+// Readability finds nothing; regex last resort) → Jina Reader → markdown.new
+// (free services for dynamic pages, blocks, PDFs) → Exa MCP (quota'd; last
+// resort). Plus a summarization pass on the current pi model.
 // Borrowed the "everything becomes Markdown" idea from mitsuhiko's markitdown
 // summarize skill — the caller gets quotable text, never raw HTML.
 //
@@ -17,6 +18,7 @@ import { parseHTML } from "linkedom";
 import { Defuddle } from "defuddle/node";
 import { fetchExaMcp } from "./exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
+import { extractNextFlightContent } from "./handlers/next-flight.ts";
 import { type FetchContext } from "./handlers/handler.ts";
 import { matchTopic } from "./topic.ts";
 import * as cache from "./cache.ts";
@@ -439,6 +441,14 @@ async function fetchOne(url: string, maxChars: number, signal?: AbortSignal): Pr
   const extracted = await convertWithDefuddle(text, url, contentType);
   if (extracted) {
     return { url, title: extracted.title, content: extracted.content.slice(0, maxChars), error: null };
+  }
+
+  // Next.js App Router pages stream their content as RSC flight payloads in
+  // inline scripts; when Readability finds nothing, decode those before
+  // falling back to the regex converter and the remote chain.
+  const flight = extractNextFlightContent(text);
+  if (flight) {
+    return { url, title: flight.title || url, content: flight.content.slice(0, maxChars), error: null };
   }
 
   // Regex converter as last resort.
