@@ -204,7 +204,8 @@ async function githubRepoClone(
 export const githubHandler = defineHandler({
   name: "github",
   description:
-    "GitHub: repo metadata+README, releases, issues/PRs, raw files (light) or shallow clone (full)",
+    "GitHub: repo URLs return a local clone or API view; releases, raw files, and rich " +
+    "issue/PR documents (gh-first, REST fallback)",
   match: (url) =>
     /(^|\.)github\.com$/.test(url.hostname) ||
     url.hostname === "raw.githubusercontent.com" ||

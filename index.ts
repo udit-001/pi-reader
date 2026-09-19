@@ -265,7 +265,9 @@ export default function piWeb(pi: ExtensionAPI): void {
     description:
       "Fetch URL(s) as clean Markdown. Known sites come back structured in one call: " +
       "GitHub (repo and /tree/... URLs return a local checkout — read or bash the path; " +
-      "releases, issues/PRs, and blob URLs return their content), GitLab, package registries " +
+      "releases and blob URLs return their content; issues and PRs return the complete " +
+      "document — state, checks rollup, review verdicts, files, commits, comments — " +
+      "via gh auth when available, so private repos render too), GitLab, package registries " +
       "(npm, PyPI, crates.io, …), Wikipedia, Reddit, Stack Exchange, arXiv, HN (item pages " +
       "and listings), and RSS/Atom feeds (.xml, .rss, .atom, /feed). " +
       "mode:'raw' returns the exact response body with a status and content-type label — " +
