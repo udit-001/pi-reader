@@ -6,7 +6,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 - `provider: "auto"` → `autoChain()`: the single routing seam — a pure function of intent returning `[primary, failure-fallback]` provider names. Exa-shaped params (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback. Pin changes in `test/routing.test.ts`.
 - For news intent (`category: "news"`) the chain is the fidelity ladder's first two rungs: Exa semantic news primary when alive; on an Exa *failure* (quota death, missing key) the news vertical takes over with dates and outlets, and its own degrade lands on text. Fallback fires on provider failure (throw) only — never on empty results. A degraded response carries `degraded: true` on the `SearchResponse`, and `shouldCacheSearch()` refuses to cache it — so a news-intent query that fell all the way to text is not pinned for the TTL and the ladder recovers.
-- `wikipedia`, `hn`, `context7`, and `news` are free, keyless, explicit-only — never chosen as the auto *primary* and never in the fallback chain for non-news intent. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
+- `wikipedia`, `hn`, `context7`, `news`, and `images` are free, keyless, explicit-only — never chosen as the auto *primary* and never in the fallback chain for non-news intent. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
 - Exa runs one of two calls: a plain query → `searchExaMcp`; any Exa-shaped param → `searchExaAdvanced`.
 - Successful results are cached for 1 hour (key: query + provider + options). Exa results are never cached — they cost quota.
 
@@ -24,6 +24,14 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 - Normalization is verbatim — invents nothing: `date`→`publishedDate` (clean ISO and source junk like `"Opinion2 days ago"` pass through unmodified), `body`→`snippet`, `source` outlet→`author`, `image` dropped, url-less rows dropped. `domains` is not supported on the news path.
 - Degrade, don't fail: uvx missing or the ddgs news call failing → text search (same query, same window) with a visible `[News: …]` notice on the last result; the provider label then reports `duckduckgo` so a degraded answer never masquerades as news.
 - The answer builder and the tool's result lines/details render `publishedDate` and `author` for every provider (news and Exa alike).
+
+## Images vertical (`search/images.ts`)
+
+- `provider: "images"` → `uvx ddgs images` (free, keyless). Explicit-only — it lives outside `autoProviders`, and `AutoProviderName` (the chain's key type) doesn't include it, so the compiler holds it out of the auto chain.
+- Normalization is agent-POV: `image`→`url` (the direct, hotlinkable origin — the thumbnail and the source-page url are dropped), `title` verbatim, and dims+source collapse into the snippet (`W×H · via source`; each token optional, non-numeric dims ignored, image-less rows dropped). The default renderer needs no changes.
+- No degrade-to-text: text results cannot substitute for images, so failure surfaces as an in-band error instead of fake results.
+- `license` (`share|commercial|modify`) maps to the ddgs `-lic` request filter via `LICENSE_TO_FLAG` (values verified live); `"any"` is the server default, so no flag is emitted.
+- The images engines reject ddgs `-t` outright (`KeyError` on every backend, verified live — the CLI `--help` lies), so `buildDdgsArgs` drops timelimit on the images path and `recency` is documented as unsupported in the schema description.
 
 ## Exa MCP (`search/exa-mcp.ts`)
 

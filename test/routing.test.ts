@@ -43,6 +43,22 @@ test("autoChain: non-news intents keep today's fallback pair", () => {
   assert.deepEqual(autoChain({ domains: ["github.com"] }), ["exa", "duckduckgo"]);
 });
 
+test("autoChain: images intent never enters the chain — explicit provider only", () => {
+  // `provider: "images"` is a deliberate dispatch, not an intent the router
+  // guesses. No param combination routes to or falls back to images.
+  for (const options of [
+    {},
+    { category: "news" as const },
+    { category: "github" as const },
+    { includeContent: true, domains: ["github.com"] },
+    { license: "commercial" as const },
+  ]) {
+    const [primary, fallback] = autoChain(options);
+    assert.notEqual(primary, "images");
+    assert.notEqual(fallback, "images");
+  }
+});
+
 // ── shouldCacheSearch — the cache-honesty decision ───────────────────────────
 
 const ok = (over: Partial<SearchResponse> = {}): SearchResponse => ({
@@ -56,6 +72,7 @@ test("shouldCacheSearch: successful free-provider results are cached", () => {
   assert.equal(shouldCacheSearch(ok()), true);
   assert.equal(shouldCacheSearch(ok({ provider: "news" })), true);
   assert.equal(shouldCacheSearch(ok({ provider: "duckduckgo" })), true);
+  assert.equal(shouldCacheSearch(ok({ provider: "images" })), true);
 });
 
 test("shouldCacheSearch: Exa results are never cached — they cost quota", () => {

@@ -7,6 +7,7 @@
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
 import { searchNews } from "./news.ts";
+import { searchImages } from "./images.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
 import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news";
+export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images";
 
 export type ExaCategory =
   | "company"
@@ -32,6 +33,8 @@ export interface SearchOptions {
   recency?: "day" | "week" | "month" | "year";
   domains?: string[];
   page?: number;
+  /** Images-vertical license filter, request-time on ddgs (-lic). */
+  license?: "any" | "share" | "commercial" | "modify";
   category?: ExaCategory;
   includeContent?: boolean;
   includeSummary?: boolean;
@@ -104,6 +107,18 @@ const autoProviders: Record<AutoProviderName, SearchProvider> = {
   news: newsProvider,
 };
 
+// The images vertical: ddgs images subcommand — free, keyless. Explicit-only:
+// never chosen by auto-routing, so it lives outside autoProviders (whose key
+// type AutoProviderName the compiler holds to the chain's vocabulary) and is
+// dispatched only when the agent names it. No degrade-to-text: text results
+// cannot substitute for images, so failure surfaces as an in-band error.
+const imagesProvider: SearchProvider = {
+  async search(query, options) {
+    const results = await searchImages(query, options);
+    return { answer: buildAnswer(results), results, provider: "images" };
+  },
+};
+
 // Free providers: Wikipedia, HN, Context7 (no API key needed)
 // Used as fallback when DDG and Exa both fail.
 const freeProviders: SearchProvider = {
@@ -160,6 +175,7 @@ function getSearchCacheKey(query: string, options: SearchOptions & { provider?: 
     options.provider ?? "auto",
     options.category ?? "",
     options.recency ?? "",
+    options.license ?? "",
     (options.domains ?? []).sort().join(","),
     String(options.page ?? 1),
     String(options.includeContent ?? false),
@@ -232,6 +248,8 @@ export async function webSearch(
     response = await exaProvider.search(query, options);
   } else if (requested === "news") {
     response = await newsProvider.search(query, options);
+  } else if (requested === "images") {
+    response = await imagesProvider.search(query, options);
   } else if (requested === "wikipedia" || requested === "hn" || requested === "context7") {
     // Domain-specific providers — only when explicitly requested
     response = await freeProviders.search(query, { ...options, source: requested } as any);

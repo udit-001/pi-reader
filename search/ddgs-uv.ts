@@ -132,16 +132,35 @@ export function timelimitFor(recency?: SearchOptions["recency"]): string | null 
   return REGENCY_TO_TIMELIMIT[recency] ?? null;
 }
 
+// ── license → ddgs -lic ─────────────────────────────────────────────────────
+
+// SearchOptions.license → ddgs images `-lic` values (verified live:
+// `ddgs images --help` accepts any|Public|Share|ShareCommercially|Modify|
+// ModifyCommercially). "any" is the server default — no flag is emitted.
+export const LICENSE_TO_FLAG: Record<string, string> = {
+  share: "Share",
+  commercial: "ShareCommercially",
+  modify: "Modify",
+};
+
+export function licenseFlagFor(license?: SearchOptions["license"]): string | null {
+  if (!license || license === "any") return null;
+  return LICENSE_TO_FLAG[license] ?? null;
+}
+
 // ── ddgs command plan ────────────────────────────────────────────────────────────────────────────────
 
 export interface DdgsArgs {
-  /** ddgs vertical: "text" or "news". Same flag set for both, verified live
-   *  (`ddgs news --help` accepts -q/-t/-p/-m/-o). */
-  subcommand: "text" | "news";
+  /** ddgs vertical: "text", "news", or "images". Same flag set for text and
+   *  news, verified live (`ddgs news --help` accepts -q/-t/-p/-m/-o); images
+   *  adds -lic (license filter, verified live). */
+  subcommand: "text" | "news" | "images";
   query: string;
   maxResults: number;
   timelimit?: string | null;
   page?: number;
+  /** ddgs license_image filter (-lic) for the images vertical. */
+  license?: string | null;
   uvx: string;
   output: string;
 }
@@ -152,8 +171,12 @@ export interface DdgsArgs {
  *  exported for tests. */
 export function buildDdgsArgs(a: DdgsArgs): string[] {
   const parts = [a.uvx, "ddgs", a.subcommand, "-q", a.query];
-  if (a.timelimit) parts.push("-t", a.timelimit);
+  // Images engines reject -t outright (KeyError, verified live on every
+  // backend in ddgs CLI 9.x despite the --help text) — emitting it would kill
+  // every recency-filtered images query, so the plan drops it there.
+  if (a.timelimit && a.subcommand !== "images") parts.push("-t", a.timelimit);
   if (a.page && a.page > 1) parts.push("-p", String(a.page));
+  if (a.license) parts.push("-lic", a.license);
   parts.push("-m", String(a.maxResults));
   parts.push("-o", a.output);
   return parts;
@@ -162,7 +185,9 @@ export function buildDdgsArgs(a: DdgsArgs): string[] {
 // ── ddgs search ─────────────────────────────────────────────────────────────
 
 /** A raw row from ddgs JSON output. Text rows carry `href`; news rows carry
- *  `url`, `date`, `source`, `image` — normalization happens above this seam. */
+ *  `url`, `date`, `source`, `image`; images rows carry `image`, `thumbnail`,
+ *  `width`, `height` (string-typed, verified live) — normalization happens
+ *  above this seam. */
 export interface DdgsRawRow {
   title?: string;
   href?: string;
@@ -171,6 +196,9 @@ export interface DdgsRawRow {
   date?: string;
   source?: string;
   image?: string;
+  thumbnail?: string;
+  width?: string;
+  height?: string;
 }
 
 /** Run `uvx ddgs <subcommand>` and return the parsed JSON rows. Sync
@@ -179,7 +207,7 @@ export interface DdgsRawRow {
 export function runDdgsJson(
   query: string,
   options: SearchOptions = {},
-  subcommand: "text" | "news",
+  subcommand: "text" | "news" | "images",
 ): DdgsRawRow[] {
   const maxResults = options.numResults ?? 10;
   const uvx = uvxBinary();
@@ -214,6 +242,7 @@ export function runDdgsJson(
       maxResults,
       timelimit: timelimitFor(options.recency),
       page: options.page,
+      license: licenseFlagFor(options.license),
       uvx,
       output: tmpFile,
     }).slice(1), {
@@ -245,4 +274,16 @@ export function newsViaDdgs(
   options: SearchOptions = {},
 ): DdgsRawRow[] {
   return runDdgsJson(query, options, "news");
+}
+
+/** The images vertical, raw: rows normalized by the caller (search/images.ts)
+ *  so the agent-POV mapping (image→url, dims+source→snippet) is testable there. */
+export function imagesViaDdgs(
+  query: string,
+  options: SearchOptions = {},
+): DdgsRawRow[] {
+  // The images vertical takes no domains filter (schema: "domains is not
+  // supported") — strip it so the shared seam never applies untested
+  // site: operators to an image query.
+  return runDdgsJson(query, { ...options, domains: undefined }, "images");
 }

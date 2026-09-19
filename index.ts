@@ -43,6 +43,7 @@ const providerSchema = Type.Optional(
       Type.Literal("duckduckgo"),
       Type.Literal("exa"),
       Type.Literal("news"),
+      Type.Literal("images"),
       Type.Literal("wikipedia"),
       Type.Literal("hn"),
       Type.Literal("context7"),
@@ -55,7 +56,25 @@ const providerSchema = Type.Optional(
         "articles from free keyword news engines; honors query, recency (d/w/m/y), and page; " +
         "domains is not supported; degrades to text search with a visible notice when unavailable. " +
         "That is the free path — category: 'news' instead runs Exa semantic news (better relevance, uses Exa quota). " +
+        "'images' for image discovery ('find a photo of X') — hotlinkable image URLs with dimensions and source. " +
+        "Auto never selects it — pass this provider to get images. Each result's URL is the " +
+        "hotlinkable image itself (not a page about it); dimensions (W×H) and source domain " +
+        "ride in the snippet, so one result is enough to embed, download, or vision-check it — " +
+        "no second lookup. Honors query, page, and license; recency and domains are not supported. " +
         "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
+    },
+  ),
+);
+
+const licenseSchema = Type.Optional(
+  Type.Union(
+    [Type.Literal("any"), Type.Literal("share"), Type.Literal("commercial"), Type.Literal("modify")],
+    {
+      description:
+        "License filter, images provider only (request-time on the search engine). " +
+        "'share' for shareable, 'commercial' for commercial use, 'modify' for modifiable; " +
+        "'any' is the default. When an image will be embedded in a deliverable, filter " +
+        "here rather than vetting each result's license by hand.",
     },
   ),
 );
@@ -63,7 +82,7 @@ const providerSchema = Type.Optional(
 const recencySchema = Type.Optional(
   Type.Union(
     [Type.Literal("day"), Type.Literal("week"), Type.Literal("month"), Type.Literal("year")],
-    { description: "Only results published within this window. DuckDuckGo, the news vertical, and Exa honor it (DDG filters at the source, no dates shown; news and Exa show dates); other providers ignore it" },
+    { description: "Only results published within this window. DuckDuckGo, the news vertical, and Exa honor it (DDG filters at the source, no dates shown; news and Exa show dates); images does not support it; other providers ignore it" },
   ),
 );
 
@@ -86,9 +105,10 @@ const webSearchParams = Type.Object({
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo and news; other providers ignore it.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, and images; other providers ignore it.",
   })),
   recency: recencySchema,
+  license: licenseSchema,
   domains: domainSchema,
   category: Type.Optional(Type.Union(
     exaCategoryList().map((c) => Type.Literal(c)) as [ReturnType<typeof Type.Literal<string>>, ...ReturnType<typeof Type.Literal<string>>[]],
@@ -209,7 +229,9 @@ export default function piWeb(pi: ExtensionAPI): void {
       "this week about X') — dated, outlet-attributed results from free keyword news engines " +
       "(category: 'news' instead uses Exa semantic, quota'd). 'wikipedia' for factual " +
       "'what is X' queries; 'hn' for HN discussions (current listings come from web_fetch on " +
-      "news.ycombinator.com); 'context7' for library docs. Describe the page you want to " +
+      "news.ycombinator.com); 'context7' for library docs. provider: 'images' for image " +
+      "discovery ('find a photo of X') — hotlinkable image URLs with dimensions and source. " +
+      "Describe the page you want to " +
       "find, not the fact you want to know.",
     promptSnippet: "Use for web research questions.",
     parameters: webSearchParams,
@@ -230,6 +252,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           recency: params.recency,
           domains: params.domains,
           page: params.page,
+          license: params.license,
           category: params.category as "company" | "publication" | "news" | "personal site" | "people" | "pdf" | "github" | "financial report" | undefined,
           includeContent: params.includeContent,
           includeSummary: params.includeSummary,

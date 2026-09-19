@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, buildDdgsArgs } from "../search/ddgs-uv.ts";
+import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, licenseFlagFor, buildDdgsArgs } from "../search/ddgs-uv.ts";
 import { join } from "node:path";
 
 test("ddgs-uv: hasUvx returns a boolean", () => {
@@ -90,6 +90,19 @@ test("timelimitFor returns null when no recency is given", () => {
   assert.equal(timelimitFor(undefined), null);
 });
 
+// ── license → ddgs -lic (images vertical) ───────────────────────────────────
+
+test("licenseFlagFor maps the agent-facing values to the live ddgs -lic values", () => {
+  assert.equal(licenseFlagFor("share"), "Share");
+  assert.equal(licenseFlagFor("commercial"), "ShareCommercially");
+  assert.equal(licenseFlagFor("modify"), "Modify");
+});
+
+test("licenseFlagFor emits no flag for 'any' (server default) or unset", () => {
+  assert.equal(licenseFlagFor("any"), null);
+  assert.equal(licenseFlagFor(undefined), null);
+});
+
 // ── buildDdgsArgs — the pure argv plan for `uvx ddgs text` ──────────────
 
 const BASE_ARGS = { subcommand: "text" as const, query: "rust async", maxResults: 5, uvx: "/usr/bin/uvx", output: "/tmp/out.json" };
@@ -129,6 +142,22 @@ test("buildDdgsArgs omits -p when page is 1 or unset", () => {
 test("buildDdgsArgs includes -p for pages beyond the first", () => {
   const args = buildDdgsArgs({ ...BASE_ARGS, page: 3 });
   assert.deepEqual([flagValue(args, "-p")], ["3"]);
+});
+
+test("buildDdgsArgs runs the images subcommand with the license filter bound", () => {
+  const args = buildDdgsArgs({ ...BASE_ARGS, subcommand: "images", license: "ShareCommercially" });
+  assert.deepEqual(args.slice(1, 3), ["ddgs", "images"]);
+  assert.deepEqual([flagValue(args, "-lic")], ["ShareCommercially"]);
+});
+
+test("buildDdgsArgs drops -t on the images path — engines reject it (KeyError, verified live)", () => {
+  const args = buildDdgsArgs({ ...BASE_ARGS, subcommand: "images", timelimit: "w" });
+  assert.ok(!args.includes("-t"), `expected no -t flag, got: ${args.join(" ")}`);
+});
+
+test("buildDdgsArgs omits -lic when no license filter is given", () => {
+  const args = buildDdgsArgs({ ...BASE_ARGS, subcommand: "images" });
+  assert.ok(!args.includes("-lic"), `expected no -lic flag, got: ${args.join(" ")}`);
 });
 
 test("buildDdgsArgs keeps the query as ONE argv slot — no shell quoting or escaping", () => {
