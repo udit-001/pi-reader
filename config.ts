@@ -49,8 +49,9 @@ export function loadConfig(path: string = configPath()): PiWebConfig | null {
 }
 
 export function saveConfig(path: string, config: PiWebConfig): void {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = join(dirname(path), `.${Math.random().toString(16).slice(2)}.pi-reader.json.tmp`);
-  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  // 0600: this file carries the Exa API key.
+  writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
   renameSync(tmp, path);
 }

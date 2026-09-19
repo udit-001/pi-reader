@@ -118,7 +118,7 @@ export function store(
   data: { handler: string; kind: string; title?: string; content: string; hasTree: boolean },
 ): CacheEntry {
   const dir = entryDir(root, url);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Demotion: a light entry has no tree, so an earlier clone in this dir goes.
   // Safe when a handler just wrote one, since hasTree is true in that case.
   // ponytail: a full fetch that throws before reaching here can leave a partial tree beside the old content; the next store or prune clears it.
@@ -133,8 +133,9 @@ export function store(
     contentBytes: Buffer.byteLength(data.content, "utf8"),
     hasTree: data.hasTree,
   };
-  writeFileSync(join(dir, "content.md"), data.content, "utf8");
-  writeFileSync(join(dir, "meta.json"), JSON.stringify(meta, null, 2), "utf8");
+  // 0600: cached fetches can include private or internal-service responses.
+  writeFileSync(join(dir, "content.md"), data.content, { encoding: "utf8", mode: 0o600 });
+  writeFileSync(join(dir, "meta.json"), JSON.stringify(meta, null, 2), { encoding: "utf8", mode: 0o600 });
   // Tree size is computed once here so stats never walk a clone again.
   const treeBytes = data.hasTree ? safeDirSize(join(dir, "tree")) : 0;
   cachedb.upsert(root, dir, meta, data.content, treeBytes);
