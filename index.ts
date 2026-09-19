@@ -67,9 +67,7 @@ const domainSchema = Type.Optional(
 
 const webSearchParams = Type.Object({
   query: Type.String({
-    description:
-      "Describe the page you want to find, not the fact you want to know. " +
-      "Example: 'category:company AI infrastructure startups San Francisco'.",
+    description: "Example: 'category:company AI infrastructure startups San Francisco'.",
   }),
   provider: providerSchema,
   numResults: Type.Optional(Type.Integer({
@@ -180,14 +178,12 @@ export default function piWeb(pi: ExtensionAPI): void {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the web. DuckDuckGo by default (free, no key). " +
-      "Exa for semantic search when you pass Exa params (category, domains, includeContent). " +
-      "Use 'wikipedia' for factual 'what is X' queries. " +
-      "Use 'hn' to keyword-search Hacker News discussions; current listings (front page, latest Show HN posts) " +
-      "come from fetching news.ycombinator.com with web_fetch. " +
-      "Use 'context7' for library/framework documentation. " +
-      "Describe the page you want to find, not the fact you want to know.",
-    promptSnippet: "Use for web research questions. Describe the target page, not the information you want.",
+      "Search the web. DuckDuckGo by default (free, no key); Exa for semantic search " +
+      "when you pass Exa params (category, domains, includeContent). 'wikipedia' for factual " +
+      "'what is X' queries; 'hn' for HN discussions (current listings come from web_fetch on " +
+      "news.ycombinator.com); 'context7' for library docs. Describe the page you want to " +
+      "find, not the fact you want to know.",
+    promptSnippet: "Use for web research questions.",
     parameters: webSearchParams,
     async execute(
       _callId: string,
@@ -267,25 +263,19 @@ export default function piWeb(pi: ExtensionAPI): void {
     name: "web_fetch",
     label: "Fetch as Markdown",
     description:
-      "Fetch a URL and return clean Markdown, not raw HTML. " +
-      "Known sites return structured Markdown automatically: a GitHub repo URL includes a metadata header " +
-      "(description, stars, forks, language, license, default branch, homepage, topics) above the full README, " +
-      "so it covers 'fetch details about <repo>' requests in one call. " +
-      "GitHub /releases, /releases/latest, and /releases/tag/<tag> URLs return release notes and assets; " +
-      "issue and PR URLs return the full thread with comments; blob URLs return the raw file. " +
-      "Hacker News item URLs return the story with top comments; category listing pages " +
-      "(front page, /newest, /show, /ask, /jobs — e.g. 'latest Show HN posts') return the current story list " +
-      "with points and comment counts. " +
-      "GitLab, package registries (npm, PyPI, crates.io, and more), Wikipedia, Reddit, " +
-      "Stack Exchange, and arXiv are structured the same way. " +
-      "RSS/Atom feed URLs (ending in .xml, .rss, .atom, or /feed) return the channel title and recent posts. " +
-      "Add mode: 'raw' to get the exact response body — HTML/XML/JSON with a status and content-type label — " +
+      "Fetch URL(s) as clean Markdown. Known sites come back structured in one call: " +
+      "GitHub (repo and /tree/... URLs return a local checkout — read or bash the path; " +
+      "releases, issues/PRs, and blob URLs return their content), GitLab, package registries " +
+      "(npm, PyPI, crates.io, …), Wikipedia, Reddit, Stack Exchange, arXiv, HN (item pages " +
+      "and listings), and RSS/Atom feeds (.xml, .rss, .atom, /feed). " +
+      "mode:'raw' returns the exact response body with a status and content-type label — " +
       "for metadata inspection, structured data in pages, or debugging extraction. " +
-      "Add topic to extract only relevant sections from long pages. " +
-      "Add prompt to answer a question about the fetched content.",
+      "topic extracts just the matching sections of long pages. " +
+      "prompt answers a question about the fetched content using the current model. " +
+      "Accepts one URL string or an array of URLs.",
     promptSnippet:
-      "Use to read full page content from known URLs (docs, articles, issues). " +
-      "GitHub repo URLs include metadata + README in one call, and /releases URLs return release details.",
+      "Use to read full page content from known URLs (docs, articles, issues); " +
+      "GitHub repos return a local checkout in one call.",
     parameters: webFetchParams,
     async execute(
       _callId: string,
