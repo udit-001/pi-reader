@@ -56,7 +56,7 @@ const providerSchema = Type.Optional(
 const recencySchema = Type.Optional(
   Type.Union(
     [Type.Literal("day"), Type.Literal("week"), Type.Literal("month"), Type.Literal("year")],
-    { description: "Only results published within this window" },
+    { description: "Only results published within this window. DuckDuckGo and Exa honor it (DDG filters at the source, no dates shown; Exa shows Published dates); other providers ignore it" },
   ),
 );
 
@@ -74,7 +74,7 @@ const webSearchParams = Type.Object({
   numResults: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 25,
-    description: "Results to return. Default: 10 with category, 15 without.",
+    description: "Results to return. Default: 10 with category, 15 without. Returns the top N for the query — to widen the net, change the query or provider.",
   })),
   recency: recencySchema,
   domains: domainSchema,
@@ -184,8 +184,9 @@ export default function piWeb(pi: ExtensionAPI): void {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the web. DuckDuckGo by default (free, no key); Exa for semantic search " +
-      "when you pass Exa params (category, domains, includeContent). 'wikipedia' for factual " +
+      "Search the web. DuckDuckGo by default (free, no key); Exa for semantic search — " +
+      "pass category, includeContent, or domains and auto routes there (domains also works " +
+      "via site: operators on DuckDuckGo). 'wikipedia' for factual " +
       "'what is X' queries; 'hn' for HN discussions (current listings come from web_fetch on " +
       "news.ycombinator.com); 'context7' for library docs. Describe the page you want to " +
       "find, not the fact you want to know.",
