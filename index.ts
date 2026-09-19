@@ -51,20 +51,22 @@ const providerSchema = Type.Optional(
     ],
     {
       description:
-        "Search provider. 'auto' tries DDG then Exa; for category: 'news', an Exa failure falls " +
+        "Search provider. The verticals (news, images, videos, wikipedia, hn, context7) never run " +
+        "under 'auto' — name one to use it. " +
+        "'auto' tries DDG then Exa; for category: 'news', an Exa failure falls " +
         "to the free news vertical (dated, keyword) before generic text. " +
         "'news' for news coverage ('what happened this week about X') — dated, outlet-attributed " +
         "articles from free keyword news engines; honors query, recency (d/w/m/y), and page; " +
         "domains is not supported; degrades to text search with a visible notice when unavailable. " +
         "That is the free path — category: 'news' instead runs Exa semantic news (better relevance, uses Exa quota). " +
         "'images' for image discovery ('find a photo of X') — hotlinkable image URLs with dimensions and source. " +
-        "Auto never selects it — pass this provider to get images. Each result's URL is the " +
+        "Each result's URL is the " +
         "hotlinkable image itself (not a page about it); dimensions (W×H) and source domain " +
-        "ride in the snippet, so one result is enough to embed, download, or vision-check it — " +
-        "no second lookup. Honors query, page, and license; recency and domains are not supported. " +
+        "ride in the snippet — embed, download, or vision-check from the rendered line, no second lookup. " +
+        "Honors query, page, and license; recency and domains are not supported. " +
         "'videos' for video discovery ('find a video about X') — watch URLs with duration, " +
         "view count, and uploader in the snippet, plus a publication date — pick one and hand " +
-        "the URL to a watcher. Auto never selects it — pass this provider to get videos. " +
+        "the URL to a watcher. " +
         "Honors query, recency (d/w/m/y), and page; domains is not supported. " +
         "If videos are unavailable, fall back to text search with domains: ['youtube.com']. " +
         "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
@@ -94,7 +96,7 @@ const recencySchema = Type.Optional(
 
 const domainSchema = Type.Optional(
   Type.Array(Type.String(), {
-    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Not supported on the news, images, and videos paths",
+    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Binds only on the providers whose branch lists it",
   }),
 );
 
