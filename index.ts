@@ -173,8 +173,13 @@ export default function piWeb(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     // Warm the ddgs path in the background: moves the one-time uv/ddgs
     // download off the first search. Fire-and-forget; failure is silent —
-    // search falls back to HTML scraping as before.
-    void warmDdgs();
+    // search falls back to HTML scraping as before. The install itself is
+    // `curl | sh` from astral.sh — never silent: the user is told it ran.
+    void warmDdgs(undefined, () =>
+      ctx.ui.notify(
+        "Installed uv for DuckDuckGo search. Source: the astral.sh installer (curl | sh). Uninstall uv to fall back to HTML scraping.",
+        "info",
+      ));
 
     if (!detectMcpDuplicate()) return;
     const config = loadConfig() ?? { version: 1 };

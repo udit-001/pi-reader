@@ -152,3 +152,26 @@ test("ddgs-uv: warmDdgs runs at most once per process and never rejects", async 
   await warmDdgs(failFirst); // second call is a no-op (guard)
   assert.equal(calls.length, afterFirst);
 });
+
+test("ddgs-uv: warmFlow notifies only when the install actually ran", async () => {
+  // probes already warm: no install, no notify
+  let notified = 0;
+  await warmFlow(async () => {}, ["ok --help"], "INSTALL", () => { notified++; });
+  assert.equal(notified, 0);
+  // install fails: no notify
+  await warmFlow(
+    async (cmd) => { if (cmd === "INSTALL") throw new Error("fail"); throw new Error("no probe"); },
+    ["PROBE-1"],
+    "INSTALL",
+    () => { notified++; },
+  );
+  assert.equal(notified, 0);
+  // install succeeds: notify once
+  await warmFlow(
+    async (cmd) => { if (cmd === "INSTALL") return; throw new Error("no probe"); },
+    ["PROBE-1"],
+    "INSTALL",
+    () => { notified++; },
+  );
+  assert.equal(notified, 1);
+});

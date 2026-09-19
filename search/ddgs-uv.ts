@@ -79,6 +79,7 @@ export async function warmFlow(
   run: (cmd: string) => Promise<unknown>,
   probes: string[],
   installCmd: string,
+  onInstall?: () => void,
 ): Promise<void> {
   for (const probe of probes) {
     try {
@@ -92,6 +93,7 @@ export async function warmFlow(
   } catch {
     return; // degraded is fine — the HTML fallback covers search
   }
+  onInstall?.();
   const primary = probes[0];
   if (!primary) return;
   try {
@@ -106,10 +108,11 @@ export async function warmFlow(
 // Returns the promise so tests can await completion; callers may ignore it.
 export function warmDdgs(
   run: (cmd: string) => Promise<unknown> = runQuietly,
+  onInstall?: () => void,
 ): Promise<void> {
   if (warmStarted) return Promise.resolve();
   warmStarted = true;
-  return warmFlow(run, probeCommands(process.platform, homedir()), uvInstallCommand(process.platform));
+  return warmFlow(run, probeCommands(process.platform, homedir()), uvInstallCommand(process.platform), onInstall);
 }
 
 // ── recency → ddgs timelimit ─────────────────────────────────────────────────────────────────────────
