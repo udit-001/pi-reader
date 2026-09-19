@@ -6,7 +6,7 @@
 
 import { execFileSync, execSync, exec } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -172,7 +172,7 @@ export interface DdgsRawRow {
 
 /** Run `uvx ddgs <subcommand>` and return the parsed JSON rows. Sync
  *  (execFileSync), argv-array exec — the query stays one data slot. Throws on
- *  any failure; tmp file is removed in `finally`. */
+ *  any failure; the temp dir is removed in `finally`. */
 export function runDdgsJson(
   query: string,
   options: SearchOptions = {},
@@ -180,7 +180,11 @@ export function runDdgsJson(
 ): DdgsRawRow[] {
   const maxResults = options.numResults ?? 10;
   const uvx = uvxBinary();
-  const tmpFile = join(tmpdir(), `ddgs-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  // Private per-call dir (mkdtemp: exclusive random suffix, 0700) — the child
+  // writes by path, so an O_EXCL pre-open is not an option. This keeps a local
+  // user from pre-placing a symlink at a guessable path to feed fake results.
+  const tmpDir = mkdtempSync(join(tmpdir(), "ddgs-"));
+  const tmpFile = join(tmpDir, "results.json");
 
   try {
     // Build query with site: operators
@@ -216,7 +220,7 @@ export function runDdgsJson(
 
     return JSON.parse(readFileSync(tmpFile, "utf-8")) as DdgsRawRow[];
   } finally {
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+    rmSync(tmpDir, { recursive: true, force: true });
   }
 }
 
