@@ -120,7 +120,7 @@ const webFetchParams = Type.Object({
   maxChars: Type.Optional(Type.Integer({
     minimum: 500,
     maximum: 100_000,
-    description: "Max characters per page (default: 3000)",
+    description: "Max characters per page (default: 20000)",
   })),
   mode: Type.Optional(Type.Union([Type.Literal("markdown"), Type.Literal("raw")], {
     description:
