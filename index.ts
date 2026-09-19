@@ -63,10 +63,10 @@ const providerSchema = Type.Optional(
         "ride in the snippet, so one result is enough to embed, download, or vision-check it — " +
         "no second lookup. Honors query, page, and license; recency and domains are not supported. " +
         "'videos' for video discovery ('find a video about X') — watch URLs with duration, " +
-        "view count, and uploader in the snippet, so one result is enough to pick a video and " +
-        "hand the URL to a fetcher/watcher. Auto never selects it — pass this provider to get videos. " +
-        "Honors query, recency (d/w/m/y), and page; domains is not supported; fails with an " +
-        "actionable error when unavailable (text search with domains: ['youtube.com'] is the workaround). " +
+        "view count, and uploader in the snippet, plus a publication date — pick one and hand " +
+        "the URL to a watcher. Auto never selects it — pass this provider to get videos. " +
+        "Honors query, recency (d/w/m/y), and page; domains is not supported. " +
+        "If videos are unavailable, fall back to text search with domains: ['youtube.com']. " +
         "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
     },
   ),
@@ -88,7 +88,7 @@ const licenseSchema = Type.Optional(
 const recencySchema = Type.Optional(
   Type.Union(
     [Type.Literal("day"), Type.Literal("week"), Type.Literal("month"), Type.Literal("year")],
-    { description: "Only results published within this window. DuckDuckGo, the news vertical, the videos vertical, and Exa honor it (DDG filters at the source, no dates shown; news and Exa show dates); images does not support it; other providers ignore it" },
+    { description: "Only results published within this window. DuckDuckGo, the news vertical, the videos vertical, and Exa honor it (DDG filters at the source, no dates shown; news, videos, and Exa show dates); images does not support it; other providers ignore it" },
   ),
 );
 
