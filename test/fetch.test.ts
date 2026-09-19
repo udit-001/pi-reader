@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel } from "../fetch.ts";
+import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel } from "../fetch/fetch.ts";
 
 test("fetch: converts a simple article to clean markdown", () => {
   const html = `

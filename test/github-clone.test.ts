@@ -16,7 +16,7 @@ import {
   renderRepoView,
   validateRepoRef,
   type CloneExec,
-} from "../github-clone.ts";
+} from "../fetch/github-clone.ts";
 
 // ── Fake exec runner ─────────────────────────────────────────────────────────
 

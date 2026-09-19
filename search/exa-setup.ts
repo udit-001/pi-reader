@@ -37,7 +37,7 @@ import {
   exaKeySource,
   resetExaKeyCache,
 } from "./exa-mcp.ts";
-import { configPath, loadConfig, saveConfig, type PiWebConfig } from "./config.ts";
+import { configPath, loadConfig, saveConfig, type PiWebConfig } from "../config.ts";
 
 const DASHBOARD_URL = "https://dashboard.exa.ai/api-keys";
 const VALIDATE_TIMEOUT_MS = 20_000;

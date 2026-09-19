@@ -17,13 +17,13 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
 import { parseHTML } from "linkedom";
 import { Defuddle } from "defuddle/node";
-import { fetchExaMcp } from "./exa-mcp.ts";
+import { fetchExaMcp } from "../search/exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
 import { extractNextFlightContent } from "./handlers/next-flight.ts";
 import { curlGetText } from "./curl-fetch.ts";
 import { assertPublicTarget, MAX_REDIRECTS, readBodyCapped, redirectTarget, FetchError, type FetchContext } from "./handlers/handler.ts";
 import { matchTopic } from "./topic.ts";
-import * as cache from "./cache.ts";
+import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
 import { homedir } from "node:os";
 

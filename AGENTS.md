@@ -14,18 +14,18 @@ Typecheck and test must both pass before any commit. No build step — TypeScrip
 
 ## Architecture
 
-**Seam model.** Two real adapters (DuckDuckGo, Exa MCP) behind a `SearchProvider` interface in `search.ts`. The entry (`index.ts`) is thin — registers tools, maps params, formats output. Depth lives in the deep modules:
+**Seam model.** Two real adapters (DuckDuckGo, Exa MCP) behind a `SearchProvider` interface in `search/search.ts`. The entry (`index.ts`) is thin — registers tools, maps params, formats output. Depth lives in the deep modules:
 
 | Module | Seam |
 |--------|------|
-| `search.ts` | Provider seam: routing, fallback, answer synthesis |
-| `fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
+| `search/search.ts` | Provider seam: routing, fallback, answer synthesis |
+| `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
 | `config.ts` | Config reads/writes: `~/.pi/agent/pi-reader.json`, atomic |
-| `exa-mcp.ts` | Exa MCP transport: JSON-RPC, SSE, key resolution |
-| `exa-setup.ts` | Wizard TUI: key validation, save, import-from-mcp.json |
-| `exa-issue.ts` | Shared state: classify Exa failures for one-shot hints |
+| `search/exa-mcp.ts` | Exa MCP transport: JSON-RPC, SSE, key resolution |
+| `search/exa-setup.ts` | Wizard TUI: key validation, save, import-from-mcp.json |
+| `search/exa-issue.ts` | Shared state: classify Exa failures for one-shot hints |
 
-**Two adapters = real seam.** One adapter is hypothetical; two is the proof. If you add a third provider, satisfy the `SearchProvider` interface in `search.ts` and register it in the provider map. The auto-router in `resolveAutoRoute()` decides order by intent params — it's a pure function, test it separately.
+**Two adapters = real seam.** One adapter is hypothetical; two is the proof. If you add a third provider, satisfy the `SearchProvider` interface in `search/search.ts` and register it in the provider map. The auto-router in `resolveAutoRoute()` decides order by intent params — it's a pure function, test it separately.
 
 **Fetch chain priority:** local (Defuddle, regex) → Jina Reader (free, renders JS) → markdown.new (free) → Exa MCP (quota). Never skip the free tiers. Exa is last-resort, not first-choice.
 
@@ -40,8 +40,8 @@ Typecheck and test must both pass before any commit. No build step — TypeScrip
 
 ## Adding a feature
 
-1. **New search provider?** Add adapter, satisfy `SearchProvider` in `search.ts`, update `resolveAutoRoute()` if it has Exa-equivalent intent params.
-2. **New fetch fallback?** Add to the chain in `fetch.ts` — it must be free or Exa-backed. Insert before Exa in the priority order.
+1. **New search provider?** Add adapter, satisfy `SearchProvider` in `search/search.ts`, update `resolveAutoRoute()` if it has Exa-equivalent intent params.
+2. **New fetch fallback?** Add to the chain in  `fetch/fetch.ts` — it must be free or Exa-backed. Insert before Exa in the priority order.
 3. **New tool param?** Add Typebox schema in `index.ts`, pass through to the deep module, add test in `test/routing.test.ts` if it affects auto-routing.
 4. **New Exa tool?** Add wrapper in `exa-mcp.ts`, expose via `searchExaAdvanced()` or a new export. Test the parse seam.
 

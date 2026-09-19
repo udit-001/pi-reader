@@ -7,7 +7,7 @@
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
-import * as cache from "./cache.ts";
+import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";

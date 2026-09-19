@@ -1,6 +1,6 @@
 import { parseHTML } from "linkedom";
-import { decodeEntities } from "./handlers/html.ts";
-import { getJson, getText } from "./handlers/handler.ts";
+import { decodeEntities } from "../fetch/handlers/html.ts";
+import { getJson, getText } from "../fetch/handlers/handler.ts";
 
 export interface SearchResult {
   title: string;

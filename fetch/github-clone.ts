@@ -37,7 +37,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath, sep as pathSep } from "node:path";
 import { readFile, opendir, rm } from "node:fs/promises";
-import { loadConfig } from "./config.ts";
+import { loadConfig } from "../config.ts";
 
 // ── Public interface ─────────────────────────────────────────────────────────
 

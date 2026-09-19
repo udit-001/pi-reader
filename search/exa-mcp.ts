@@ -16,7 +16,7 @@
 
 import type { Client } from "@modelcontextprotocol/client";
 import { callMcpTool, connectMcp, McpToolError } from "./mcp-client.ts";
-import { configPath, loadConfig } from "./config.ts";
+import { configPath, loadConfig } from "../config.ts";
 import { classifyExaError, noteExaIssue } from "./exa-issue.ts";
 import type { ExaCategory, SearchOptions, SearchResult } from "./search.ts";
 

@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resultText, McpToolError } from "../mcp-client.ts";
+import { resultText, McpToolError } from "../search/mcp-client.ts";
 
 test("mcp: resultText joins text content blocks from an SDK callTool result", () => {
   assert.equal(

@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { listingQuery, formatStories } from "../handlers/hackernews.ts";
+import { listingQuery, formatStories } from "../fetch/handlers/hackernews.ts";
 
 test("listingQuery maps every served listing path to its Algolia query", () => {
   assert.deepEqual(listingQuery("/"), { endpoint: "search", tags: "front_page", label: "front page" });

@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { repoHeader, formatRelease, formatReleases, parseReleasesPath } from "../handlers/github.ts";
+import { repoHeader, formatRelease, formatReleases, parseReleasesPath } from "../fetch/handlers/github.ts";
 
 test("repoHeader renders the full metadata block the API already returns", () => {
   const header = repoHeader({

@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveAutoRoute } from "../search.ts";
+import { resolveAutoRoute } from "../search/search.ts";
 
 test("routing: plain keyword query starts free at DuckDuckGo", () => {
   assert.equal(resolveAutoRoute({}), "ddg-first");

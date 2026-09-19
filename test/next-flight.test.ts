@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractNextFlightContent } from "../handlers/next-flight.ts";
+import { extractNextFlightContent } from "../fetch/handlers/next-flight.ts";
 
 /** Build a fake App Router page from raw chunk strings ("23:[...]") — flightPage performs the single wire escaping. */
 function flightPage(chunks: string[], title = "Docs | Example"): string {

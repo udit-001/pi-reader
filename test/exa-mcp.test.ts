@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseFormattedResults, parseJsonResults, parseCrawlResults } from "../exa-mcp.ts";
+import { parseFormattedResults, parseJsonResults, parseCrawlResults } from "../search/exa-mcp.ts";
 
 test("exa: parses formatted web_search_exa result blocks", () => {
   const text = [

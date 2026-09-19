@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { feedToMarkdown, matchFeedPath } from "../handlers/feed.ts";
+import { feedToMarkdown, matchFeedPath } from "../fetch/handlers/feed.ts";
 
 test("feed: parses RSS 2.0 with CDATA titles and item links", () => {
   const xml = `<rss xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0"><channel>

@@ -25,12 +25,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { consumeExaIssue } from "./exa-issue.ts";
-import { exaCategoryList } from "./exa-mcp.ts";
-import { detectMcpDuplicate, openExaSetup } from "./exa-setup.ts";
+import { consumeExaIssue } from "./search/exa-issue.ts";
+import { exaCategoryList } from "./search/exa-mcp.ts";
+import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
-import { webSearch, type SearchProviderName } from "./search.ts";
-import { fetchContent, summarizeContent, type FetchResult } from "./fetch.ts";
+import { webSearch, type SearchProviderName } from "./search/search.ts";
+import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 

@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseResults } from "../duckduckgo.ts";
+import { parseResults } from "../search/duckduckgo.ts";
 
 const FIXTURE = `
 <!DOCTYPE html>

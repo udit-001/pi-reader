@@ -12,5 +12,5 @@
     "forceConsistentCasingInFileNames": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["index.ts", "search.ts", "duckduckgo.ts", "exa-mcp.ts", "fetch.ts", "handlers/**/*.ts", "*.ts"]
+  "include": ["index.ts", "config.ts", "search/**/*.ts", "fetch/**/*.ts", "cache/**/*.ts"]
 }

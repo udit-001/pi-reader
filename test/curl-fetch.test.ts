@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildCurlArgs, parseCurlResponse } from "../curl-fetch.ts";
+import { buildCurlArgs, parseCurlResponse } from "../fetch/curl-fetch.ts";
 
 test("curl: argv carries the Chrome profile, timeout, and the URL last", () => {
   const args = buildCurlArgs("https://example.com/page", { timeoutMs: 12_345 });

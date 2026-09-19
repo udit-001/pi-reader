@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasUvx } from "../ddgs-uv.ts";
+import { hasUvx } from "../search/ddgs-uv.ts";
 
 test("ddgs-uv: hasUvx returns a boolean", () => {
   const result = hasUvx();
