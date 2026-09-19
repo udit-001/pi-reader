@@ -15,6 +15,7 @@
 // (not for callers).
 
 import { execFile } from "node:child_process";
+import { assertPublicTarget, MAX_REDIRECTS } from "./handlers/handler.ts";
 
 const CHROME_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -62,9 +63,6 @@ export function buildCurlArgs(url: string, opts: CurlArgsOptions = {}): string[]
     "-sS",
     "--http2",
     "--compressed",
-    "--location",
-    "--max-redirs",
-    "8",
     "--max-time",
     String(secs),
     "--include",
@@ -98,6 +96,8 @@ export interface CurlResponse {
   status: number;
   contentType: string;
   text: string;
+  /** Redirect target when the response is a 30x — followed (and validated) by curlGetText. */
+  location: string | null;
 }
 
 /** Parse `-i` output into status, content type, and body. Pure; exported for tests.
@@ -119,7 +119,10 @@ export function parseCurlResponse(raw: string): CurlResponse | null {
     if (!Number.isFinite(parsedStatus)) return null;
     status = parsedStatus;
     contentType = /content-type:\s*(.+)/i.exec(headerBlock)?.[1]?.trim() ?? "";
-    if (!/^\s*HTTP\//i.test(body)) return { status, contentType, text: body.replace(/^\s+/, "") };
+    if (!/^\s*HTTP\//i.test(body)) {
+      const location = /(^|\n)location:\s*(\S+)/i.exec(headerBlock)?.[2]?.trim() ?? null;
+      return { status, contentType, text: body.replace(/^\s+/, ""), location };
+    }
     rest = body; // redirect hop: strip this head, parse the next response
   }
 }
@@ -145,31 +148,51 @@ export interface CurlGetOptions {
  * returned, not thrown: the caller decides which statuses justify a retry.
  */
 export async function curlGetText(url: string, opts: CurlGetOptions = {}): Promise<CurlResponse | null> {
-  let parsed: URL;
+  let current: URL;
   try {
-    parsed = new URL(url);
+    current = new URL(url);
   } catch {
     return null;
   }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+  if (current.protocol !== "https:" && current.protocol !== "http:") return null;
 
   const bin = await resolveCurlBinary();
   if (!bin) return null;
 
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  return new Promise((resolve) => {
-    execFile(
-      bin,
-      buildCurlArgs(parsed.href, { timeoutMs }),
-      { timeout: timeoutMs + 5_000, maxBuffer: MAX_CURL_BYTES, signal: opts.signal },
-      (err, stdout) => {
-        // Exit code 28 = --max-time; 23/26 = write errors on huge bodies. A
-        // timeout with partial stdout still carries the response head.
-        if (err && !stdout) return resolve(null);
-        const parsedResponse = parseCurlResponse(String(stdout));
-        if (!parsedResponse) return resolve(null);
-        resolve(parsedResponse);
-      },
-    );
-  });
+  const runOnce = (target: URL): Promise<string | null> =>
+    new Promise((resolve) => {
+      execFile(
+        bin,
+        buildCurlArgs(target.href, { timeoutMs }),
+        { timeout: timeoutMs + 5_000, maxBuffer: MAX_CURL_BYTES, signal: opts.signal },
+        (err, stdout) => {
+          // Exit code 28 = --max-time; 23/26 = write errors on huge bodies. A
+          // timeout with partial stdout still carries the response head.
+          if (err && !stdout) return resolve(null);
+          resolve(String(stdout));
+        },
+      );
+    });
+
+  // Redirects are followed manually so every hop passes the shared SSRF guard.
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    try {
+      await assertPublicTarget(current);
+    } catch {
+      return null; // blocked hop: caller keeps its fallback chain
+    }
+    const raw = await runOnce(current);
+    if (raw === null) return null;
+    const parsed = parseCurlResponse(raw);
+    if (!parsed) return null;
+    if (!parsed.location) return parsed;
+    if (hop === MAX_REDIRECTS) return null;
+    try {
+      current = new URL(parsed.location, current);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }

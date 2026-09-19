@@ -21,13 +21,15 @@ import { fetchExaMcp } from "./exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
 import { extractNextFlightContent } from "./handlers/next-flight.ts";
 import { curlGetText } from "./curl-fetch.ts";
-import { type FetchContext } from "./handlers/handler.ts";
+import { assertPublicTarget, MAX_REDIRECTS, readBodyCapped, redirectTarget, FetchError, type FetchContext } from "./handlers/handler.ts";
 import { matchTopic } from "./topic.ts";
 import * as cache from "./cache.ts";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 const FETCH_TIMEOUT_MS = 30_000;
+// Hard cap on how many response bytes one fetch may buffer (OOM guard).
+const FETCH_BODY_CAP = 5 * 1024 * 1024;
 const FALLBACK_TIMEOUT_MS = 20_000;
 const MIN_FALLBACK_CONTENT = 50;
 // Per-page cap on returned content. 20k gives a real reading sample (not a
@@ -67,13 +69,26 @@ export async function fetchContent(
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
   const raw = options.mode === "raw";
 
+  // SSRF guard at the only entry point: covers every path to content — cache,
+  // handlers, and fetch. Redirect hops re-validate at the transport layer.
+  const blockedResults = new Map<string, string>();
+  const urlsToProcess: string[] = [];
+  for (const urlStr of urls) {
+    try {
+      await assertPublicTarget(new URL(normalizeUrl(urlStr)));
+      urlsToProcess.push(urlStr);
+    } catch (err) {
+      blockedResults.set(urlStr, err instanceof Error ? err.message : "Blocked by SSRF guard.");
+    }
+  }
+
   // Check cache first (raw mode reads the live response — cached markdown
   // would be the wrong projection, and raw bodies must not poison later
   // markdown fetches).
   const cachedResults = new Map<string, FetchResult>();
   const uncachedUrls: string[] = [];
 
-  for (const urlStr of urls) {
+  for (const urlStr of urlsToProcess) {
     if (raw) {
       uncachedUrls.push(urlStr);
       continue;
@@ -102,7 +117,9 @@ export async function fetchContent(
   }
 
   if (uncachedUrls.length === 0) {
-    return urls.map((u) => cachedResults.get(u)!);
+    return urls.map((u) => blockedResults.get(u) != null
+      ? { url: u, title: "", content: "", error: blockedResults.get(u)! }
+      : cachedResults.get(u)!);
   }
 
   // Try structured handlers first (GitHub, npm, Wikipedia, etc.) — raw mode
@@ -110,7 +127,7 @@ export async function fetchContent(
   const handlerResults = new Map<string, FetchResult>();
   const unhandledUrls: string[] = [];
 
-  for (const urlStr of urls) {
+  for (const urlStr of urlsToProcess) {
     if (raw) {
       unhandledUrls.push(urlStr);
       continue;
@@ -138,7 +155,9 @@ export async function fetchContent(
   }
 
   if (unhandledUrls.length === 0) {
-    return urls.map((u) => handlerResults.get(u)!);
+    return urls.map((u) => blockedResults.get(u) != null
+      ? { url: u, title: "", content: "", error: blockedResults.get(u)! }
+      : handlerResults.get(u)!);
   }
 
   // Regular fetch chain for unhandled URLs: local → Jina → markdown.new → Exa
@@ -184,7 +203,9 @@ export async function fetchContent(
   const regularResults = local.map((r) => rescued.get(r.url) ?? r);
 
   // Merge handler results with regular results, preserving original URL order
-  const results = urls.map((u) => handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
+  const results = urls.map((u) => blockedResults.get(u) != null
+    ? { url: u, title: "", content: "", error: blockedResults.get(u)! }
+    : handlerResults.get(u) ?? regularResults.find((r) => r.url === u) ?? { url: u, title: "", content: "", error: "Not found" });
 
   // Apply topic extraction if a topic is provided (markdown mode only — raw
   // returns the body untouched).
@@ -428,12 +449,7 @@ async function fetchOne(
     let contentType = res.headers.get("content-type") ?? "";
     let text = "";
     if (res.ok) {
-      try {
-        text = await res.text();
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { url, title: "", content: "", error: `Read failed: ${message}` };
-      }
+      text = await readBodyCapped(res, FETCH_BODY_CAP);
     } else if (BLOCKED_STATUSES.has(res.status)) {
       const curl = await curlGetText(url, { signal, timeoutMs: FETCH_TIMEOUT_MS });
       if (curl) {
@@ -491,15 +507,7 @@ async function fetchOne(
     };
   }
 
-  let text: string;
-  try {
-    text = await res.text();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { url, title: "", content: "", error: `Read failed: ${message}` };
-  }
-
-  return extractFromText(url, contentType, text, maxChars);
+  return extractFromText(url, contentType, await readBodyCapped(res, FETCH_BODY_CAP), maxChars);
 }
 
 /** Label heading for raw mode output. Pure; exported for tests. */

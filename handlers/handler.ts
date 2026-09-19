@@ -139,18 +139,68 @@ export function withDeadline<T>(
   ]);
 }
 
+export const MAX_REDIRECTS = 8;
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Resolve a redirect hop; null when the response is not a redirect or has no Location. */
+export function redirectTarget(res: Response, currentUrl: string): URL | null {
+  if (!REDIRECT_STATUSES.has(res.status)) return null;
+  const loc = res.headers.get("location");
+  if (!loc) return null;
+  try {
+    return new URL(loc, currentUrl);
+  } catch {
+    return null;
+  }
+}
+
+/** Read a response body with a hard byte cap — unbounded res.text() is an OOM vector. */
+export async function readBodyCapped(res: Response, cap: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.byteLength;
+    if (total >= cap) {
+      void reader.cancel().catch(() => {});
+      break;
+    }
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export async function httpGet(
   url: string,
   signal?: AbortSignal,
   headers?: Record<string, string>,
 ): Promise<Response> {
-  const res = await fetch(url, {
-    signal: withTimeout(signal),
-    headers: { "user-agent": UA, ...headers },
-    redirect: "follow",
-  });
-  if (!res.ok) throw new FetchError(`HTTP ${res.status} for ${url}`, res.status);
-  return res;
+  let current: URL;
+  try {
+    current = new URL(url);
+  } catch {
+    throw new FetchError(`Invalid URL: ${url}`);
+  }
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    // Per-hop SSRF validation: the preflight only covers the initial URL, and
+    // a redirect hop to a private address must not slip through.
+    await assertPublicTarget(current);
+    const res = await fetch(current.href, {
+      signal: withTimeout(signal),
+      headers: { "user-agent": UA, ...headers },
+      redirect: "manual",
+    });
+    const next = redirectTarget(res, current.href);
+    if (!next) return res;
+    if (hop === MAX_REDIRECTS) throw new FetchError(`Too many redirects for ${url}`);
+    void res.body?.cancel().catch(() => {});
+    current = next;
+  }
+  throw new FetchError(`Too many redirects for ${url}`);
 }
 
 export async function getText(
@@ -161,8 +211,7 @@ export async function getText(
   const res = await httpGet(url, signal, headers);
   const len = Number(res.headers.get("content-length") ?? 0);
   if (len > TEXT_CAP) throw new FetchError(`Response too large (${len} bytes) for ${url}`);
-  let text = await res.text();
-  if (text.length > TEXT_CAP) text = text.slice(0, TEXT_CAP);
+  let text = await readBodyCapped(res, TEXT_CAP);
   return {
     text,
     contentType: res.headers.get("content-type") ?? "",
@@ -282,8 +331,7 @@ export const defaultFetch = async (url: URL, ctx: FetchContext): Promise<Handler
     return { kind: "pdf", content: await pdfToText(await res.arrayBuffer()) };
   }
 
-  let text = await res.text();
-  if (text.length > TEXT_CAP) text = text.slice(0, TEXT_CAP);
+  let text = await readBodyCapped(res, TEXT_CAP);
   if (/html/i.test(contentType) || /^\s*<(!doctype|html)/i.test(text)) {
     const page = htmlToMarkdown(text, url.href);
     return { kind: "article", title: page.title, content: page.markdown };

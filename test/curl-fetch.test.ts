@@ -12,7 +12,7 @@ test("curl: argv carries the Chrome profile, timeout, and the URL last", () => {
   assert.ok(args.includes("--"));
   assert.ok(args.includes("--http2"));
   assert.ok(args.includes("--compressed"));
-  assert.ok(args.includes("--location"));
+  assert.ok(!args.includes("--location")); // redirects followed manually, per-hop validated
   const maxTime = args[args.indexOf("--max-time") + 1];
   assert.equal(maxTime, "12"); // rounded to whole seconds
   const uaIdx = args.indexOf("--user-agent");
@@ -54,4 +54,12 @@ test("curl: redirect chains keep the final response, not the hop", () => {
   assert.equal(out.status, 200);
   assert.equal(out.contentType, "text/html; charset=utf-8");
   assert.equal(out.text, "<html>final body</html>");
+});
+
+test("curl: parseCurlResponse extracts the Location header for redirect hops", () => {
+  const raw = "HTTP/1.1 302 Found\r\nlocation: https://example.com/next\r\n\r\n";
+  const out = parseCurlResponse(raw);
+  assert.ok(out);
+  assert.equal(out.status, 302);
+  assert.equal(out.location, "https://example.com/next");
 });
