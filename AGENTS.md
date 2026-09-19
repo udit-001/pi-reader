@@ -47,6 +47,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 - **Exa issues:** adapters call `noteExaIssue()` on rate-limit or missing-key; the entry calls `consumeExaIssue()` once in `finally` — the hint fires once per tool call, not per provider attempt.
 - **Tests:** `node:test` + `node:assert/strict`, one `test()` per behavior, fixtures in-line. Test the parse seam, not the HTTP layer.
 - **Config:** `config.ts` owns all file I/O. Writes are atomic (tmp + rename); reads are forgiving — missing or malformed reads as null.
+- **Docs:** edits to `docs/` or this file follow the writing-great-skills framework — one single source of truth per meaning, no-ops pruned sentence by sentence, duplication collapsed, leading words over restatements.
 
 ## Adding a feature
 

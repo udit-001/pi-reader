@@ -5,7 +5,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 ## Routing (`search/search.ts`)
 
 - `provider: "auto"` → `autoChain()`: the single routing seam — a pure function of intent returning `[primary, failure-fallback]` provider names. Exa-shaped params (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback. Pin changes in `test/routing.test.ts`.
-- The full auto pair is `autoChain()` — `[primary, failure-fallback]`. For news intent (`category: "news"`) it is the fidelity ladder's first two rungs: Exa semantic news primary when alive; on an Exa *failure* (quota death, missing key) the news vertical takes over with dates and outlets, and its own degrade lands on text. Fallback fires on provider failure (throw) only — never on empty results. A degraded response carries `degraded: true` on the `SearchResponse`, and `shouldCacheSearch()` refuses to cache it — so a news-intent query that fell all the way to text is not pinned for the TTL and the ladder recovers.
+- For news intent (`category: "news"`) the chain is the fidelity ladder's first two rungs: Exa semantic news primary when alive; on an Exa *failure* (quota death, missing key) the news vertical takes over with dates and outlets, and its own degrade lands on text. Fallback fires on provider failure (throw) only — never on empty results. A degraded response carries `degraded: true` on the `SearchResponse`, and `shouldCacheSearch()` refuses to cache it — so a news-intent query that fell all the way to text is not pinned for the TTL and the ladder recovers.
 - `wikipedia`, `hn`, `context7`, and `news` are free, keyless, explicit-only — never chosen as the auto *primary* and never in the fallback chain for non-news intent. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
 - Exa runs one of two calls: a plain query → `searchExaMcp`; any Exa-shaped param → `searchExaAdvanced`.
 - Successful results are cached for 1 hour (key: query + provider + options). Exa results are never cached — they cost quota.
@@ -22,8 +22,8 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 - `provider: "news"` → `uvx ddgs news` (bing/duckduckgo/yahoo engines — free, keyless). The argv plan is the text plan generalized to a subcommand param (`buildDdgsArgs`); news accepts the same flag set including `-t` d/w/m/y and `-p`.
 - Normalization is verbatim — invents nothing: `date`→`publishedDate` (clean ISO and source junk like `"Opinion2 days ago"` pass through unmodified), `body`→`snippet`, `source` outlet→`author`, `image` dropped, url-less rows dropped. `domains` is not supported on the news path.
-- Degrade, don't fail: uvx missing or the ddgs news call failing → text search (same query, same window) with a visible `[News: …]` notice on the last result; the provider label then reports `duckduckgo` so a degraded answer never masquerades as news. Degraded results are **not cached** under the news key, so the news path recovers as soon as uvx/ddgs is available instead of pinning the degrade for the cache TTL.
-- The answer builder and the tool's result lines/details render `publishedDate` and `author` for every provider — this is also where Exa's previously-dropped `author` became visible.
+- Degrade, don't fail: uvx missing or the ddgs news call failing → text search (same query, same window) with a visible `[News: …]` notice on the last result; the provider label then reports `duckduckgo` so a degraded answer never masquerades as news.
+- The answer builder and the tool's result lines/details render `publishedDate` and `author` for every provider (news and Exa alike).
 
 ## Exa MCP (`search/exa-mcp.ts`)
 
