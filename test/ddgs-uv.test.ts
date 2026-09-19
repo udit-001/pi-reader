@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, buildDdgsTextArgs } from "../search/ddgs-uv.ts";
+import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, buildDdgsArgs } from "../search/ddgs-uv.ts";
 import { join } from "node:path";
 
 test("ddgs-uv: hasUvx returns a boolean", () => {
@@ -90,9 +90,9 @@ test("timelimitFor returns null when no recency is given", () => {
   assert.equal(timelimitFor(undefined), null);
 });
 
-// ── buildDdgsTextArgs — the pure argv plan for `uvx ddgs text` ──────────────
+// ── buildDdgsArgs — the pure argv plan for `uvx ddgs text` ──────────────
 
-const BASE_ARGS = { query: "rust async", maxResults: 5, uvx: "/usr/bin/uvx", output: "/tmp/out.json" };
+const BASE_ARGS = { subcommand: "text" as const, query: "rust async", maxResults: 5, uvx: "/usr/bin/uvx", output: "/tmp/out.json" };
 
 /** Locate the argv slot following a flag. */
 function flagValue(args: string[], flag: string): string | undefined {
@@ -100,8 +100,8 @@ function flagValue(args: string[], flag: string): string | undefined {
   return i === -1 ? undefined : args[i + 1];
 }
 
-test("buildDdgsTextArgs pins the base flags: -q, -m, -o", () => {
-  const args = buildDdgsTextArgs(BASE_ARGS);
+test("buildDdgsArgs pins the base flags: -q, -m, -o", () => {
+  const args = buildDdgsArgs(BASE_ARGS);
   assert.equal(args[0], "/usr/bin/uvx");
   assert.deepEqual(args.slice(1, 3), ["ddgs", "text"]);
   assert.equal(flagValue(args, "-q"), "rust async");
@@ -109,34 +109,34 @@ test("buildDdgsTextArgs pins the base flags: -q, -m, -o", () => {
   assert.equal(flagValue(args, "-o"), "/tmp/out.json");
 });
 
-test("buildDdgsTextArgs includes -t when a timelimit is given", () => {
-  const args = buildDdgsTextArgs({ ...BASE_ARGS, timelimit: "w" });
+test("buildDdgsArgs includes -t when a timelimit is given", () => {
+  const args = buildDdgsArgs({ ...BASE_ARGS, timelimit: "w" });
   assert.deepEqual([flagValue(args, "-t")], ["w"]);
 });
 
-test("buildDdgsTextArgs omits -t entirely when timelimit is null", () => {
-  const args = buildDdgsTextArgs({ ...BASE_ARGS, timelimit: null });
+test("buildDdgsArgs omits -t entirely when timelimit is null", () => {
+  const args = buildDdgsArgs({ ...BASE_ARGS, timelimit: null });
   assert.ok(!args.includes("-t"), `expected no -t flag, got: ${args.join(" ")}`);
 });
 
-test("buildDdgsTextArgs omits -p when page is 1 or unset", () => {
-  const unset = buildDdgsTextArgs(BASE_ARGS);
-  const first = buildDdgsTextArgs({ ...BASE_ARGS, page: 1 });
+test("buildDdgsArgs omits -p when page is 1 or unset", () => {
+  const unset = buildDdgsArgs(BASE_ARGS);
+  const first = buildDdgsArgs({ ...BASE_ARGS, page: 1 });
   assert.ok(!unset.includes("-p"), `expected no -p flag, got: ${unset.join(" ")}`);
   assert.ok(!first.includes("-p"), `expected no -p flag, got: ${first.join(" ")}`);
 });
 
-test("buildDdgsTextArgs includes -p for pages beyond the first", () => {
-  const args = buildDdgsTextArgs({ ...BASE_ARGS, page: 3 });
+test("buildDdgsArgs includes -p for pages beyond the first", () => {
+  const args = buildDdgsArgs({ ...BASE_ARGS, page: 3 });
   assert.deepEqual([flagValue(args, "-p")], ["3"]);
 });
 
-test("buildDdgsTextArgs keeps the query as ONE argv slot — no shell quoting or escaping", () => {
+test("buildDdgsArgs keeps the query as ONE argv slot — no shell quoting or escaping", () => {
   // Regression: the old builder embedded the query in a shell string, so $(...)
   // and backticks were command-substituted by /bin/sh (command injection).
   // The argv plan must carry the query verbatim; execFileSync never interprets it.
   const hostile = 'x"; $(touch /tmp/PI_AUDIT_POC); `id`; \\';
-  const args = buildDdgsTextArgs({ ...BASE_ARGS, query: hostile });
+  const args = buildDdgsArgs({ ...BASE_ARGS, query: hostile });
   assert.deepEqual([flagValue(args, "-q")], [hostile]);
 });
 

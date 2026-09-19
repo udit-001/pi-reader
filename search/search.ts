@@ -6,6 +6,7 @@
 
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
+import { searchNews } from "./news.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
 import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7";
+export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news";
 
 export type ExaCategory =
   | "company"
@@ -73,6 +74,22 @@ const exaProvider: SearchProvider = {
       ? await searchExaAdvanced(query, options)
       : await searchExaMcp(query, options);
     return { answer: buildAnswer(results), results, provider: "exa" };
+  },
+};
+
+// The news vertical: ddgs news subcommand — free, keyless, dated,
+// outlet-attributed. Explicit-only: never chosen by auto-routing. When the
+// news path is unavailable the adapter degrades to text search; the provider
+// label then reports "duckduckgo" so a degraded answer never masquerades as
+// news results.
+const newsProvider: SearchProvider = {
+  async search(query, options) {
+    const outcome = await searchNews(query, options);
+    return {
+      answer: buildAnswer(outcome.results),
+      results: outcome.results,
+      provider: outcome.degraded ? "duckduckgo" : "news",
+    };
   },
 };
 
@@ -190,6 +207,8 @@ export async function webSearch(
     response = await duckduckgoProvider.search(query, options);
   } else if (requested === "exa") {
     response = await exaProvider.search(query, options);
+  } else if (requested === "news") {
+    response = await newsProvider.search(query, options);
   } else if (requested === "wikipedia" || requested === "hn" || requested === "context7") {
     // Domain-specific providers — only when explicitly requested
     response = await freeProviders.search(query, { ...options, source: requested } as any);
@@ -205,8 +224,11 @@ export async function webSearch(
     }
   }
 
-  // Cache successful results (except Exa which costs money)
-  if (response.results.length > 0 && response.provider !== "exa") {
+  // Cache successful results (except Exa which costs money, and a degraded
+  // news response — caching text results under a news key would pin the
+  // degrade for an hour instead of letting the news path recover).
+  const degradedNews = requested === "news" && response.provider !== "news";
+  if (response.results.length > 0 && response.provider !== "exa" && !degradedNews) {
     const cacheKey = getSearchCacheKey(query, options);
     writeSearchCache(cacheKey, {
       query,
@@ -231,8 +253,13 @@ function buildAnswer(results: SearchResult[]): string {
       ? r.snippet.replace(/\s+/g, " ").trim().slice(0, 500)
       : "";
     const label = r.title || `Source ${i + 1}`;
-    if (snippet) return `${snippet}\nSource: ${label} (${r.url})`;
-    return `Source: ${label} (${r.url})`;
+    // News-critical context: publication date and outlet/author when present.
+    const meta: string[] = [];
+    if (r.publishedDate) meta.push(`Published: ${r.publishedDate}`);
+    if (r.author) meta.push(`by ${r.author}`);
+    const metaSuffix = meta.length > 0 ? ` — ${meta.join(" · ")}` : "";
+    if (snippet) return `${snippet}\nSource: ${label}${metaSuffix} (${r.url})`;
+    return `Source: ${label}${metaSuffix} (${r.url})`;
   });
 
   return parts.join("\n\n");

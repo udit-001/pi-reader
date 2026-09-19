@@ -25,3 +25,10 @@ test("routing: Exa-only intent params route straight to Exa", () => {
 test("routing: any Exa-shaped param dominates recency", () => {
   assert.equal(resolveAutoRoute({ recency: "day", category: "news", domains: ["-reddit.com"] }), "exa-first");
 });
+
+test("routing: news intent stays Exa-first under auto — the news vertical is explicit-only", () => {
+  // `provider: "news"` is never chosen by auto-routing (spec PIWEB-8): broad
+  // research must not be silently narrowed by the smaller news engine set.
+  assert.equal(resolveAutoRoute({ category: "news" }), "exa-first");
+  assert.equal(resolveAutoRoute({ category: "news", recency: "week" }), "exa-first");
+});

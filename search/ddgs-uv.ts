@@ -131,7 +131,10 @@ export function timelimitFor(recency?: SearchOptions["recency"]): string | null 
 
 // ── ddgs command plan ────────────────────────────────────────────────────────────────────────────────
 
-export interface DdgsTextArgs {
+export interface DdgsArgs {
+  /** ddgs vertical: "text" or "news". Same flag set for both, verified live
+   *  (`ddgs news --help` accepts -q/-t/-p/-m/-o). */
+  subcommand: "text" | "news";
   query: string;
   maxResults: number;
   timelimit?: string | null;
@@ -140,11 +143,12 @@ export interface DdgsTextArgs {
   output: string;
 }
 
-/** The full `uvx ddgs text` command as one pure argv plan — tests pin the flags
- *  without spawning processes. One argv slot per argument: the query (which
- *  embeds model-supplied text) is data, never shell syntax. Pure; exported for tests. */
-export function buildDdgsTextArgs(a: DdgsTextArgs): string[] {
-  const parts = [a.uvx, "ddgs", "text", "-q", a.query];
+/** The full `uvx ddgs <subcommand>` command as one pure argv plan — tests pin
+ *  the flags without spawning processes. One argv slot per argument: the query
+ *  (which embeds model-supplied text) is data, never shell syntax. Pure;
+ *  exported for tests. */
+export function buildDdgsArgs(a: DdgsArgs): string[] {
+  const parts = [a.uvx, "ddgs", a.subcommand, "-q", a.query];
   if (a.timelimit) parts.push("-t", a.timelimit);
   if (a.page && a.page > 1) parts.push("-p", String(a.page));
   parts.push("-m", String(a.maxResults));
@@ -154,10 +158,26 @@ export function buildDdgsTextArgs(a: DdgsTextArgs): string[] {
 
 // ── ddgs search ─────────────────────────────────────────────────────────────
 
-export function searchViaDdgs(
+/** A raw row from ddgs JSON output. Text rows carry `href`; news rows carry
+ *  `url`, `date`, `source`, `image` — normalization happens above this seam. */
+export interface DdgsRawRow {
+  title?: string;
+  href?: string;
+  body?: string;
+  url?: string;
+  date?: string;
+  source?: string;
+  image?: string;
+}
+
+/** Run `uvx ddgs <subcommand>` and return the parsed JSON rows. Sync
+ *  (execFileSync), argv-array exec — the query stays one data slot. Throws on
+ *  any failure; tmp file is removed in `finally`. */
+export function runDdgsJson(
   query: string,
   options: SearchOptions = {},
-): SearchResult[] {
+  subcommand: "text" | "news",
+): DdgsRawRow[] {
   const maxResults = options.numResults ?? 10;
   const uvx = uvxBinary();
   const tmpFile = join(tmpdir(), `ddgs-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
@@ -181,7 +201,8 @@ export function searchViaDdgs(
 
     // Run uvx ddgs — argv-array exec: the query (model-supplied, potentially
     // hostile) stays one data slot; no shell to interpret $() or backticks.
-    execFileSync(uvx, buildDdgsTextArgs({
+    execFileSync(uvx, buildDdgsArgs({
+      subcommand,
       query: fullQuery,
       maxResults,
       timelimit: timelimitFor(options.recency),
@@ -193,19 +214,28 @@ export function searchViaDdgs(
       timeout: SEARCH_TIMEOUT_MS,
     });
 
-    // Parse results
-    const raw = JSON.parse(readFileSync(tmpFile, "utf-8")) as Array<{
-      title?: string;
-      href?: string;
-      body?: string;
-    }>;
-
-    return raw.map((r) => ({
-      title: r.title ?? "",
-      url: r.href ?? "",
-      snippet: r.body ?? "",
-    }));
+    return JSON.parse(readFileSync(tmpFile, "utf-8")) as DdgsRawRow[];
   } finally {
     try { unlinkSync(tmpFile); } catch { /* ignore */ }
   }
+}
+
+export function searchViaDdgs(
+  query: string,
+  options: SearchOptions = {},
+): SearchResult[] {
+  return runDdgsJson(query, options, "text").map((r) => ({
+    title: r.title ?? "",
+    url: r.href ?? "",
+    snippet: r.body ?? "",
+  }));
+}
+
+/** The news vertical, raw: rows normalized by the caller (search/news.ts) so
+ *  the verbatim mapping (date→publishedDate, source→author) is testable there. */
+export function newsViaDdgs(
+  query: string,
+  options: SearchOptions = {},
+): DdgsRawRow[] {
+  return runDdgsJson(query, options, "news");
 }

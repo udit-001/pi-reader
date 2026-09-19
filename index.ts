@@ -4,9 +4,10 @@
 //
 // Tools:
 //   web_search — search the web. provider: "auto" (DuckDuckGo → Exa MCP
-//     fallback), "duckduckgo", or "exa". Exa supports category filters,
-//     domains, recency, and full content/summary extraction via the
-//     web_search_advanced_exa tool on the remote MCP.
+//     fallback), "duckduckgo", "exa", or "news" (ddgs news vertical — dated,
+//     outlet-attributed). Exa supports category filters, domains, recency,
+//     and full content/summary extraction via the web_search_advanced_exa
+//     tool on the remote MCP.
 //   web_fetch — fetch URL(s) as clean Markdown. Structured handlers render
 //     known sites directly (GitHub/GitLab repos: metadata+README, releases,
 //     issues/PRs, raw files; package registries; Wikipedia, HN, Reddit,
@@ -41,6 +42,7 @@ const providerSchema = Type.Optional(
       Type.Literal("auto"),
       Type.Literal("duckduckgo"),
       Type.Literal("exa"),
+      Type.Literal("news"),
       Type.Literal("wikipedia"),
       Type.Literal("hn"),
       Type.Literal("context7"),
@@ -48,6 +50,10 @@ const providerSchema = Type.Optional(
     {
       description:
         "Search provider. 'auto' tries DDG then Exa. " +
+        "'news' for news coverage ('what happened this week about X') — dated, outlet-attributed " +
+        "articles from free keyword news engines; honors query, recency (d/w/m/y), and page; " +
+        "domains is not supported; degrades to text search with a visible notice when unavailable. " +
+        "That is the free path — category: 'news' instead runs Exa semantic news (better relevance, uses Exa quota). " +
         "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
     },
   ),
@@ -56,13 +62,13 @@ const providerSchema = Type.Optional(
 const recencySchema = Type.Optional(
   Type.Union(
     [Type.Literal("day"), Type.Literal("week"), Type.Literal("month"), Type.Literal("year")],
-    { description: "Only results published within this window. DuckDuckGo and Exa honor it (DDG filters at the source, no dates shown; Exa shows Published dates); other providers ignore it" },
+    { description: "Only results published within this window. DuckDuckGo, the news vertical, and Exa honor it (DDG filters at the source, no dates shown; news and Exa show dates); other providers ignore it" },
   ),
 );
 
 const domainSchema = Type.Optional(
   Type.Array(Type.String(), {
-    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com'])",
+    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Not supported on the news path",
   }),
 );
 
@@ -79,7 +85,7 @@ const webSearchParams = Type.Object({
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo; other providers ignore it.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo and news; other providers ignore it.",
   })),
   recency: recencySchema,
   domains: domainSchema,
@@ -191,7 +197,9 @@ export default function piWeb(pi: ExtensionAPI): void {
     description:
       "Search the web. DuckDuckGo by default (free, no key); Exa for semantic search — " +
       "pass category, includeContent, or domains and auto routes there (domains also works " +
-      "via site: operators on DuckDuckGo). 'wikipedia' for factual " +
+      "via site: operators on DuckDuckGo). provider: 'news' for news coverage ('what happened " +
+      "this week about X') — dated, outlet-attributed results from free keyword news engines " +
+      "(category: 'news' instead uses Exa semantic, quota'd). 'wikipedia' for factual " +
       "'what is X' queries; 'hn' for HN discussions (current listings come from web_fetch on " +
       "news.ycombinator.com); 'context7' for library docs. Describe the page you want to " +
       "find, not the fact you want to know.",
@@ -228,6 +236,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           lines.push(`${i + 1}. ${r.title || "(untitled)"}`);
           lines.push(`   ${r.url}`);
           if (r.publishedDate) lines.push(`   Published: ${r.publishedDate}`);
+          if (r.author) lines.push(`   By: ${r.author}`);
           if (hasContent) lines.push(`   ${r.content!.replace(/\s+/g, " ").trim().slice(0, 400)}`);
         }
 
@@ -241,6 +250,7 @@ export default function piWeb(pi: ExtensionAPI): void {
               url: r.url,
               snippet: r.snippet.slice(0, 500),
               ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}),
+              ...(r.author ? { author: r.author } : {}),
               ...(typeof r.content === "string" && r.content ? { contentLength: r.content.length } : {}),
             })),
           },

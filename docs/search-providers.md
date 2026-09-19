@@ -5,7 +5,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 ## Routing (`search/search.ts`)
 
 - `provider: "auto"` → `resolveAutoRoute()`: Exa-shaped params (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback. Pure function — pin changes in `test/routing.test.ts`.
-- `wikipedia`, `hn`, `context7` are free, keyless, explicit-only. When DDG and Exa both fail, this free-provider tier runs as the last fallback.
+- `wikipedia`, `hn`, `context7`, and `news` are free, keyless, explicit-only — never chosen by auto-routing and never in the auto-fallback chain. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
 - Exa runs one of two calls: a plain query → `searchExaMcp`; any Exa-shaped param → `searchExaAdvanced`.
 - Successful results are cached for 1 hour (key: query + provider + options). Exa results are never cached — they cost quota.
 
@@ -15,7 +15,14 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 - uvx resolution: official install location first (`~/.local/bin/uvx`, `.exe` on Windows), then bare `uvx` so PATH resolves it (brew, apt, pip, scoop). Missing → auto-installed once via the official installer, then probed again.
 - Session-start warm-up (`warmDdgs`): once per process, fire-and-forget, never blocks or throws. Moves the one-time uv/ddgs download off the first search; failure is silent because the HTML fallback covers search.
 - Degraded fallback: HTML scraping. Its results carry a visible notice so the agent knows quality dropped.
-- `recency` maps to ddgs `-t` letter codes via `REGENCY_TO_TIMELIMIT` — the single source of truth for both the ddgs and HTML adapters. `page` maps to `-p`. `domains` become `site:` / `-site:` operators.
+- `recency` maps to ddgs `-t` letter codes via `REGENCY_TO_TIMELIMIT` — the single source of truth for both the ddgs and HTML adapters, and for the news vertical. `page` maps to `-p`. `domains` become `site:` / `-site:` operators.
+
+## News vertical (`search/news.ts`)
+
+- `provider: "news"` → `uvx ddgs news` (bing/duckduckgo/yahoo engines — free, keyless). The argv plan is the text plan generalized to a subcommand param (`buildDdgsArgs`); news accepts the same flag set including `-t` d/w/m/y and `-p`.
+- Normalization is verbatim — invents nothing: `date`→`publishedDate` (clean ISO and source junk like `"Opinion2 days ago"` pass through unmodified), `body`→`snippet`, `source` outlet→`author`, `image` dropped, url-less rows dropped. `domains` is not supported on the news path.
+- Degrade, don't fail: uvx missing or the ddgs news call failing → text search (same query, same window) with a visible `[News: …]` notice on the last result; the provider label then reports `duckduckgo` so a degraded answer never masquerades as news. Degraded results are **not cached** under the news key, so the news path recovers as soon as uvx/ddgs is available instead of pinning the degrade for the cache TTL.
+- The answer builder and the tool's result lines/details render `publishedDate` and `author` for every provider — this is also where Exa's previously-dropped `author` became visible.
 
 ## Exa MCP (`search/exa-mcp.ts`)
 
