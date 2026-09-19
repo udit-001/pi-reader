@@ -21,7 +21,7 @@ import { fetchExaMcp } from "../search/exa-mcp.ts";
 import { resolveHandler, fetchWithHandler } from "./handlers/registry.ts";
 import { extractNextFlightContent } from "./handlers/next-flight.ts";
 import { curlGetText } from "./curl-fetch.ts";
-import { assertPublicTarget, MAX_REDIRECTS, readBodyCapped, redirectTarget, FetchError, type FetchContext } from "./handlers/handler.ts";
+import { assertPublicTarget, httpGet, readBodyCapped, FetchError, type FetchContext } from "./handlers/handler.ts";
 import { matchTopic } from "./topic.ts";
 import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
@@ -424,15 +424,17 @@ async function fetchOne(
   url = normalizeUrl(url);
   let res: Response;
   try {
-    res = await fetchWithTimeout(url, {
-      redirect: "follow",
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; pi-reader/0.2)" },
-    }, FETCH_TIMEOUT_MS, signal);
+    // Shared transport: httpGet re-validates every redirect hop against the
+    // SSRF guard (a public page must not be able to 302 us to loopback or
+    // cloud metadata) and applies the same 30s timeout policy.
+    res = await httpGet(url, signal, { "user-agent": "Mozilla/5.0 (compatible; pi-reader/0.2)" });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/Failed to parse URL/i.test(message)) {
-      return { url, title: "", content: "", error: `Invalid URL format: ${url}. Must start with http:// or https://.` };
+    if (err instanceof FetchError) {
+      // Guard/transport verdicts are already actionable: Invalid URL, Blocked
+      // (private/loopback target or redirect hop), Too many redirects.
+      return { url, title: "", content: "", error: err.message };
     }
+    const message = err instanceof Error ? err.message : String(err);
     if (/timeout/i.test(message)) {
       return { url, title: "", content: "", error: `Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s. The server may be slow or unreachable.` };
     }

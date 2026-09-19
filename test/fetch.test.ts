@@ -4,6 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel } from "../fetch/fetch.ts";
 
 test("fetch: converts a simple article to clean markdown", () => {
@@ -129,4 +130,26 @@ test("fetch: fitToBudget keeps head+tail with an explicit marker", () => {
 test("fetch: rawContentLabel formats status and content type", () => {
   assert.equal(rawContentLabel(200, "text/html; charset=utf-8"), "[status: 200 | content-type: text/html; charset=utf-8]");
   assert.equal(rawContentLabel(403, ""), "[status: 403 | content-type: unknown]");
+});
+
+test("fetch: every transport in fetch.ts goes through httpGet (per-hop SSRF validation)", () => {
+  // Contract from docs/fetch-pipeline.md: "Route new fetch paths through httpGet
+  // so they inherit the guard." A raw fetch() with redirect:"follow" follows
+  // redirect hops to loopback/private addresses without re-validating (SSRF).
+  // Behavioral testing is not possible here (hop 0 to a loopback server is
+  // already blocked, and a "public" initial host needs live DNS), so this pins
+  // the source-level contract instead: no native-redirect transports in fetch.ts.
+  const source = readFileSync(new URL("../fetch/fetch.ts", import.meta.url), "utf-8");
+  assert.ok(
+    !source.includes("redirect:"),
+    "fetch.ts must not configure native redirects — transport belongs to httpGet, which re-validates every hop",
+  );
+  const directFetches = source.match(/\bfetch\s*\(/g) ?? [];
+  // Exactly one direct fetch(): inside fetchWithTimeout, used only by the two
+  // fixed-host fallback services (r.jina.ai, markdown.new — no user-controlled
+  // host, so no SSRF surface). Every user-URL transport must go through httpGet.
+  assert.equal(
+    directFetches.length, 1,
+    `expected exactly one direct fetch( (fetchWithTimeout, fixed-host fallbacks), found ${directFetches.length}`,
+  );
 });

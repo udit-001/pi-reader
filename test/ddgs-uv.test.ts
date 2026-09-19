@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, buildDdgsTextCommand } from "../search/ddgs-uv.ts";
+import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, buildDdgsTextArgs } from "../search/ddgs-uv.ts";
 import { join } from "node:path";
 
 test("ddgs-uv: hasUvx returns a boolean", () => {
@@ -90,43 +90,54 @@ test("timelimitFor returns null when no recency is given", () => {
   assert.equal(timelimitFor(undefined), null);
 });
 
-// ── buildDdgsTextCommand — the pure arg plan for `uvx ddgs text` ────────────
+// ── buildDdgsTextArgs — the pure argv plan for `uvx ddgs text` ──────────────
 
 const BASE_ARGS = { query: "rust async", maxResults: 5, uvx: "/usr/bin/uvx", output: "/tmp/out.json" };
 
-test("buildDdgsTextCommand pins the base flags: -q quoted, -m, -o", () => {
-  const cmd = buildDdgsTextCommand(BASE_ARGS);
-  assert.match(cmd, /^"\/usr\/bin\/uvx" ddgs text /);
-  assert.match(cmd, /-q "rust async"/);
-  assert.match(cmd, /-m 5/);
-  assert.match(cmd, /-o "\/tmp\/out\.json"/);
+/** Locate the argv slot following a flag. */
+function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i === -1 ? undefined : args[i + 1];
+}
+
+test("buildDdgsTextArgs pins the base flags: -q, -m, -o", () => {
+  const args = buildDdgsTextArgs(BASE_ARGS);
+  assert.equal(args[0], "/usr/bin/uvx");
+  assert.deepEqual(args.slice(1, 3), ["ddgs", "text"]);
+  assert.equal(flagValue(args, "-q"), "rust async");
+  assert.equal(flagValue(args, "-m"), "5");
+  assert.equal(flagValue(args, "-o"), "/tmp/out.json");
 });
 
-test("buildDdgsTextCommand includes -t when a timelimit is given", () => {
-  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, timelimit: "w" });
-  assert.match(cmd, /-t w/);
+test("buildDdgsTextArgs includes -t when a timelimit is given", () => {
+  const args = buildDdgsTextArgs({ ...BASE_ARGS, timelimit: "w" });
+  assert.deepEqual([flagValue(args, "-t")], ["w"]);
 });
 
-test("buildDdgsTextCommand omits -t entirely when timelimit is null", () => {
-  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, timelimit: null });
-  assert.ok(!cmd.includes("-t"), `expected no -t flag, got: ${cmd}`);
+test("buildDdgsTextArgs omits -t entirely when timelimit is null", () => {
+  const args = buildDdgsTextArgs({ ...BASE_ARGS, timelimit: null });
+  assert.ok(!args.includes("-t"), `expected no -t flag, got: ${args.join(" ")}`);
 });
 
-test("buildDdgsTextCommand omits -p when page is 1 or unset", () => {
-  const unset = buildDdgsTextCommand(BASE_ARGS);
-  const first = buildDdgsTextCommand({ ...BASE_ARGS, page: 1 });
-  assert.ok(!unset.includes("-p"), `expected no -p flag, got: ${unset}`);
-  assert.ok(!first.includes("-p"), `expected no -p flag, got: ${first}`);
+test("buildDdgsTextArgs omits -p when page is 1 or unset", () => {
+  const unset = buildDdgsTextArgs(BASE_ARGS);
+  const first = buildDdgsTextArgs({ ...BASE_ARGS, page: 1 });
+  assert.ok(!unset.includes("-p"), `expected no -p flag, got: ${unset.join(" ")}`);
+  assert.ok(!first.includes("-p"), `expected no -p flag, got: ${first.join(" ")}`);
 });
 
-test("buildDdgsTextCommand includes -p for pages beyond the first", () => {
-  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, page: 3 });
-  assert.match(cmd, /-p 3/);
+test("buildDdgsTextArgs includes -p for pages beyond the first", () => {
+  const args = buildDdgsTextArgs({ ...BASE_ARGS, page: 3 });
+  assert.deepEqual([flagValue(args, "-p")], ["3"]);
 });
 
-test("buildDdgsTextCommand escapes double quotes in the query", () => {
-  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, query: 'say "hello"' });
-  assert.match(cmd, /-q "say \\"hello\\""/);
+test("buildDdgsTextArgs keeps the query as ONE argv slot — no shell quoting or escaping", () => {
+  // Regression: the old builder embedded the query in a shell string, so $(...)
+  // and backticks were command-substituted by /bin/sh (command injection).
+  // The argv plan must carry the query verbatim; execFileSync never interprets it.
+  const hostile = 'x"; $(touch /tmp/PI_AUDIT_POC); `id`; \\';
+  const args = buildDdgsTextArgs({ ...BASE_ARGS, query: hostile });
+  assert.deepEqual([flagValue(args, "-q")], [hostile]);
 });
 
 test("ddgs-uv: warmDdgs runs at most once per process and never rejects", async () => {

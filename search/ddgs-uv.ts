@@ -4,7 +4,7 @@
 // for free. Auto-installs uv on first use if missing. Falls back to HTML
 // scraping when uvx is unavailable.
 
-import { execSync, exec } from "node:child_process";
+import { execFileSync, execSync, exec } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -33,7 +33,8 @@ function uvxBinary(): string {
 
 export function hasUvx(): boolean {
   try {
-    execSync(`"${uvxBinary()}" --version`, { stdio: "ignore", timeout: 5000 });
+    // argv-array exec: the uvx path (user homedir) is data, never shell syntax.
+    execFileSync(uvxBinary(), ["--version"], { stdio: "ignore", timeout: 5000 });
     return true;
   } catch {
     return false;
@@ -139,19 +140,16 @@ export interface DdgsTextArgs {
   output: string;
 }
 
-// The full `uvx ddgs text` command as one pure plan — tests pin the flags
-// without spawning processes, matching the probeCommands pattern above.
-export function buildDdgsTextCommand(a: DdgsTextArgs): string {
-  const parts = [
-    `"${a.uvx}"`,
-    "ddgs", "text",
-    "-q", `"${a.query.replace(/"/g, '\\"')}"`,
-  ];
+/** The full `uvx ddgs text` command as one pure argv plan — tests pin the flags
+ *  without spawning processes. One argv slot per argument: the query (which
+ *  embeds model-supplied text) is data, never shell syntax. Pure; exported for tests. */
+export function buildDdgsTextArgs(a: DdgsTextArgs): string[] {
+  const parts = [a.uvx, "ddgs", "text", "-q", a.query];
   if (a.timelimit) parts.push("-t", a.timelimit);
   if (a.page && a.page > 1) parts.push("-p", String(a.page));
   parts.push("-m", String(a.maxResults));
-  parts.push("-o", `"${a.output}"`);
-  return parts.join(" ");
+  parts.push("-o", a.output);
+  return parts;
 }
 
 // ── ddgs search ─────────────────────────────────────────────────────────────
@@ -181,17 +179,16 @@ export function searchViaDdgs(
     }
     const fullQuery = siteOps.length > 0 ? `${query} ${siteOps.join(" ")}` : query;
 
-    // Run uvx ddgs
-    const command = buildDdgsTextCommand({
+    // Run uvx ddgs — argv-array exec: the query (model-supplied, potentially
+    // hostile) stays one data slot; no shell to interpret $() or backticks.
+    execFileSync(uvx, buildDdgsTextArgs({
       query: fullQuery,
       maxResults,
       timelimit: timelimitFor(options.recency),
       page: options.page,
       uvx,
       output: tmpFile,
-    });
-
-    execSync(command, {
+    }).slice(1), {
       stdio: "pipe",
       timeout: SEARCH_TIMEOUT_MS,
     });
