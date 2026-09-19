@@ -8,6 +8,7 @@ import {
   getText,
 } from "./handler.ts";
 import { ensureClone, renderRepoView } from "../github-clone.ts";
+import { fetchIssuePr, parseIssuePrUrl } from "../github-issue-pr.ts";
 
 function repoParts(url: URL): { owner: string; repo: string; rest: string[] } | undefined {
   const segs = url.pathname.split("/").filter(Boolean);
@@ -149,18 +150,18 @@ async function githubReleases(
   return { kind: "release", title: `Releases of ${owner}/${repo}`, content: formatReleases(releases) };
 }
 
-interface GhIssue {
-  title: string;
-  state: string;
-  user: { login: string };
-  body: string | null;
-}
-
 // Full-SHA refs can't be branch-cloned; they get the API view with a note.
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
 function withNote(light: HandlerResult, note: string): HandlerResult {
   return { ...light, content: `${light.content}\n\n---\n\n${note}` };
+}
+
+/** Issue/PR URL: delegate to the github-issue-pr module (gh-first, REST fallback). */
+function githubIssueView(url: URL, ctx: FetchContext): Promise<HandlerResult> | undefined {
+  const info = parseIssuePrUrl(url);
+  if (!info) return undefined; // odd subpath — plain page
+  return fetchIssuePr(info, { signal: ctx.signal });
 }
 
 /**
@@ -200,22 +201,6 @@ async function githubRepoClone(
   return withNote(light, `Note: clone failed (${result.reason}) — showing the API view instead.`);
 }
 
-async function githubIssue(owner: string, repo: string, num: string, ctx: FetchContext): Promise<HandlerResult> {
-  const issue = await getJson<GhIssue>(`https://api.github.com/repos/${owner}/${repo}/issues/${num}`, ctx.signal);
-  const comments = await getJson<Array<{ user: { login: string }; body: string }>>(
-    `https://api.github.com/repos/${owner}/${repo}/issues/${num}/comments?per_page=20`,
-    ctx.signal,
-  );
-  const parts = [
-    `# ${issue.title} (#${num}, ${issue.state})`,
-    `by ${issue.user.login} | ${owner}/${repo}`,
-    "",
-    issue.body ?? "(no description)",
-    ...comments.map((c) => `\n---\n**${c.user.login}:**\n${c.body}`),
-  ];
-  return { kind: "issue", title: issue.title, content: parts.join("\n") };
-}
-
 export const githubHandler = defineHandler({
   name: "github",
   description:
@@ -241,7 +226,9 @@ export const githubHandler = defineHandler({
       return { kind: "file", content: text };
     }
     if ((rest[0] === "issues" || rest[0] === "pull") && /^\d+$/.test(rest[1] ?? "")) {
-      return githubIssue(owner, repo, rest[1] ?? "", ctx);
+      const view = githubIssueView(url, ctx);
+      if (view) return view;
+      return defaultFetch(url, ctx); // unrecognized shape — plain page
     }
     if (rest.length === 0 || rest[0] === "tree") {
       const isTree = rest[0] === "tree";

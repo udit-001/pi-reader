@@ -22,6 +22,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 | `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
 | `fetch/handlers/` | Per-site structured rendering (GitHub, registries, HN, feeds, …) |
 | `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, size gate, runtime cache), `renderRepoView` |
+| `fetch/github-issue-pr.ts` | Issue/PR documents: gh-first with REST fallback, one deterministic renderer |
 | `cache/cache.ts` | Fetch cache on disk: lookup/store/prune, sqlite index in `cachedb.ts` |
 | `config.ts` | All config file I/O: `~/.pi/agent/pi-reader.json`, atomic |
 | `search/exa-mcp.ts` | Exa MCP transport: JSON-RPC, SSE, key resolution |

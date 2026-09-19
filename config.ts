@@ -26,7 +26,7 @@ export interface PiWebConfig {
     /** ISO timestamp when the mcp.json duplication prompt was shown. */
     mcpDuplicate?: string;
   };
-  /** GitHub repo cloning (see github-clone.ts). Absent fields use defaults. */
+  /** GitHub repo cloning (see fetch/github-clone.ts). Absent fields use defaults. */
   githubClone?: {
     /** Set false to stop cloning repo URLs (they fall back to the API view). */
     enabled?: boolean;
@@ -36,6 +36,11 @@ export interface PiWebConfig {
     cloneTimeoutSeconds?: number;
     /** Where checkouts live. Default /tmp/pi-github-repos. ~ and $VAR expand. */
     clonePath?: string;
+  };
+  /** GitHub issue/PR rendering (see fetch/github-issue-pr.ts). */
+  githubIssuePr?: {
+    /** Set false to skip gh and render via the REST API only. Default true. */
+    enabled?: boolean;
   };
 }
 
