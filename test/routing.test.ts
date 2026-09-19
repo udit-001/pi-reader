@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveAutoRoute } from "../search/search.ts";
+import { resolveAutoRoute, autoChain } from "../search/search.ts";
 
 test("routing: plain keyword query starts free at DuckDuckGo", () => {
   assert.equal(resolveAutoRoute({}), "ddg-first");
@@ -31,4 +31,22 @@ test("routing: news intent stays Exa-first under auto — the news vertical is e
   // research must not be silently narrowed by the smaller news engine set.
   assert.equal(resolveAutoRoute({ category: "news" }), "exa-first");
   assert.equal(resolveAutoRoute({ category: "news", recency: "week" }), "exa-first");
+});
+
+// ── autoChain — the full auto pair: [primary, failure-fallback] ───────────
+
+ test("autoChain: news intent runs the fidelity ladder — Exa primary, news vertical on failure", () => {
+  // Exa stays primary for news intent when alive (PIWEB-10); the failure leg
+  // is the news vertical, whose own degrade lands on text — not a direct
+  // drop to generic text.
+  assert.deepEqual(autoChain({ category: "news" }), ["exa", "news"]);
+  assert.deepEqual(autoChain({ category: "news", recency: "week" }), ["exa", "news"]);
+});
+
+test("autoChain: non-news intents keep today's fallback pair", () => {
+  assert.deepEqual(autoChain({}), ["duckduckgo", "exa"]);
+  assert.deepEqual(autoChain({ recency: "week" }), ["duckduckgo", "exa"]);
+  assert.deepEqual(autoChain({ category: "github" }), ["exa", "duckduckgo"]);
+  assert.deepEqual(autoChain({ includeContent: true }), ["exa", "duckduckgo"]);
+  assert.deepEqual(autoChain({ domains: ["github.com"] }), ["exa", "duckduckgo"]);
 });

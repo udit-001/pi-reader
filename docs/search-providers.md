@@ -5,7 +5,8 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 ## Routing (`search/search.ts`)
 
 - `provider: "auto"` → `resolveAutoRoute()`: Exa-shaped params (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback. Pure function — pin changes in `test/routing.test.ts`.
-- `wikipedia`, `hn`, `context7`, and `news` are free, keyless, explicit-only — never chosen by auto-routing and never in the auto-fallback chain. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
+- The full auto pair is `autoChain()` — `[primary, failure-fallback]`. For news intent (`category: "news"`) it is the fidelity ladder's first two rungs: Exa semantic news primary when alive; on an Exa *failure* (quota death, missing key) the news vertical takes over with dates and outlets, and its own degrade lands on text. Fallback fires on provider failure (throw) only — never on empty results. A news-intent query that degraded all the way to text is not cached, so the ladder recovers instead of pinning the degrade for the TTL.
+- `wikipedia`, `hn`, `context7`, and `news` are free, keyless, explicit-only — never chosen as the auto *primary* and never in the fallback chain for non-news intent. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
 - Exa runs one of two calls: a plain query → `searchExaMcp`; any Exa-shaped param → `searchExaAdvanced`.
 - Successful results are cached for 1 hour (key: query + provider + options). Exa results are never cached — they cost quota.
 

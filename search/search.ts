@@ -93,6 +93,12 @@ const newsProvider: SearchProvider = {
   },
 };
 
+const autoProviders: Record<AutoProviderName, SearchProvider> = {
+  duckduckgo: duckduckgoProvider,
+  exa: exaProvider,
+  news: newsProvider,
+};
+
 // Free providers: Wikipedia, HN, Context7 (no API key needed)
 // Used as fallback when DDG and Exa both fail.
 const freeProviders: SearchProvider = {
@@ -124,6 +130,22 @@ export function resolveAutoRoute(options: SearchOptions): AutoRoute {
     || options.includeSummary === true
     || (options.domains !== undefined && options.domains.length > 0);
   return exaShaped ? "exa-first" : "ddg-first";
+}
+
+// The full auto pair: [primary, failure-fallback], as provider names. For
+// news-shaped intent (category: "news") this is the fidelity ladder's first
+// two rungs — Exa semantic news stays primary when alive; on an Exa *failure*
+// (quota death, missing key) the news vertical takes over with dates and
+// outlets, and its own degrade lands on text. Any other intent keeps today's
+// pair. Fallback fires on provider failure (throw) only — never on empty
+// results. Pure; exported for tests.
+export type AutoProviderName = "duckduckgo" | "exa" | "news";
+
+export function autoChain(options: SearchOptions): [AutoProviderName, AutoProviderName] {
+  if (options.category === "news") return ["exa", "news"];
+  return resolveAutoRoute(options) === "exa-first"
+    ? ["exa", "duckduckgo"]
+    : ["duckduckgo", "exa"];
 }
 
 // ── Search cache ────────────────────────────────────────────────────────────
@@ -213,21 +235,24 @@ export async function webSearch(
     // Domain-specific providers — only when explicitly requested
     response = await freeProviders.search(query, { ...options, source: requested } as any);
   } else {
-    // auto: DDG first, Exa fallback. No domain-specific fallback.
-    const [first, second] = resolveAutoRoute(options) === "exa-first"
-      ? [exaProvider, duckduckgoProvider]
-      : [duckduckgoProvider, exaProvider];
+    // auto: the chain is intent-shaped (autoChain). Fallback fires on provider
+    // failure only; if the fallback throws too, the error surfaces as an
+    // actionable in-band error.
+    const [primary, fallback] = autoChain(options);
     try {
-      response = await first.search(query, options);
+      response = await autoProviders[primary].search(query, options);
     } catch {
-      response = await second.search(query, options);
+      response = await autoProviders[fallback].search(query, options);
     }
   }
 
   // Cache successful results (except Exa which costs money, and a degraded
   // news response — caching text results under a news key would pin the
-  // degrade for an hour instead of letting the news path recover).
-  const degradedNews = requested === "news" && response.provider !== "news";
+  // degrade for an hour instead of letting the news path recover). Under auto,
+  // a news-intent query that fell from Exa through the news leg to text is
+  // the same degrade and gets the same treatment.
+  const newsIntent = requested === "news" || (requested === "auto" && options.category === "news");
+  const degradedNews = newsIntent && response.provider !== "news";
   if (response.results.length > 0 && response.provider !== "exa" && !degradedNews) {
     const cacheKey = getSearchCacheKey(query, options);
     writeSearchCache(cacheKey, {

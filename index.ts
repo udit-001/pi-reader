@@ -49,7 +49,8 @@ const providerSchema = Type.Optional(
     ],
     {
       description:
-        "Search provider. 'auto' tries DDG then Exa. " +
+        "Search provider. 'auto' tries DDG then Exa; for category: 'news', an Exa failure falls " +
+        "to the free news vertical (dated, keyword) before generic text. " +
         "'news' for news coverage ('what happened this week about X') — dated, outlet-attributed " +
         "articles from free keyword news engines; honors query, recency (d/w/m/y), and page; " +
         "domains is not supported; degrades to text search with a visible notice when unavailable. " +
@@ -94,7 +95,9 @@ const webSearchParams = Type.Object({
     {
       description:
         "Filter by content type. Use 'company' for company/funding data, " +
-        "'people' for LinkedIn/professional profiles, 'news' for recent events, " +
+        "'people' for LinkedIn/professional profiles, 'news' for recent events — " +
+        "Exa semantic news; under auto an Exa failure falls to the free news " +
+        "vertical (keyword, dated) before generic text. " +
         "'publication' for papers/articles, 'github' for code/repos.",
     },
   )),
