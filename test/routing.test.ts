@@ -1,41 +1,33 @@
-// Tests for the intent-aware auto router — the pure decision behind
-// provider=auto. The agent expresses intent through params; the router turns
-// intent into a provider order. Availability fallback stays internal.
+// Tests for the pure decision seams behind provider=auto. The agent expresses
+// intent through params; the seams turn intent into a provider chain.
+// autoChain is the single routing seam: [primary, failure-fallback] names.
+// Availability fallback stays internal.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveAutoRoute, autoChain } from "../search/search.ts";
+import { autoChain, shouldCacheSearch, type SearchResponse } from "../search/search.ts";
 
-test("routing: plain keyword query starts free at DuckDuckGo", () => {
-  assert.equal(resolveAutoRoute({}), "ddg-first");
-  assert.equal(resolveAutoRoute({ numResults: 5 }), "ddg-first");
+test("autoChain: plain keyword query starts free at DuckDuckGo", () => {
+  assert.deepEqual(autoChain({}), ["duckduckgo", "exa"]);
+  assert.deepEqual(autoChain({ numResults: 5 }), ["duckduckgo", "exa"]);
 });
 
-test("routing: recency alone is DuckDuckGo-compatible (df param), stays free-first", () => {
-  assert.equal(resolveAutoRoute({ recency: "week" }), "ddg-first");
+test("autoChain: recency alone is DuckDuckGo-compatible (df param), stays free-first", () => {
+  assert.deepEqual(autoChain({ recency: "week" }), ["duckduckgo", "exa"]);
 });
 
-test("routing: Exa-only intent params route straight to Exa", () => {
-  assert.equal(resolveAutoRoute({ category: "github" }), "exa-first");
-  assert.equal(resolveAutoRoute({ includeContent: true }), "exa-first");
-  assert.equal(resolveAutoRoute({ includeSummary: true }), "exa-first");
-  assert.equal(resolveAutoRoute({ domains: ["github.com"] }), "exa-first");
+test("autoChain: Exa-only intent params route straight to Exa", () => {
+  assert.deepEqual(autoChain({ category: "github" }), ["exa", "duckduckgo"]);
+  assert.deepEqual(autoChain({ includeContent: true }), ["exa", "duckduckgo"]);
+  assert.deepEqual(autoChain({ includeSummary: true }), ["exa", "duckduckgo"]);
+  assert.deepEqual(autoChain({ domains: ["github.com"] }), ["exa", "duckduckgo"]);
 });
 
-test("routing: any Exa-shaped param dominates recency", () => {
-  assert.equal(resolveAutoRoute({ recency: "day", category: "news", domains: ["-reddit.com"] }), "exa-first");
+test("autoChain: any Exa-shaped param dominates recency", () => {
+  assert.deepEqual(autoChain({ recency: "day", category: "news", domains: ["-reddit.com"] }), ["exa", "news"]);
 });
 
-test("routing: news intent stays Exa-first under auto — the news vertical is explicit-only", () => {
-  // `provider: "news"` is never chosen by auto-routing (spec PIWEB-8): broad
-  // research must not be silently narrowed by the smaller news engine set.
-  assert.equal(resolveAutoRoute({ category: "news" }), "exa-first");
-  assert.equal(resolveAutoRoute({ category: "news", recency: "week" }), "exa-first");
-});
-
-// ── autoChain — the full auto pair: [primary, failure-fallback] ───────────
-
- test("autoChain: news intent runs the fidelity ladder — Exa primary, news vertical on failure", () => {
+test("autoChain: news intent runs the fidelity ladder — Exa primary, news vertical on failure", () => {
   // Exa stays primary for news intent when alive (PIWEB-10); the failure leg
   // is the news vertical, whose own degrade lands on text — not a direct
   // drop to generic text.
@@ -49,4 +41,34 @@ test("autoChain: non-news intents keep today's fallback pair", () => {
   assert.deepEqual(autoChain({ category: "github" }), ["exa", "duckduckgo"]);
   assert.deepEqual(autoChain({ includeContent: true }), ["exa", "duckduckgo"]);
   assert.deepEqual(autoChain({ domains: ["github.com"] }), ["exa", "duckduckgo"]);
+});
+
+// ── shouldCacheSearch — the cache-honesty decision ───────────────────────────
+
+const ok = (over: Partial<SearchResponse> = {}): SearchResponse => ({
+  answer: "a",
+  results: [{ title: "t", url: "https://e.com", snippet: "s" }],
+  provider: "duckduckgo",
+  ...over,
+});
+
+test("shouldCacheSearch: successful free-provider results are cached", () => {
+  assert.equal(shouldCacheSearch(ok()), true);
+  assert.equal(shouldCacheSearch(ok({ provider: "news" })), true);
+  assert.equal(shouldCacheSearch(ok({ provider: "duckduckgo" })), true);
+});
+
+test("shouldCacheSearch: Exa results are never cached — they cost quota", () => {
+  assert.equal(shouldCacheSearch(ok({ provider: "exa" })), false);
+  assert.equal(shouldCacheSearch(ok({ provider: "exa" })), false);
+});
+
+test("shouldCacheSearch: empty results are never cached", () => {
+  assert.equal(shouldCacheSearch(ok({ results: [] })), false);
+});
+
+test("shouldCacheSearch: a degraded response is never cached — the flag travels on the response", () => {
+  // The news adapter sets degraded when it fell to text; the cache guard reads
+  // the flag instead of re-deriving which provider names mean "degraded".
+  assert.equal(shouldCacheSearch(ok({ degraded: true })), false);
 });

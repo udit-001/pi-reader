@@ -51,6 +51,10 @@ export interface SearchResponse {
   answer: string;
   results: SearchResult[];
   provider: SearchProviderName;
+  /** Set by an adapter that fell back (e.g. the news vertical degrading to
+   *  text): the results are NOT what was asked for. The cache guard reads this
+   *  flag so a degraded answer is never cached under the requested key. */
+  degraded?: boolean;
 }
 
 // ── SearchProvider seam ──────────────────────────────────────────────────────
@@ -89,6 +93,7 @@ const newsProvider: SearchProvider = {
       answer: buildAnswer(outcome.results),
       results: outcome.results,
       provider: outcome.degraded ? "duckduckgo" : "news",
+      ...(outcome.degraded ? { degraded: true } : {}),
     };
   },
 };
@@ -117,35 +122,22 @@ const freeProviders: SearchProvider = {
 
 // ── Intent-aware auto routing ───────────────────────────────────────────────
 // The agent expresses intent (category, content, domains); availability is
-// runtime state only the tool observes. So auto-routing is a pure function of
-// intent: Exa-shaped params that DuckDuckGo cannot honor route straight to
-// Exa (no wasted DDG attempt that silently ignores them); plain queries start
-// free. Either way the other provider remains the failure fallback.
+// runtime state only the tool observes. autoChain is the single routing seam:
+// a pure function of intent returning [primary, failure-fallback] provider
+// names. News-shaped intent (category: "news") runs the fidelity ladder —
+// Exa semantic news primary when alive; on an Exa failure (quota death,
+// missing key) the news vertical takes over with dates and outlets, and its
+// own degrade lands on text. Any other intent keeps the ddg↔exa pair.
 
-export type AutoRoute = "ddg-first" | "exa-first";
-
-export function resolveAutoRoute(options: SearchOptions): AutoRoute {
-  const exaShaped = options.category !== undefined
-    || options.includeContent === true
-    || options.includeSummary === true
-    || (options.domains !== undefined && options.domains.length > 0);
-  return exaShaped ? "exa-first" : "ddg-first";
-}
-
-// The full auto pair: [primary, failure-fallback], as provider names. For
-// news-shaped intent (category: "news") this is the fidelity ladder's first
-// two rungs — Exa semantic news stays primary when alive; on an Exa *failure*
-// (quota death, missing key) the news vertical takes over with dates and
-// outlets, and its own degrade lands on text. Any other intent keeps today's
-// pair. Fallback fires on provider failure (throw) only — never on empty
-// results. Pure; exported for tests.
 export type AutoProviderName = "duckduckgo" | "exa" | "news";
 
 export function autoChain(options: SearchOptions): [AutoProviderName, AutoProviderName] {
   if (options.category === "news") return ["exa", "news"];
-  return resolveAutoRoute(options) === "exa-first"
-    ? ["exa", "duckduckgo"]
-    : ["duckduckgo", "exa"];
+  const exaShaped = options.category !== undefined
+    || options.includeContent === true
+    || options.includeSummary === true
+    || (options.domains !== undefined && options.domains.length > 0);
+  return exaShaped ? ["exa", "duckduckgo"] : ["duckduckgo", "exa"];
 }
 
 // ── Search cache ────────────────────────────────────────────────────────────
@@ -207,6 +199,15 @@ function writeSearchCache(key: string, data: CachedSearch): void {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/** The cache-honesty decision, pure: cache successful results except Exa
+ *  (costs quota) and any degraded response — caching text under a news key
+ *  would pin the degrade for the TTL instead of letting the path recover.
+ *  The degrade travels as a flag on the response, so no caller has to
+ *  re-derive which provider names mean "degraded". Exported for tests. */
+export function shouldCacheSearch(response: SearchResponse): boolean {
+  return response.results.length > 0 && response.provider !== "exa" && response.degraded !== true;
+}
+
 export async function webSearch(
   query: string,
   options: SearchOptions & { provider?: SearchProviderName | "auto" },
@@ -246,14 +247,8 @@ export async function webSearch(
     }
   }
 
-  // Cache successful results (except Exa which costs money, and a degraded
-  // news response — caching text results under a news key would pin the
-  // degrade for an hour instead of letting the news path recover). Under auto,
-  // a news-intent query that fell from Exa through the news leg to text is
-  // the same degrade and gets the same treatment.
-  const newsIntent = requested === "news" || (requested === "auto" && options.category === "news");
-  const degradedNews = newsIntent && response.provider !== "news";
-  if (response.results.length > 0 && response.provider !== "exa" && !degradedNews) {
+  // Cache successful results (shouldCacheSearch — pure, test-pinned)
+  if (shouldCacheSearch(response)) {
     const cacheKey = getSearchCacheKey(query, options);
     writeSearchCache(cacheKey, {
       query,

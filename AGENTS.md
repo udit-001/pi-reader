@@ -29,7 +29,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 | `search/exa-setup.ts` | Wizard TUI: key validation, save, import-from-mcp.json |
 | `search/exa-issue.ts` | Shared state: classify Exa failures for one-shot hints |
 
-**Two adapters = real seam.** One adapter is hypothetical; two is the proof. A third provider satisfies `SearchProvider` in `search/search.ts` and registers in the provider map. The auto-router `resolveAutoRoute()` decides order by intent params — a pure function, tested separately.
+**Two adapters = real seam.** One adapter is hypothetical; two is the proof. A third provider satisfies `SearchProvider` in `search/search.ts` and registers in the provider map. The auto-router `autoChain()` decides the `[primary, failure-fallback]` pair by intent params — a pure function, tested separately.
 
 **Fetch chain priority:** local (Defuddle, regex) → Jina Reader (renders JS) → markdown.new → Exa MCP. Free tiers first; Exa is the quota'd last resort.
 
@@ -52,7 +52,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 
 Every branch ends the same way: typecheck green, the touched test file green.
 
-1. **Search provider** — add an adapter satisfying `SearchProvider` in `search/search.ts`, register it in the provider map, and extend `resolveAutoRoute()` if it has Exa-equivalent intent params (`test/routing.test.ts`).
+1. **Search provider** — add an adapter satisfying `SearchProvider` in `search/search.ts`, register it in the provider map, and extend `autoChain()` if it has Exa-equivalent intent params (`test/routing.test.ts`).
 2. **Fetch fallback** — insert into the chain in `fetch/fetch.ts` before Exa; it must be free or Exa-backed.
 3. **Tool param** — Typebox schema in `index.ts`, pass-through to the deep module, routing test in `test/routing.test.ts` when it affects auto-routing.
 4. **Exa tool** — wrapper in `search/exa-mcp.ts`, exposed via `searchExaAdvanced()` or a new export; test the parse seam.
