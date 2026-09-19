@@ -31,7 +31,8 @@ Every path to content goes through `httpGet` (`fetch/handlers/handler.ts`):
 
 - `assertPublicTarget` blocks loopback, link-local, and private-range targets (cloud metadata, intranet).
 - A DNS preflight resolves the hostname once and blocks when any resolved address is private.
-- Redirects are followed manually so every hop re-validates against the same check (`MAX_REDIRECTS` cap).
+- A process-wide dispatcher wraps `dns.lookup` (`guardedLookup`) so no address reaches a connection unvalidated — closing the rebinding window between preflight and connect.
+- Redirects are followed manually so every hop re-runs the preflight (`MAX_REDIRECTS` cap).
 
 The escape hatch is `allowPrivateNetwork: true` in `~/.pi/agent/pi-reader.json`. Route new fetch paths through `httpGet` so they inherit the guard — the test suite pins this.
 

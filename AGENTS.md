@@ -19,6 +19,8 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 | Module | Seam |
 |--------|------|
 | `search/search.ts` | Provider seam: routing, fallback, answer synthesis |
+| `search/ddgs-uv.ts` | ddgs adapter seam: shared argv plan (`buildDdgsArgs`), private tmp dir, warm-up, recency/license maps |
+| `search/news.ts`, `search/images.ts`, `search/duckduckgo.ts` | ddgs verticals: news, images, and the HTML degrade |
 | `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
 | `fetch/handlers/` | Per-site structured rendering (GitHub, registries, HN, feeds, …) |
 | `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, size gate, runtime cache), `renderRepoView` |

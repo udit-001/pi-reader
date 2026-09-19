@@ -12,9 +12,9 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 ## DuckDuckGo: the ddgs/uvx path (`search/ddgs-uv.ts`)
 
-- Primary: `uvx ddgs text` — TLS fingerprinting and VQD token handling for free. JSON output to a tmp file, parsed, tmp removed in `finally`.
+- Primary: `uvx ddgs text` — TLS fingerprinting and VQD token handling for free. JSON output lands in a private per-call dir (`mkdtemp`, 0700 — a local user can't pre-place a symlink at a guessable path to feed fake results), removed in `finally`.
 - uvx resolution: official install location first (`~/.local/bin/uvx`, `.exe` on Windows), then bare `uvx` so PATH resolves it (brew, apt, pip, scoop). Missing → auto-installed once via the official installer, then probed again.
-- Session-start warm-up (`warmDdgs`): once per process, fire-and-forget, never blocks or throws. Moves the one-time uv/ddgs download off the first search; failure is silent because the HTML fallback covers search.
+- Session-start warm-up (`warmDdgs`): once per process, fire-and-forget, never blocks or throws. Moves the one-time uv/ddgs download off the first search; failure is silent because the HTML fallback covers search. The one exception: when warm-up *installs* uv, the user is told — `curl | sh` from astral.sh never runs invisibly.
 - Degraded fallback: HTML scraping. Its results carry a visible notice so the agent knows quality dropped.
 - `recency` maps to ddgs `-t` letter codes via `REGENCY_TO_TIMELIMIT` — the single source of truth for both the ddgs and HTML adapters, and for the news vertical. `page` maps to `-p`. `domains` become `site:` / `-site:` operators.
 
@@ -37,7 +37,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 - Remote JSON-RPC over SSE — network errors are expected: the adapter retries once, then auto-routing falls back to DDG.
 - Key resolution, in order: `~/.pi/agent/pi-reader.json` (`exa.apiKey`, written by the wizard) → `EXA_API_KEY` env var. `mcp.json` is a wizard *import source*, never a runtime key source. Resolution is lazy and cached; `resetExaKeyCache()` after a wizard write makes a new key live without restart.
-- Keyless and rate-limited failures call `noteExaIssue()`; the entry consumes it once per tool call (`consumeExaIssue` in `finally`), so the hint fires once per tool call, not per provider attempt.
+- Keyless and rate-limited failures call `noteExaIssue()`; the entry consumes it once per tool call (`consumeExaIssue` in `finally`), so the hint fires once per tool call, not per provider attempt. Every error leaving `callExaTool` passes `redactKey()` — the key never reaches the agent transcript (short keys are skipped: they occur in ordinary text).
 
 ## Config (`config.ts`)
 
