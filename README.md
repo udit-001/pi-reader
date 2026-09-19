@@ -30,13 +30,15 @@ web_search({ query: "best Go HTTP router 2024", provider: "hn" })
 | `includeContent` | boolean | Exa: full page text (up to 50k chars each) |
 | `includeSummary` | boolean | Exa: AI summary per result |
 
-**`web_fetch`** — URLs as clean Markdown. Add `prompt` to answer a question about the content. Add `topic` to extract only sections matching a topic from long pages.
+**`web_fetch`** — URLs as clean Markdown, raw response bodies, or feed summaries. Add `prompt` to answer a question about the content, `topic` to extract only matching sections, and `mode: "raw"` to inspect the exact HTML/XML a server returned.
 
 ```text
 web_fetch({ urls: "https://docs.example.com/guide" })
 web_fetch({ urls: ["https://a.com", "https://b.com"], maxChars: 10000 })
 web_fetch({ urls: "https://article.com", prompt: "Summarize the security implications" })
 web_fetch({ urls: "https://large-doc.com/api", topic: "authentication" })
+web_fetch({ urls: "https://openai.com/news/rss.xml" })        // channel title + recent posts
+web_fetch({ urls: "https://example.com", mode: "raw" })       // exact body, status + content-type labeled
 ```
 
 | Param | Type | Notes |
@@ -45,11 +47,14 @@ web_fetch({ urls: "https://large-doc.com/api", topic: "authentication" })
 | `maxChars` | 500–100000 | Default 20000 per page |
 | `prompt` | string | Answer this about the pages using the current Pi model |
 | `topic` | string | Extract only sections matching this topic |
+| `mode` | `"markdown" \| "raw"` | `raw` returns the exact response body, labeled with HTTP status and content type |
 | `model` | string | Override the summarizing model (requires `prompt`) |
 
 ## How fetching works
 
-The fetch chain tries local extraction first (Defuddle for HTML, Next.js RSC flight payloads for client-rendered pages, regex for edge cases, and a curl retry with a real Chrome profile for bot-walled pages), then free remote services (Jina Reader for JS-rendered pages, markdown.new for PDFs), then Exa MCP as last resort. Specialized handlers exist for GitHub, GitLab, Reddit, HackerNews, StackExchange, Wikipedia, arXiv, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems) — these return structured content instead of scraped HTML.
+The fetch chain tries local extraction first (Defuddle for HTML, Next.js RSC flight payloads for client-rendered pages, regex for edge cases, and a curl retry with a real Chrome profile for bot-walled pages), then free remote services (Jina Reader for JS-rendered pages, markdown.new for PDFs), then Exa MCP as last resort. Specialized handlers exist for GitHub, GitLab, Reddit, HackerNews, StackExchange, Wikipedia, arXiv, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems) — these return structured content instead of scraped HTML.
+
+Fetches are network-guarded: loopback, private-range, and cloud-metadata addresses are blocked — including across redirect hops — so pointing the agent at a hostile page can't bounce it at your internal network. Response bodies are capped at 5 MB.
 
 Fetched pages are cached locally for 7 days. Search results are cached for 1 hour.
 
