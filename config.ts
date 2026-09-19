@@ -42,6 +42,9 @@ export interface PiWebConfig {
     /** Set false to skip gh and render via the REST API only. Default true. */
     enabled?: boolean;
   };
+  /** Allow fetching loopback/private-network addresses (intranet wikis, local dev
+   *  servers). Default false. Cached responses are written 0600 either way. */
+  allowPrivateNetwork?: boolean;
 }
 
 export function configPath(): string {

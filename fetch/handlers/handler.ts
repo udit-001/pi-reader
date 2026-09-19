@@ -1,8 +1,11 @@
+import { lookup as lookupCb } from "node:dns";
 import { lookup } from "node:dns/promises";
+import { Agent, fetch as undiciFetch } from "undici";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import { htmlToMarkdown } from "./html.ts";
+import { loadConfig } from "../../config.ts";
 
 export type FetchMode = "light" | "full";
 
@@ -81,36 +84,106 @@ export function isPrivateIp(ip: string): boolean {
 }
 
 /**
- * SSRF guard: model-supplied URLs must not reach loopback, link-local, or private-range addresses (cloud metadata endpoints, intranet services).
- * Checks the scheme, the hostname, literal IPs, and DNS-resolved addresses.
+ * Resolve `host` once and validate every answer; returns the validated addresses.
+ * Throws on loopback hostnames, private answers (unless allowed), and lookup
+ * failures (fail-closed: an unvalidated host must not reach the transport).
  */
-export async function assertPublicTarget(url: URL): Promise<void> {
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new FetchError(`Unsupported scheme ${url.protocol}//; only http and https are fetchable`);
-  }
-  const host = url.hostname.replace(/^\[|\]$/g, "");
+export async function resolveValidatedHost(
+  url: URL,
+  allowPrivateNetwork: boolean = loadConfig()?.allowPrivateNetwork === true,
+): Promise<string[]> {
   const blocked = (why: string) =>
-    new FetchError(`Blocked: ${why}. Set allowPrivateNetwork in pi-reader.json to permit private-network fetches.`);
+    new FetchError(`Blocked: ${why}. Set "allowPrivateNetwork": true in pi-reader.json to permit private-network fetches.`);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
   if (host === "localhost" || host.endsWith(".localhost")) throw blocked(`${host} is loopback`);
   if (isIP(host)) {
-    if (isPrivateIp(host)) throw blocked(`${host} is a private address`);
-    return;
+    if (!allowPrivateNetwork && isPrivateIp(host)) throw blocked(`${host} is a private address`);
+    return [host];
   }
-  // Preflight resolves the name once; a redirect hop to a private address can still slip through.
-  // Upgrade path: manual redirect loop in httpGet.
+  let addrs: Array<{ address: string }>;
   try {
     // node's dns lookup takes no signal and can sit on a threadpool slot forever, so the preflight gets its own clock.
-    const addrs = await Promise.race([
+    addrs = await Promise.race([
       lookup(host, { all: true }),
       new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`dns lookup for ${host} timed out`)), DNS_TIMEOUT_MS).unref();
       }),
     ]);
-    if (addrs.some((a) => isPrivateIp(a.address))) throw blocked(`${host} resolves to a private address`);
-  } catch (err) {
-    if (err instanceof FetchError) throw err;
-    // DNS failure: let the fetch itself fail with the natural error
+  } catch {
+    throw new FetchError(`DNS lookup failed for ${host}. Check the URL and your network.`);
   }
+  if (!allowPrivateNetwork) {
+    const privateHit = addrs.find((a) => isPrivateIp(a.address));
+    if (privateHit) throw blocked(`${host} resolves to a private address`);
+  }
+  if (addrs.length === 0) throw new FetchError(`DNS lookup returned no addresses for ${host}`);
+  return addrs.map((a) => a.address);
+}
+
+/**
+ * SSRF guard: model-supplied URLs must not reach loopback, link-local, or private-range addresses (cloud metadata endpoints, intranet services).
+ * Checks the scheme, the hostname, literal IPs, and DNS-resolved addresses.
+ * `allowPrivateNetwork` (pi-reader.json, default false) skips the private-address
+ * checks — the scheme check always applies. This is the fast-fail preflight;
+ * the transport enforces the same rule at connect time via guardedLookup.
+ */
+export async function assertPublicTarget(
+  url: URL,
+  allowPrivateNetwork: boolean = loadConfig()?.allowPrivateNetwork === true,
+): Promise<void> {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new FetchError(`Unsupported scheme ${url.protocol}//; only http and https are fetchable`);
+  }
+  if (allowPrivateNetwork) return;
+  await resolveValidatedHost(url, false);
+}
+
+/** dns.lookup-shaped callback function (node:dns contract; undici also passes string families). */
+export type LookupFn = (
+  hostname: string,
+  options: { all?: boolean; family?: number | "IPv4" | "IPv6" },
+  callback: (err: (Error & { code?: string }) | null, address?: unknown, family?: number) => void,
+) => void;
+
+/**
+ * Wrap a dns.lookup so no address reaches a connection unvalidated: private or
+ * loopback answers reject the connect. This closes the DNS-rebinding window —
+ * the transport resolves only through this function, so "check then connect"
+ * is one lookup by construction and no second, unguarded resolution exists.
+ */
+export function guardedLookup(
+  base: LookupFn,
+  allowPrivateNetwork: boolean = loadConfig()?.allowPrivateNetwork === true,
+): LookupFn {
+  return (hostname, options, callback) => {
+    base(hostname, { ...options, all: true }, (err, res) => {
+      if (err) return callback(err);
+      const found = (Array.isArray(res) ? res : res ? [res] : []) as Array<{ address: string; family: number }>;
+      const wanted = options?.family === 4 || options?.family === "IPv4" ? 4
+        : options?.family === 6 || options?.family === "IPv6" ? 6
+        : 0;
+      const usable = found.filter((a) => !wanted || a.family === wanted);
+      if (!allowPrivateNetwork && usable.some((a) => isPrivateIp(a.address))) {
+        return callback(Object.assign(
+          new Error(`Blocked: ${hostname} resolves to a private address`),
+          { code: "ECONNREFUSED" },
+        ));
+      }
+      if (usable.length === 0) {
+        return callback(Object.assign(new Error(`No usable address for ${hostname}`), { code: "ENOTFOUND" }));
+      }
+      if (options?.all) return callback(null, usable as unknown);
+      return callback(null, usable[0]!.address, usable[0]!.family);
+    });
+  };
+}
+
+let guardedAgent: Agent | undefined;
+
+/** Process-wide dispatcher: every fetch resolves DNS through guardedLookup. */
+function guardedDispatcher(): Agent {
+  guardedAgent ??= new Agent({ connect: { lookup: guardedLookup(lookupCb as unknown as LookupFn) as never } });
+  return guardedAgent;
 }
 
 function withTimeout(signal?: AbortSignal): AbortSignal {
@@ -187,13 +260,16 @@ export async function httpGet(
   }
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     // Per-hop SSRF validation: the preflight only covers the initial URL, and
-    // a redirect hop to a private address must not slip through.
+    // a redirect hop to a private address must not slip through. The dispatcher
+    // re-validates at connect time (guardedLookup), closing the rebinding window
+    // between this preflight and the actual connection.
     await assertPublicTarget(current);
-    const res = await fetch(current.href, {
+    const res = await undiciFetch(current.href, {
       signal: withTimeout(signal),
       headers: { "user-agent": UA, ...headers },
       redirect: "manual",
-    });
+      dispatcher: guardedDispatcher(),
+    } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
     const next = redirectTarget(res, current.href);
     if (!next) return res;
     if (hop === MAX_REDIRECTS) throw new FetchError(`Too many redirects for ${url}`);

@@ -15,7 +15,7 @@
 // (not for callers).
 
 import { execFile } from "node:child_process";
-import { assertPublicTarget, MAX_REDIRECTS } from "./handlers/handler.ts";
+import { resolveValidatedHost, MAX_REDIRECTS } from "./handlers/handler.ts";
 
 const CHROME_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -54,11 +54,16 @@ export interface CurlArgsOptions {
   timeoutMs?: number;
   /** Extra curl args (e.g. cookie flags) — reserved for callers, rarely used. */
   extraArgs?: string[];
+  /** Pre-validated addresses for the host: emitted as --resolve pins so curl
+   *  connects only to addresses the SSRF guard checked (no DNS at connect). */
+  resolves?: string[];
 }
 
 /** Build the full argv for one curl request. Pure; exported for tests. */
 export function buildCurlArgs(url: string, opts: CurlArgsOptions = {}): string[] {
   const secs = Math.max(1, Math.round((opts.timeoutMs ?? 30_000) / 1000));
+  const u = new URL(url);
+  const port = u.port || (u.protocol === "https:" ? "443" : "80");
   return [
     "-sS",
     "--http2",
@@ -87,6 +92,7 @@ export function buildCurlArgs(url: string, opts: CurlArgsOptions = {}): string[]
     "--header",
     "Sec-Fetch-User: ?1",
     ...(opts.extraArgs ?? []),
+    ...(opts.resolves ?? []).flatMap((addr) => ["--resolve", `${u.hostname}:${port}:${addr}`]),
     "--",
     url,
   ];
@@ -160,11 +166,11 @@ export async function curlGetText(url: string, opts: CurlGetOptions = {}): Promi
   if (!bin) return null;
 
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  const runOnce = (target: URL): Promise<string | null> =>
+  const runOnce = (target: URL, resolves: string[]): Promise<string | null> =>
     new Promise((resolve) => {
       execFile(
         bin,
-        buildCurlArgs(target.href, { timeoutMs }),
+        buildCurlArgs(target.href, { timeoutMs, resolves }),
         { timeout: timeoutMs + 5_000, maxBuffer: MAX_CURL_BYTES, signal: opts.signal },
         (err, stdout) => {
           // Exit code 28 = --max-time; 23/26 = write errors on huge bodies. A
@@ -176,13 +182,16 @@ export async function curlGetText(url: string, opts: CurlGetOptions = {}): Promi
     });
 
   // Redirects are followed manually so every hop passes the shared SSRF guard.
+  // Each hop's addresses are resolved once, validated, and pinned via --resolve:
+  // curl performs no DNS of its own, so no rebinding window exists.
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    let addresses: string[];
     try {
-      await assertPublicTarget(current);
+      addresses = await resolveValidatedHost(current);
     } catch {
-      return null; // blocked hop: caller keeps its fallback chain
+      return null; // blocked or unresolvable hop: caller keeps its fallback chain
     }
-    const raw = await runOnce(current);
+    const raw = await runOnce(current, addresses);
     if (raw === null) return null;
     const parsed = parseCurlResponse(raw);
     if (!parsed) return null;

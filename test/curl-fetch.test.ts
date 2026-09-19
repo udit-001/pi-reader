@@ -63,3 +63,9 @@ test("curl: parseCurlResponse extracts the Location header for redirect hops", (
   assert.equal(out.status, 302);
   assert.equal(out.location, "https://example.com/next");
 });
+
+test("curl: --resolve pins are emitted per validated address", () => {
+  const args = buildCurlArgs("https://example.com/x", { resolves: ["1.2.3.4", "5.6.7.8"] });
+  const pins = args.filter((a, i) => a === "--resolve" || args[i - 1] === "--resolve");
+  assert.deepEqual(pins, ["--resolve", "example.com:443:1.2.3.4", "--resolve", "example.com:443:5.6.7.8"]);
+});
