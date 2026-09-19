@@ -2,3 +2,4 @@ node_modules/
 .pnpm-store/
 _pi-web-access/
 docs/specs/
+.lific.json
