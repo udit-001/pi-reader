@@ -38,7 +38,8 @@ export async function connectMcp(
     client.connect(transport),
     new Promise<never>((_, reject) =>
       setTimeout(
-        () => reject(new Error(`MCP connection to ${url} timed out`)),
+        // Origin only: keyed endpoints (Exa) must not leak the query string into errors.
+        () => reject(new Error(`MCP connection to ${new URL(url).origin} timed out`)),
         opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS,
       ).unref?.(),
     ),

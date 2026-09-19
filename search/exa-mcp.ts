@@ -65,6 +65,13 @@ function endpointUrl(key: string): string {
   return `${resolveBaseUrl()}?exaApiKey=${encodeURIComponent(key)}&tools=${encodeURIComponent(EXA_TOOLS)}`;
 }
 
+/** Scrub the API key from error text before it can reach the agent transcript.
+ *  Internal seam, exported for its own tests. Short keys are skipped: they
+ *  occur in ordinary text, so redaction would mangle the message. */
+export function redactKey(text: string, key: string | null): string {
+  return key && key.length > 4 ? text.split(key).join("[redacted]") : text;
+}
+
 // ── Public interface ─────────────────────────────────────────────────────────
 
 export async function searchExaMcp(
@@ -154,12 +161,25 @@ async function resetExaClient(): Promise<void> {
   }
 }
 
-/**
- * Call one Exa MCP tool. With `apiKey` (wizard validation) this opens a
- * one-shot client for the candidate key; otherwise it uses the process
- * singleton and retries exactly once on a connection-level failure.
- */
+/** Call one Exa MCP tool. Wraps callExaToolRaw so no error message leaves this
+ *  module carrying the key — SDK transport errors embed the keyed endpoint URL,
+ *  and these messages land in the agent transcript via tool results. */
 export async function callExaTool(
+  tool: string,
+  args: Record<string, unknown>,
+  options: CallExaOptions = {},
+): Promise<string> {
+  const key = options.apiKey ?? resolveApiKey();
+  try {
+    return await callExaToolRaw(tool, args, options);
+  } catch (err) {
+    const cleaned = redactKey(err instanceof Error ? err.message : String(err), key);
+    if (cleaned === (err instanceof Error ? err.message : String(err))) throw err;
+    throw err instanceof McpToolError ? new McpToolError(cleaned) : new Error(cleaned);
+  }
+}
+
+async function callExaToolRaw(
   tool: string,
   args: Record<string, unknown>,
   options: CallExaOptions = {},
