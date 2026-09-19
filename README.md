@@ -52,9 +52,9 @@ web_fetch({ urls: "https://example.com", mode: "raw" })       // exact body, sta
 
 ## How fetching works
 
-The fetch chain tries local extraction first (Defuddle for HTML, Next.js RSC flight payloads for client-rendered pages, regex for edge cases, and a curl retry with a real Chrome profile for bot-walled pages), then free remote services (Jina Reader for JS-rendered pages, markdown.new for PDFs), then Exa MCP as last resort. Specialized handlers exist for GitHub, GitLab, Reddit, HackerNews, StackExchange, Wikipedia, arXiv, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems) — these return structured content instead of scraped HTML.
+Most pages fetch with zero API keys, including client-rendered pages (Next.js App Router) and pages behind bot walls. Known sites return structured content instead of scraped HTML: GitHub, GitLab, Reddit, Hacker News, Stack Exchange, Wikipedia, arXiv, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems). Hard cases fall through to free remote readers (Jina Reader, markdown.new) and Exa as a last resort — nothing to configure.
 
-Fetches are network-guarded: loopback, private-range, and cloud-metadata addresses are blocked — including across redirect hops — so pointing the agent at a hostile page can't bounce it at your internal network. Response bodies are capped at 5 MB.
+Fetches are network-guarded: hostile pages can't bounce the fetcher at your localhost, private network, or cloud-metadata endpoints — including across redirects. Response bodies are capped at 5 MB.
 
 Fetched pages are cached locally for 7 days. Search results are cached for 1 hour.
 
