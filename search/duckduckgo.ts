@@ -7,7 +7,7 @@
 // Auto-installs uv on first use if missing.
 
 import type { SearchOptions, SearchResult } from "./search.ts";
-import { hasUvx, installUv, searchViaDdgs } from "./ddgs-uv.ts";
+import { hasUvx, installUv, searchViaDdgs, REGENCY_TO_TIMELIMIT } from "./ddgs-uv.ts";
 
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 const TIMEOUT_MS = 25_000;
@@ -76,9 +76,10 @@ async function searchViaHtml(
 
   const url = new URL(DDG_HTML_URL);
   url.searchParams.set("q", siteQuery);
+  // df= uses the same letter codes as ddgs's -t — one shared map
   if (options.recency) {
-    const map: Record<string, string> = { day: "d", week: "w", month: "m", year: "y" };
-    url.searchParams.set("df", map[options.recency] ?? "");
+    const code = REGENCY_TO_TIMELIMIT[options.recency];
+    if (code) url.searchParams.set("df", code);
   }
 
   const res = await fetch(url, {

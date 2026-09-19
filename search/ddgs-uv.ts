@@ -111,6 +111,47 @@ export function warmDdgs(
   return warmFlow(run, probeCommands(process.platform, homedir()), uvInstallCommand(process.platform));
 }
 
+// ── recency → ddgs timelimit ─────────────────────────────────────────────────────────────────────────
+
+// SearchOptions.recency → ddgs `-t` letter code. The HTML fallback's `df=`
+// param uses the same letter codes, so this map is the single source of truth
+// for both adapters.
+export const REGENCY_TO_TIMELIMIT: Record<string, string> = {
+  day: "d",
+  week: "w",
+  month: "m",
+  year: "y",
+};
+
+export function timelimitFor(recency?: SearchOptions["recency"]): string | null {
+  if (!recency) return null;
+  return REGENCY_TO_TIMELIMIT[recency] ?? null;
+}
+
+// ── ddgs command plan ────────────────────────────────────────────────────────────────────────────────
+
+export interface DdgsTextArgs {
+  query: string;
+  maxResults: number;
+  timelimit?: string | null;
+  uvx: string;
+  output: string;
+}
+
+// The full `uvx ddgs text` command as one pure plan — tests pin the flags
+// without spawning processes, matching the probeCommands pattern above.
+export function buildDdgsTextCommand(a: DdgsTextArgs): string {
+  const parts = [
+    `"${a.uvx}"`,
+    "ddgs", "text",
+    "-q", `"${a.query.replace(/"/g, '\\"')}"`,
+  ];
+  if (a.timelimit) parts.push("-t", a.timelimit);
+  parts.push("-m", String(a.maxResults));
+  parts.push("-o", `"${a.output}"`);
+  return parts.join(" ");
+}
+
 // ── ddgs search ─────────────────────────────────────────────────────────────
 
 export function searchViaDdgs(
@@ -139,15 +180,15 @@ export function searchViaDdgs(
     const fullQuery = siteOps.length > 0 ? `${query} ${siteOps.join(" ")}` : query;
 
     // Run uvx ddgs
-    const args = [
-      `"${uvx}"`,
-      "ddgs", "text",
-      "-q", `"${fullQuery.replace(/"/g, '\\"')}"`,
-      "-m", String(maxResults),
-      "-o", `"${tmpFile}"`,
-    ];
+    const command = buildDdgsTextCommand({
+      query: fullQuery,
+      maxResults,
+      timelimit: timelimitFor(options.recency),
+      uvx,
+      output: tmpFile,
+    });
 
-    execSync(args.join(" "), {
+    execSync(command, {
       stdio: "pipe",
       timeout: SEARCH_TIMEOUT_MS,
     });

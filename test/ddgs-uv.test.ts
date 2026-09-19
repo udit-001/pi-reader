@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs } from "../search/ddgs-uv.ts";
+import { hasUvx, uvxInstallPath, uvInstallCommand, probeCommands, warmFlow, warmDdgs, timelimitFor, buildDdgsTextCommand } from "../search/ddgs-uv.ts";
 import { join } from "node:path";
 
 test("ddgs-uv: hasUvx returns a boolean", () => {
@@ -75,6 +75,46 @@ test("ddgs-uv: warmFlow gives up quietly when install fails", async () => {
   const calls: string[] = [];
   await warmFlow(async (cmd) => { calls.push(cmd); throw new Error("fail"); }, ["PROBE-1", "PROBE-2"], "INSTALL");
   assert.deepEqual(calls, ["PROBE-1", "PROBE-2", "INSTALL"]); // no retry after failed install
+});
+
+// ── recency → ddgs timelimit ─────────────────────────────────────────────────
+
+test("timelimitFor maps every recency value to its ddgs letter code", () => {
+  assert.equal(timelimitFor("day"), "d");
+  assert.equal(timelimitFor("week"), "w");
+  assert.equal(timelimitFor("month"), "m");
+  assert.equal(timelimitFor("year"), "y");
+});
+
+test("timelimitFor returns null when no recency is given", () => {
+  assert.equal(timelimitFor(undefined), null);
+});
+
+// ── buildDdgsTextCommand — the pure arg plan for `uvx ddgs text` ────────────
+
+const BASE_ARGS = { query: "rust async", maxResults: 5, uvx: "/usr/bin/uvx", output: "/tmp/out.json" };
+
+test("buildDdgsTextCommand pins the base flags: -q quoted, -m, -o", () => {
+  const cmd = buildDdgsTextCommand(BASE_ARGS);
+  assert.match(cmd, /^"\/usr\/bin\/uvx" ddgs text /);
+  assert.match(cmd, /-q "rust async"/);
+  assert.match(cmd, /-m 5/);
+  assert.match(cmd, /-o "\/tmp\/out\.json"/);
+});
+
+test("buildDdgsTextCommand includes -t when a timelimit is given", () => {
+  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, timelimit: "w" });
+  assert.match(cmd, /-t w/);
+});
+
+test("buildDdgsTextCommand omits -t entirely when timelimit is null", () => {
+  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, timelimit: null });
+  assert.ok(!cmd.includes("-t"), `expected no -t flag, got: ${cmd}`);
+});
+
+test("buildDdgsTextCommand escapes double quotes in the query", () => {
+  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, query: 'say "hello"' });
+  assert.match(cmd, /-q "say \\"hello\\""/);
 });
 
 test("ddgs-uv: warmDdgs runs at most once per process and never rejects", async () => {
