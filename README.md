@@ -1,6 +1,6 @@
 # pi-reader
 
-Web search and URL→Markdown for the [Pi coding agent](https://pi.dev). DuckDuckGo free, Exa for semantic search, Wikipedia/HN/Context7 for focused queries. Zero config.
+Web search and URL→Markdown for the [Pi coding agent](https://pi.dev). Two tools, zero config, no API key required.
 
 ## Install
 
@@ -8,63 +8,23 @@ Web search and URL→Markdown for the [Pi coding agent](https://pi.dev). DuckDuc
 pi install git:github.com/udit-001/pi-reader
 ```
 
-## What you get
+## What your agent gets
 
-**`web_search`** — search the web. DuckDuckGo by default (free, no key). Exa for semantic search when you pass Exa params (`category`, `includeContent`, `domains`). Wikipedia for factual lookups, HN for community tech opinions, Context7 for library/framework docs.
+- **Web search with no setup** — DuckDuckGo works immediately and shrugs off bot walls; Wikipedia, Hacker News, and Context7 (library docs) are one `provider` word away.
+- **Semantic search when you want it** — pass Exa params (category filters, full page content, domain restrictions) and search routes to Exa. `/exa-setup` adds a key in a guided wizard — and imports one you already have in `mcp.json`.
+- **Any URL becomes clean Markdown** — client-rendered pages and bot-walled pages included. Pass `prompt` to get an answer about the content instead of the raw text.
+- **Known sites come back structured** — a GitHub repo URL returns a local checkout your agent explores with `read` and shell commands; issues and PRs return the full document (state, checks, review verdicts, files, commits, comments — private repos too). Plus releases, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, …).
+- **Safe by default** — hostile pages can't bounce the fetcher at your localhost, private network, or cloud-metadata endpoints. Fetched pages are cached locally, so repeat reads are instant.
 
 ```text
 web_search({ query: "Stripe API create subscription Node.js example" })
-web_search({ query: "category:company API testing tools", provider: "exa", includeContent: true })
-web_search({ query: "React server components", provider: "context7" })
-web_search({ query: "best Go HTTP router 2024", provider: "hn" })
+web_fetch({ urls: "github.com/vercel/next.js/pull/60000" })     # full PR in one call
+web_fetch({ urls: "https://docs.example.com/api", prompt: "How do I paginate?" })
 ```
 
-| Param | Type | Notes |
-|-------|------|-------|
-| `query` | string | Describe the page you want, not keywords |
-| `provider` | `"auto" \| "duckduckgo" \| "exa" \| "wikipedia" \| "hn" \| "context7"` | Default `auto`: DDG first, Exa fallback. Free providers are explicit-only. |
-| `numResults` | 1–25 | Default 10 with category, 15 without |
-| `recency` | `"day" \| "week" \| "month" \| "year"` | Filter by publish date |
-| `domains` | string[] | `["github.com", "-reddit.com"]` |
-| `category` | Exa only | `company`, `publication`, `news`, `personal site`, `people`, `pdf`, `github`, `financial report` |
-| `includeContent` | boolean | Exa: full page text (up to 50k chars each) |
-| `includeSummary` | boolean | Exa: AI summary per result |
+## Contributing
 
-**`web_fetch`** — URLs as clean Markdown, raw response bodies, or feed summaries. Add `prompt` to answer a question about the content, `topic` to extract only matching sections, and `mode: "raw"` to inspect the exact HTML/XML a server returned.
-
-```text
-web_fetch({ urls: "https://docs.example.com/guide" })
-web_fetch({ urls: ["https://a.com", "https://b.com"], maxChars: 10000 })
-web_fetch({ urls: "https://article.com", prompt: "Summarize the security implications" })
-web_fetch({ urls: "https://large-doc.com/api", topic: "authentication" })
-web_fetch({ urls: "https://openai.com/news/rss.xml" })        // channel title + recent posts
-web_fetch({ urls: "https://example.com", mode: "raw" })       // exact body, status + content-type labeled
-```
-
-| Param | Type | Notes |
-|-------|------|-------|
-| `urls` | string \| string[] | One URL or many in parallel |
-| `maxChars` | 500–100000 | Default 20000 per page |
-| `prompt` | string | Answer this about the pages using the current Pi model |
-| `topic` | string | Extract only sections matching this topic |
-| `mode` | `"markdown" \| "raw"` | `raw` returns the exact response body, labeled with HTTP status and content type |
-| `model` | string | Override the summarizing model (requires `prompt`) |
-
-## How fetching works
-
-Most pages fetch with zero API keys, including client-rendered pages (Next.js App Router) and pages behind bot walls. Known sites return structured content instead of scraped HTML: GitHub, GitLab, Reddit, Hacker News, Stack Exchange, Wikipedia, arXiv, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, Go, Maven, Hex, Packagist, RubyGems). Hard cases fall through to free remote readers (Jina Reader, markdown.new) and Exa as a last resort — nothing to configure.
-
-Fetches are network-guarded: hostile pages can't bounce the fetcher at your localhost, private network, or cloud-metadata endpoints — including across redirects. Response bodies are capped at 5 MB.
-
-Fetched pages are cached locally for 7 days. Search results are cached for 1 hour.
-
-## Config
-
-None required. DuckDuckGo and the free providers work immediately. Exa key resolves from `~/.pi/agent/pi-reader.json` (written by the wizard), then `mcp.json` (legacy), then `EXA_API_KEY` env var. No key means Exa returns a setup hint; DuckDuckGo keeps working.
-
-## `/exa-setup` — the key wizard
-
-When Exa needs a key, the tools surface a one-shot hint. The wizard validates, previews, and writes atomically. If a key exists in `mcp.json`, it offers to import and dedupe.
+Architecture and rules: [AGENTS.md](AGENTS.md) — `npm install`, then `npm run typecheck && npm test`. Subsystem deep dives (fetch pipeline, search providers, GitHub rendering) live in [docs/](docs/); open them before touching those seams.
 
 ## License
 

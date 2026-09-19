@@ -404,29 +404,26 @@ export class ExaSetupWizard {
 
     switch (this.phase) {
       case "intro": {
-        wrap("Exa powers semantic web search and markdown fetch behind the web_search and web_fetch tools (the fallback tier after free sources).");
+        wrap("Exa semantic search needs a key. Search and fetch work without one.");
         add();
         const source = exaKeySource();
         wrap(source
           ? `Current key: set (${source})`
           : "Current key: none configured");
-        if (this.mcpEntry?.apiKey) {
-          add();
-          wrap(`Found an Exa key in ${this.mcpEntry.path}.`, "accent");
-          wrap("i imports it (validated) into pi-reader's own config, then offers to remove the duplicate entry.");
-        }
         add();
-        wrap("A key is only needed when you hit an Exa rate limit or want its results — DuckDuckGo and the free fetch chain keep working either way.");
-        add();
-        wrap("Enter opens the Exa dashboard in your browser to create a key.");
+        wrap("Get a key — Enter opens the dashboard.");
         add();
         add(`  ${this.theme.fg("dim", DASHBOARD_URL)}`);
+        if (this.mcpEntry?.apiKey) {
+          add();
+          wrap(`Found a key in ${this.mcpEntry.path} — press i to import it.`, "accent");
+        }
         break;
       }
       case "paste": {
         wrap(this.imported
           ? "Re-enter a key (the imported one was rejected):"
-          : "On the dashboard: API Keys → Create key → copy it.");
+          : "On the dashboard: API Keys -> Create key -> copy it.");
         if (!this.imported) {
           add();
           add(`  ${this.theme.fg("dim", DASHBOARD_URL)}`);
@@ -441,7 +438,7 @@ export class ExaSetupWizard {
           wrap(`${lead}${this.pasteError}`, this.pasteErrorKind === "invalid" ? "error" : "warning");
           add();
         }
-        wrap("Paste or type the key below (input is hidden):");
+        wrap("Paste or type the key (hidden):");
         add();
         const masked = "•".repeat(Math.min(this.key.length, 24));
         const cursor = this.key.length > 0 || this.pasteError ? " " : "█";
@@ -450,29 +447,27 @@ export class ExaSetupWizard {
       }
       case "validating": {
         const frame = SPINNER_FRAMES[this.spinnerFrame] ?? "⠋";
-        add(`  ${this.theme.fg("accent", `${frame} Checking the key against mcp.exa.ai…`)}`);
-        add();
-        wrap("One test search (numResults 1) — the only call that proves a key works. Invalid keys are rejected before metering.", "dim");
+        add(`  ${this.theme.fg("accent", `${frame} Testing the key (one search)...`)}`);
         break;
       }
       case "save": {
-        wrap("pi-reader's config will become:", "text");
+        wrap("New config:", "text");
         add();
         const preview = JSON.stringify(previewConfig(this.key.trim()), null, 2);
         for (const l of preview.split("\n")) {
           lines.push(`    ${this.theme.fg("text", truncateToWidth(l, W - 6, "…"))}`);
         }
         add();
-        wrap(`Written to ${configPath()} — pi-reader's own file, replacing nothing else. No restart needed.`, "dim");
+        wrap(`Written to ${configPath()}. No restart needed.`, "dim");
         break;
       }
       case "remove": {
-        wrap("Found a duplicate: mcp.json still has an exa entry that exposes exa tools directly.");
+        wrap("Duplicate found: mcp.json also exposes Exa tools.");
         add();
-        wrap("Remove it? pi-reader no longer reads that entry, and leaving it puts two Exa tool families in every session.", "text");
+        wrap("Remove it? Both tool sets load in every session until removed.", "text");
         add();
         if (this.mcpEntry) {
-          wrap(`Target: ${this.mcpEntry.path} — every other server is untouched.`, "dim");
+          wrap(`Target: ${this.mcpEntry.path}. Other servers untouched.`, "dim");
         }
         break;
       }
@@ -480,25 +475,23 @@ export class ExaSetupWizard {
         const path = this.wrote?.configPath ?? configPath();
         add(`  ${this.theme.fg("accent", this.theme.bold("✓ Key saved"))}`);
         add();
-        wrap(`Wrote ${path}. No restart needed — the next Exa call picks it up.`);
+        wrap(`Written to ${path}. No restart needed.`);
         if (this.wrote?.removedMcp) {
           add();
-          wrap(`Removed the exa entry from ${this.mcpEntry?.path} — duplicate tools are gone from your next session.`, "dim");
+          wrap(`Removed the exa entry from ${this.mcpEntry?.path}.`, "dim");
         }
         if (this.removeError) {
           add();
-          wrap(`✗ Could not remove the mcp.json entry: ${this.removeError} — the key is saved; remove it by hand if you want the dedup.`, "warning");
+          wrap(`✗ Could not remove the mcp.json entry: ${this.removeError} — the key is saved; remove it by hand to dedupe.`, "warning");
         }
-        add();
-        wrap("DuckDuckGo search and the free fetch chain keep working either way.", "dim");
         break;
       }
       case "error": {
         add(`  ${this.theme.fg("error", this.theme.bold("✗ Could not save the config"))}`);
         add();
-        wrap(`${this.writeError ?? "unknown error"} — nothing was changed.`);
+        wrap(`${this.writeError ?? "unknown error"}. Nothing was changed.`);
         add();
-        wrap("To fix it by hand, set EXA_API_KEY in your environment, or fix the permissions on ~/.pi/agent/ and re-run /exa-setup.");
+        wrap("Fix by hand: set EXA_API_KEY, or check permissions on ~/.pi/agent/ and re-run /exa-setup.");
         break;
       }
     }
@@ -516,8 +509,8 @@ export class ExaSetupWizard {
 function footerFor(phase: WizardPhase, importable: boolean): string {
   switch (phase) {
     case "intro": return importable
-      ? "i import found key · enter open dashboard · esc close, nothing changes"
-      : "enter open dashboard · esc close, nothing changes";
+      ? "i import found key · enter open dashboard · esc close"
+      : "enter open dashboard · esc close";
     case "paste": return "enter validate · backspace edit · esc back";
     case "validating": return "esc cancel";
     case "save": return "enter write & finish · esc back";

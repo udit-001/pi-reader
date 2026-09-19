@@ -33,10 +33,16 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 
 **Fetch chain priority:** local (Defuddle, regex) → Jina Reader (renders JS) → markdown.new → Exa MCP. Free tiers first; Exa is the quota'd last resort.
 
+**Deep dives (docs/).** This file carries seams and rules; the docs carry mechanism. Open one when its trigger fires:
+
+- [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the full chain, SSRF guard, body caps, timeouts, cache layout. Open before touching the fetch chain, the network guard, or the cache, or when debugging a URL that returns nothing.
+- [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path and warm-up, Exa transport, search cache, key resolution, the wizard. Open before touching a provider, routing, recency/page behavior, or config/key handling.
+- [`docs/github.md`](docs/github.md) — repo checkouts (size gate, runtime cache) and issue/PR rendering (gh-first, REST fallback, one renderer). Open before touching `github-clone.ts` or `github-issue-pr.ts`.
+
 ## Conventions
 
 - **Imports:** `.ts` extensions everywhere (`import { x } from "./foo.ts"`). NodeNext resolution.
-- **Schemas:** Typebox (`Type.Object`, `Type.Union`, `Type.Literal`) — tool params are Typebox, not zod.
+- **Schemas:** Typebox (`Type.Object`, `Type.Union`, `Type.Literal`) — tool params are Typebox, not zod. Schema descriptions in `index.ts` are the single param reference (the README carries none) — change a param's behavior and its description in the same commit.
 - **Errors:** tool `execute()` returns errors in band: try/catch → `{ content: [{ type: "text", text: <actionable hint> }] }`, so the agent always gets a recovery path instead of a throw.
 - **Exa issues:** adapters call `noteExaIssue()` on rate-limit or missing-key; the entry calls `consumeExaIssue()` once in `finally` — the hint fires once per tool call, not per provider attempt.
 - **Tests:** `node:test` + `node:assert/strict`, one `test()` per behavior, fixtures in-line. Test the parse seam, not the HTTP layer.
@@ -56,4 +62,3 @@ Every branch ends the same way: typecheck green, the touched test file green.
 - `noUncheckedIndexedAccess` is on — array access returns `T | undefined`; use `!` only after a bounds check.
 - DuckDuckGo HTML is scraped, not API'd: `parseResults()` breaks silently (empty results) when DDG changes markup. Verify with real fixtures.
 - Exa MCP is remote JSON-RPC over SSE — network errors are expected; the adapter retries once, the auto-router falls back to DDG.
-- The wizard opens only via `/exa-setup` (it needs keyboard focus, so it prints a hint rather than auto-opening).
