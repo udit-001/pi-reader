@@ -74,7 +74,12 @@ const webSearchParams = Type.Object({
   numResults: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 25,
-    description: "Results to return. Default: 10 with category, 15 without. Returns the top N for the query — to widen the net, change the query or provider.",
+    description: "Results per page. Default: 10 with category, 15 without.",
+  })),
+  page: Type.Optional(Type.Integer({
+    minimum: 1,
+    maximum: 50,
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo; other providers ignore it.",
   })),
   recency: recencySchema,
   domains: domainSchema,
@@ -208,13 +213,15 @@ export default function piWeb(pi: ExtensionAPI): void {
           numResults,
           recency: params.recency,
           domains: params.domains,
+          page: params.page,
           category: params.category as "company" | "publication" | "news" | "personal site" | "people" | "pdf" | "github" | "financial report" | undefined,
           includeContent: params.includeContent,
           includeSummary: params.includeSummary,
           signal,
         });
 
-        const lines = [`Provider: ${response.provider}`, "", response.answer, "", "Results:"];
+        const pageLabel = params.page && params.page > 1 ? ` · page ${params.page}` : "";
+        const lines = [`Provider: ${response.provider}${pageLabel}`, "", response.answer, "", "Results:"];
         for (let i = 0; i < response.results.length; i++) {
           const r = response.results[i]!;
           const hasContent = typeof r.content === "string" && r.content;
@@ -249,7 +256,7 @@ export default function piWeb(pi: ExtensionAPI): void {
         } else if (/no.*key|not.*configured|missing/i.test(message)) {
           error = "Search failed. Run /exa-setup to configure an Exa API key.";
         } else if (/no.*results|parseable/i.test(message)) {
-          error = "No results found. Try a longer, more descriptive query. Describe the page you want to find.";
+          error = "No results found. Try a more descriptive query, an earlier page, or a different provider.";
         } else if (/timeout|ECONNREFUSED|fetch.*fail/i.test(message)) {
           error = "Search failed. Check your network connection and retry.";
         } else {

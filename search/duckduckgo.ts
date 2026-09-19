@@ -81,6 +81,11 @@ async function searchViaHtml(
     const code = REGENCY_TO_TIMELIMIT[options.recency];
     if (code) url.searchParams.set("df", code);
   }
+  // Pagination: s= is DDG's result offset (page 1 == s=0)
+  if (options.page && options.page > 1) {
+    const limit = options.numResults ?? 10;
+    url.searchParams.set("s", String((options.page - 1) * limit));
+  }
 
   const res = await fetch(url, {
     headers: {

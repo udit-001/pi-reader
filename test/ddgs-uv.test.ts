@@ -112,6 +112,18 @@ test("buildDdgsTextCommand omits -t entirely when timelimit is null", () => {
   assert.ok(!cmd.includes("-t"), `expected no -t flag, got: ${cmd}`);
 });
 
+test("buildDdgsTextCommand omits -p when page is 1 or unset", () => {
+  const unset = buildDdgsTextCommand(BASE_ARGS);
+  const first = buildDdgsTextCommand({ ...BASE_ARGS, page: 1 });
+  assert.ok(!unset.includes("-p"), `expected no -p flag, got: ${unset}`);
+  assert.ok(!first.includes("-p"), `expected no -p flag, got: ${first}`);
+});
+
+test("buildDdgsTextCommand includes -p for pages beyond the first", () => {
+  const cmd = buildDdgsTextCommand({ ...BASE_ARGS, page: 3 });
+  assert.match(cmd, /-p 3/);
+});
+
 test("buildDdgsTextCommand escapes double quotes in the query", () => {
   const cmd = buildDdgsTextCommand({ ...BASE_ARGS, query: 'say "hello"' });
   assert.match(cmd, /-q "say \\"hello\\""/);

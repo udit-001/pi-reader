@@ -134,6 +134,7 @@ export interface DdgsTextArgs {
   query: string;
   maxResults: number;
   timelimit?: string | null;
+  page?: number;
   uvx: string;
   output: string;
 }
@@ -147,6 +148,7 @@ export function buildDdgsTextCommand(a: DdgsTextArgs): string {
     "-q", `"${a.query.replace(/"/g, '\\"')}"`,
   ];
   if (a.timelimit) parts.push("-t", a.timelimit);
+  if (a.page && a.page > 1) parts.push("-p", String(a.page));
   parts.push("-m", String(a.maxResults));
   parts.push("-o", `"${a.output}"`);
   return parts.join(" ");
@@ -184,6 +186,7 @@ export function searchViaDdgs(
       query: fullQuery,
       maxResults,
       timelimit: timelimitFor(options.recency),
+      page: options.page,
       uvx,
       output: tmpFile,
     });

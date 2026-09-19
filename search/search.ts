@@ -30,6 +30,7 @@ export interface SearchOptions {
   numResults?: number;
   recency?: "day" | "week" | "month" | "year";
   domains?: string[];
+  page?: number;
   category?: ExaCategory;
   includeContent?: boolean;
   includeSummary?: boolean;
@@ -129,6 +130,7 @@ function getSearchCacheKey(query: string, options: SearchOptions & { provider?: 
     options.category ?? "",
     options.recency ?? "",
     (options.domains ?? []).sort().join(","),
+    String(options.page ?? 1),
     String(options.includeContent ?? false),
     String(options.includeSummary ?? false),
   ];
