@@ -273,7 +273,10 @@ export function newsViaDdgs(
   query: string,
   options: SearchOptions = {},
 ): DdgsRawRow[] {
-  return runDdgsJson(query, options, "news");
+  // The news vertical takes no domains filter (schema: "domains is not
+  // supported") — strip it so the shared seam never applies untested
+  // site: operators to a news query. Same contract as imagesViaDdgs.
+  return runDdgsJson(query, { ...options, domains: undefined }, "news");
 }
 
 /** The images vertical, raw: rows normalized by the caller (search/images.ts)

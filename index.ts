@@ -88,7 +88,7 @@ const recencySchema = Type.Optional(
 
 const domainSchema = Type.Optional(
   Type.Array(Type.String(), {
-    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Not supported on the news path",
+    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Not supported on the news and images paths",
   }),
 );
 
