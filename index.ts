@@ -26,6 +26,7 @@ import type {
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { consumeExaIssue } from "./search/exa-issue.ts";
+import { warmDdgs } from "./search/ddgs-uv.ts";
 import { exaCategoryList } from "./search/exa-mcp.ts";
 import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
@@ -156,6 +157,11 @@ export default function piWeb(pi: ExtensionAPI): void {
   // condition persists, later sessions get one brief reminder at start. Both
   // self-heal the moment the entry is removed.
   pi.on("session_start", (_event, ctx) => {
+    // Warm the ddgs path in the background: moves the one-time uv/ddgs
+    // download off the first search. Fire-and-forget; failure is silent —
+    // search falls back to HTML scraping as before.
+    void warmDdgs();
+
     if (!detectMcpDuplicate()) return;
     const config = loadConfig() ?? { version: 1 };
     if (config.hints?.mcpDuplicate) {

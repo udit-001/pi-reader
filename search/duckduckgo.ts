@@ -12,6 +12,27 @@ import { hasUvx, installUv, searchViaDdgs } from "./ddgs-uv.ts";
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 const TIMEOUT_MS = 25_000;
 
+// ── Degraded-mode surfacing ─────────────────────────────────────────────────
+
+export type DdgsFallbackReason = "no-uv" | "ddgs-failed";
+
+// The ddgs and HTML-scraping providers sit behind identical output, but their
+// quality differs (captchas, missing TLS fingerprinting). Append a one-line
+// notice to fallback results so the degraded mode is visible to the agent.
+export function withDdgsNotice(
+  results: SearchResult[],
+  reason: DdgsFallbackReason,
+): SearchResult[] {
+  if (results.length === 0) return results;
+  const note = reason === "no-uv"
+    ? "HTML fallback used — install uv (https://docs.astral.sh/uv/) for higher-quality results"
+    : "ddgs search failed — HTML fallback used, results may include captchas";
+  const noted = results.slice();
+  const last = noted[noted.length - 1]!;
+  noted[noted.length - 1] = { ...last, snippet: `${last.snippet}\n\n[DuckDuckGo: ${note}]` };
+  return noted;
+}
+
 // ── Public interface ─────────────────────────────────────────────────────────
 
 export async function searchDuckDuckGo(
@@ -24,11 +45,12 @@ export async function searchDuckDuckGo(
       return searchViaDdgs(query, options);
     } catch {
       // ddgs failed, fall through to HTML scraping
+      return withDdgsNotice(await searchViaHtml(query, options), "ddgs-failed");
     }
   }
 
   // Fallback: HTML scraping (may get captcha)
-  return searchViaHtml(query, options);
+  return withDdgsNotice(await searchViaHtml(query, options), "no-uv");
 }
 
 async function searchViaHtml(

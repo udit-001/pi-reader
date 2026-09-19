@@ -1,10 +1,10 @@
-// Tests for the DuckDuckGo adapter's parse seam.
-// Raw HTML fixtures mirror what html.duckduckgo.com/html/ actually returns.
+// Tests for the DuckDuckGo adapter — parse seam (real fixtures) and the
+// degraded-mode notice (pure seam). No network calls.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseResults } from "../search/duckduckgo.ts";
-
+import { parseResults, withDdgsNotice } from "../search/duckduckgo.ts";
+import type { SearchResult } from "../search/search.ts";
 const FIXTURE = `
 <!DOCTYPE html>
 <html>
@@ -81,4 +81,32 @@ test("duckduckgo: domain exclude filter", () => {
 test("duckduckgo: no results when the page is a bot challenge", () => {
   const results = parseResults("<html><body>anomaly detected</body></html>");
   assert.equal(results.length, 0);
+});
+// ── Degraded-mode notice (pure seam) ────────────────────────────────────────
+
+const noticeResults: SearchResult[] = [
+  { title: "A", url: "https://a.example", snippet: "alpha" },
+  { title: "B", url: "https://b.example", snippet: "beta" },
+];
+
+test("duckduckgo: withDdgsNotice appends notice when uv is missing", () => {
+  const noted = withDdgsNotice(noticeResults, "no-uv");
+  assert.match(noted[noted.length - 1]!.snippet, /HTML fallback/);
+  assert.match(noted[noted.length - 1]!.snippet, /uv/);
+});
+
+test("duckduckgo: withDdgsNotice appends notice when ddgs failed", () => {
+  const noted = withDdgsNotice(noticeResults, "ddgs-failed");
+  assert.match(noted[noted.length - 1]!.snippet, /ddgs/);
+  assert.match(noted[noted.length - 1]!.snippet, /HTML fallback/);
+});
+
+test("duckduckgo: withDdgsNotice does not mutate the input", () => {
+  const snapshot = noticeResults.map((r) => r.snippet);
+  withDdgsNotice(noticeResults, "no-uv");
+  assert.deepEqual(noticeResults.map((r) => r.snippet), snapshot);
+});
+
+test("duckduckgo: withDdgsNotice leaves empty results empty", () => {
+  assert.deepEqual(withDdgsNotice([], "no-uv"), []);
 });
