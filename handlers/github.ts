@@ -2,12 +2,12 @@ import {
   FetchError,
   type FetchContext,
   type HandlerResult,
-  cloneRepo,
   defaultFetch,
   defineHandler,
   getJson,
   getText,
 } from "./handler.ts";
+import { ensureClone, renderRepoView } from "../github-clone.ts";
 
 function repoParts(url: URL): { owner: string; repo: string; rest: string[] } | undefined {
   const segs = url.pathname.split("/").filter(Boolean);
@@ -156,6 +156,50 @@ interface GhIssue {
   body: string | null;
 }
 
+// Full-SHA refs can't be branch-cloned; they get the API view with a note.
+const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+
+function withNote(light: HandlerResult, note: string): HandlerResult {
+  return { ...light, content: `${light.content}\n\n---\n\n${note}` };
+}
+
+/**
+ * Repo root / tree URL: clone the checkout (github-clone.ts) and point the
+ * agent at the local path. Degrades gracefully — oversized or failed clones
+ * fall back to the API view, so the worst case is the pre-clone behavior.
+ */
+async function githubRepoClone(
+  owner: string,
+  repo: string,
+  ref: string | undefined,
+  subPath: string,
+  ctx: FetchContext,
+): Promise<HandlerResult> {
+  if (ref && FULL_SHA_RE.test(ref)) {
+    const light = await githubLight(owner, repo, ctx);
+    return withNote(light, "Note: commit-SHA URLs show the API view; clones pin to a branch, not a SHA.");
+  }
+  const result = await ensureClone({ owner, repo, ref }, { signal: ctx.signal });
+  if (result.status === "cloned") {
+    const content = renderRepoView(result.localPath, subPath ? { type: "tree", path: subPath } : { type: "root" });
+    return {
+      kind: "repo",
+      title: subPath ? `${owner}/${repo} - ${subPath}` : `${owner}/${repo}`,
+      content,
+    };
+  }
+  if (result.status === "disabled") return githubLight(owner, repo, ctx); // config off: today's behavior
+  if (result.status === "too-large") {
+    const light = await githubLight(owner, repo, ctx);
+    return withNote(
+      light,
+      `Note: repository is ${Math.round(result.sizeMB)} MB (limit: ${result.limitMB} MB) — showing the API view instead of cloning.`,
+    );
+  }
+  const light = await githubLight(owner, repo, ctx);
+  return withNote(light, `Note: clone failed (${result.reason}) — showing the API view instead.`);
+}
+
 async function githubIssue(owner: string, repo: string, num: string, ctx: FetchContext): Promise<HandlerResult> {
   const issue = await getJson<GhIssue>(`https://api.github.com/repos/${owner}/${repo}/issues/${num}`, ctx.signal);
   const comments = await getJson<Array<{ user: { login: string }; body: string }>>(
@@ -200,9 +244,10 @@ export const githubHandler = defineHandler({
       return githubIssue(owner, repo, rest[1] ?? "", ctx);
     }
     if (rest.length === 0 || rest[0] === "tree") {
-      return ctx.mode === "full"
-        ? cloneRepo(`https://github.com/${owner}/${repo}.git`, ctx)
-        : githubLight(owner, repo, ctx);
+      const isTree = rest[0] === "tree";
+      const ref = isTree ? rest[1] : undefined;
+      const subPath = isTree ? rest.slice(2).join("/") : "";
+      return githubRepoClone(owner, repo, ref, subPath, ctx);
     }
     const releasesIntent = parseReleasesPath(rest);
     if (releasesIntent) return githubReleases(owner, repo, ctx, releasesIntent);

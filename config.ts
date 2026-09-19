@@ -26,6 +26,17 @@ export interface PiWebConfig {
     /** ISO timestamp when the mcp.json duplication prompt was shown. */
     mcpDuplicate?: string;
   };
+  /** GitHub repo cloning (see github-clone.ts). Absent fields use defaults. */
+  githubClone?: {
+    /** Set false to stop cloning repo URLs (they fall back to the API view). */
+    enabled?: boolean;
+    /** Refuse to clone repos larger than this (MB). Default 350. */
+    maxRepoSizeMB?: number;
+    /** git/gh clone subprocess timeout (seconds). Default 30. */
+    cloneTimeoutSeconds?: number;
+    /** Where checkouts live. Default /tmp/pi-github-repos. ~ and $VAR expand. */
+    clonePath?: string;
+  };
 }
 
 export function configPath(): string {

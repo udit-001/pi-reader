@@ -28,6 +28,7 @@
     "fetch.ts",
     "cache.ts",
     "cachedb.ts",
+    "github-clone.ts",
     "topic.ts",
     "handlers/**/*.ts",
     "README.md",
