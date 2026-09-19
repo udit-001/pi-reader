@@ -8,6 +8,7 @@ import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
 import { searchNews } from "./news.ts";
 import { searchImages } from "./images.ts";
+import { searchVideos } from "./videos.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
 import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
@@ -16,7 +17,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images";
+export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos";
 
 export type ExaCategory =
   | "company"
@@ -116,6 +117,20 @@ const imagesProvider: SearchProvider = {
   async search(query, options) {
     const results = await searchImages(query, options);
     return { answer: buildAnswer(results), results, provider: "images" };
+  },
+};
+
+// The videos vertical: direct DDG v.js client — free, keyless. Explicit-only:
+// never chosen by auto-routing ("find a video about" intent hijacking text
+// searches is a determinism risk), so it lives outside autoProviders and is
+// dispatched only when the agent names it. Bypasses ddgs entirely — its HTTP
+// client is 403-banned from v.js; the endpoint is open to a plain fetch. No
+// degrade-to-text: text results cannot substitute for videos, so failure
+// surfaces as an in-band error naming the text + domains-workaround.
+const videosProvider: SearchProvider = {
+  async search(query, options) {
+    const results = await searchVideos(query, options);
+    return { answer: buildAnswer(results), results, provider: "videos" };
   },
 };
 
@@ -250,6 +265,8 @@ export async function webSearch(
     response = await newsProvider.search(query, options);
   } else if (requested === "images") {
     response = await imagesProvider.search(query, options);
+  } else if (requested === "videos") {
+    response = await videosProvider.search(query, options);
   } else if (requested === "wikipedia" || requested === "hn" || requested === "context7") {
     // Domain-specific providers — only when explicitly requested
     response = await freeProviders.search(query, { ...options, source: requested } as any);

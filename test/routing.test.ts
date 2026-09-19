@@ -59,6 +59,22 @@ test("autoChain: images intent never enters the chain — explicit provider only
   }
 });
 
+test("autoChain: videos intent never enters the chain — explicit provider only", () => {
+  // `provider: "videos"` is a deliberate dispatch, not an intent the router
+  // guesses (PIWEB-12). No param combination routes to or falls back to
+  // videos; the adapter lives outside autoProviders, compiler-enforced.
+  for (const options of [
+    {},
+    { category: "news" as const },
+    { recency: "day" as const, domains: ["youtube.com"] },
+    { includeContent: true },
+  ]) {
+    const [primary, fallback] = autoChain(options);
+    assert.notEqual(primary, "videos");
+    assert.notEqual(fallback, "videos");
+  }
+});
+
 // ── shouldCacheSearch — the cache-honesty decision ───────────────────────────
 
 const ok = (over: Partial<SearchResponse> = {}): SearchResponse => ({

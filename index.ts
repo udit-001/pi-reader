@@ -44,6 +44,7 @@ const providerSchema = Type.Optional(
       Type.Literal("exa"),
       Type.Literal("news"),
       Type.Literal("images"),
+      Type.Literal("videos"),
       Type.Literal("wikipedia"),
       Type.Literal("hn"),
       Type.Literal("context7"),
@@ -61,6 +62,11 @@ const providerSchema = Type.Optional(
         "hotlinkable image itself (not a page about it); dimensions (W×H) and source domain " +
         "ride in the snippet, so one result is enough to embed, download, or vision-check it — " +
         "no second lookup. Honors query, page, and license; recency and domains are not supported. " +
+        "'videos' for video discovery ('find a video about X') — watch URLs with duration, " +
+        "view count, and uploader in the snippet, so one result is enough to pick a video and " +
+        "hand the URL to a fetcher/watcher. Auto never selects it — pass this provider to get videos. " +
+        "Honors query, recency (d/w/m/y), and page; domains is not supported; fails with an " +
+        "actionable error when unavailable (text search with domains: ['youtube.com'] is the workaround). " +
         "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
     },
   ),
@@ -82,13 +88,13 @@ const licenseSchema = Type.Optional(
 const recencySchema = Type.Optional(
   Type.Union(
     [Type.Literal("day"), Type.Literal("week"), Type.Literal("month"), Type.Literal("year")],
-    { description: "Only results published within this window. DuckDuckGo, the news vertical, and Exa honor it (DDG filters at the source, no dates shown; news and Exa show dates); images does not support it; other providers ignore it" },
+    { description: "Only results published within this window. DuckDuckGo, the news vertical, the videos vertical, and Exa honor it (DDG filters at the source, no dates shown; news and Exa show dates); images does not support it; other providers ignore it" },
   ),
 );
 
 const domainSchema = Type.Optional(
   Type.Array(Type.String(), {
-    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Not supported on the news and images paths",
+    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Not supported on the news, images, and videos paths",
   }),
 );
 
@@ -105,7 +111,7 @@ const webSearchParams = Type.Object({
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, and images; other providers ignore it.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, and videos; other providers ignore it.",
   })),
   recency: recencySchema,
   license: licenseSchema,

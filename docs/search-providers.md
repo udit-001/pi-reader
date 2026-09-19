@@ -33,6 +33,14 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 - `license` (`share|commercial|modify`) maps to the ddgs `-lic` request filter via `LICENSE_TO_FLAG` (values verified live); `"any"` is the server default, so no flag is emitted.
 - The images engines reject ddgs `-t` outright (`KeyError` on every backend, verified live — the CLI `--help` lies), so `buildDdgsArgs` drops timelimit on the images path and `recency` is documented as unsupported in the schema description.
 
+## Videos vertical (`search/videos.ts`)
+
+- `provider: "videos"` → **direct DDG v.js client** (free, keyless) — the one vertical that bypasses ddgs. Reason: ddgs's videos engine is the only backend behind the vertical, and its HTTP client (`primp`, TLS-fingerprint-spoofed) is 403-banned from `v.js`; the endpoint itself is open to a plain browser-UA fetch (verified live). Two GETs: `duckduckgo.com/?q=` → regex out the VQD token → `duckduckgo.com/v.js?…&vqd=…` → JSON rows.
+- Explicit-only — outside `autoProviders` (compiler-held out of the chain), dispatched only when the agent names it.
+- Normalization is agent-POV: `content`→`url` (the watch URL — the agent acts on the video, not a page), `uploader`→`author` (falls back to `publisher`), `published`→`publishedDate` verbatim, and duration+views+via collapse into the snippet (`13:59:10 · 1.2M views · via freeCodeCamp.org`). Dropped: `embed_html`, `embed_url`, `image_token`, `images`, `description`, `thumbnail_*` — no agent verb acts on them.
+- `recency` binds at the source via the `f=publishedAfter:{d|w|m|y}` slot of the v.js filter string; `page` via `s=(page-1)*60`. `domains` is not supported.
+- No degrade-to-text. The fragile seam is the VQD regex (markup-pinned fixture test); a missing token, non-200, or non-JSON response surfaces as an actionable in-band error naming the cause and the text + `domains: ["youtube.com"]` workaround. No 403 retries — a fingerprint ban isn't retry-recoverable, and the boring-UA client exists precisely to avoid earning one.
+
 ## Exa MCP (`search/exa-mcp.ts`)
 
 - Remote JSON-RPC over SSE — network errors are expected: the adapter retries once, then auto-routing falls back to DDG.
