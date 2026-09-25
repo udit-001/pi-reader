@@ -26,6 +26,7 @@ A text-search result is not a paper record — no substitutes exist. The news ve
 - **OpenAlex** is breadth: ~250M works across all disciplines, keyless, one JSON endpoint. Its metadata is the universal index, and its `locations` list carries every copy — PMC, DOAJ, publisher, repository — the URL policy feeds on.
 - **Europe PMC** is biomedical depth: PubMed abstracts, PMC full-text copies, preprints, and patents, with the OA flag and PMC URL reaching the agent — a biomedical query gets the readable body, not just the abstract page.
 - **Semantic Scholar stays deferred:** it 429s in keyless testing — the free tier is unusable without a key. Reconsider when a keyless quota appears or the extension gains a key store it can trust.
+- **Semantic recall is Exa's job, explicitly:** `provider: "exa"`, `category: "publication"` runs a dedicated academic index (~350M publications) that retrieves a specific paper from a fact, result, or half-remembered description — the known-item retrieval this vertical's keyword indexes are weakest at. It returns generic rows, so a hit resolves back through this vertical for the citeable record; no code integration, the schema wording carries the workflow.
 
 ## The mailto politeness contract
 

@@ -190,9 +190,10 @@ const webSearchParams = Type.Object({
         "'people' for LinkedIn/professional profiles, 'news' for recent events — " +
         "Exa semantic news; under auto an Exa failure falls to the free news " +
         "vertical (keyword, dated) before generic text. " +
-        "'publication' — publication/article pages on the open web (magazines, working " +
-        "papers, preprint listings); returns generic rows, not citeable records. " +
-        "'github' for code/repos.",
+        "'publication' — semantic search over Exa's academic publication index: retrieves " +
+        "a specific paper from a fact, result, or half-remembered description ('the paper " +
+        "where …'); returns generic rows — pair a hit with provider: 'papers' for its " +
+        "citeable record. 'github' for code/repos.",
     },
   )),
   includeContent: Type.Optional(Type.Boolean({
