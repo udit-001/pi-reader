@@ -72,8 +72,8 @@ const providerSchema = Type.Optional(
         "back to text search with domains: ['youtube.com'].\n" +
         "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
         "is a citeable record — year, venue, citation count, open-access URL, and DOI " +
-        "ride on the standard title/url/snippet; honors query and numResults only " +
-        "(`index` picks the backend).",
+        "ride on the standard title/url/snippet; honors query, numResults, index, and " +
+        "filters (year/OA/citation walks).",
     },
   ),
 );
@@ -83,8 +83,7 @@ const paperIndexSchema = Type.Optional(
     description:
       "Papers provider only: which backend to query. 'openalex' (default) — open " +
       "scholarly metadata across all disciplines. 'europepmc' — biomedical full text: " +
-      "PubMed, PMC copies, preprints, patents; reach the full text, not just the " +
-      "abstract. On a backend failure the error names the other index to retry.",
+      "PubMed, PMC copies, preprints, patents.",
   }),
 );
 
@@ -306,7 +305,7 @@ export default function piWeb(pi: ExtensionAPI): void {
       "'news' for dated coverage, 'images' and 'videos' for media discovery, " +
       "'papers' for scholarly paper records. " +
       "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
-    promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures); 'papers' returns scholarly paper records (year/venue/DOI).",
+    promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures); 'papers' returns citeable scholarly records (find papers on X).",
     parameters: webSearchParams,
     async execute(
       _callId: string,
