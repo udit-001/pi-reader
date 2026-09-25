@@ -51,8 +51,9 @@ export interface OpenAlexWork {
    *  (the filter API auto-maps referenced_works:W… onto cites:W…, the forward
    *  direction only). */
   referenced_works?: string[];
-  /** URL form, e.g. "https://doi.org/10.1038/s41587-020-0561-9". */
-  doi?: string;
+  /** URL form, e.g. "https://doi.org/10.1038/s41587-020-0561-9". Null on
+   *  works without a DOI — OpenAlex sends an explicit null, not a missing key. */
+  doi?: string | null;
   title?: string;
   publication_year?: number;
   cited_by_count?: number;
@@ -69,10 +70,11 @@ export interface OpenAlexWork {
 // ── Pure seams (OpenAlex): DOI parse, URL choice, OA URL choice ──────────────
 
 /** OpenAlex carries the DOI as an https URL ("https://doi.org/10.1038/…");
- *  agents expect the bare identifier ("10.1038/…"). Absent or not a doi.org
- *  URL → null. Pure; exported for tests. */
-export function parseDoi(doiUrl: string | undefined): string | null {
-  if (doiUrl === undefined) return null;
+ *  agents expect the bare identifier ("10.1038/…"). Works without a DOI come
+ *  back as an explicit null (not a missing key), so both are tolerated.
+ *  Absent, null, or not a doi.org URL → null. Pure; exported for tests. */
+export function parseDoi(doiUrl: string | null | undefined): string | null {
+  if (typeof doiUrl !== "string") return null;
   const m = doiUrl.match(/^https?:\/\/doi\.org\/(.+)$/i);
   return m?.[1] ?? null;
 }
@@ -327,13 +329,13 @@ async function fetchOpenAlexWorks(
   options: SearchOptions,
   deps: OpenAlexDeps,
 ): Promise<PaperRecord[]> {
-  let works: OpenAlexWork[];
+  let results: PaperRecord[];
   try {
-    works = await deps.fetchWorks(params, options.signal);
+    const works = await deps.fetchWorks(params, options.signal);
+    results = normalizePaperResults(works);
   } catch (err) {
     throw new PaperError(paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)));
   }
-  const results = normalizePaperResults(works);
   if (results.length === 0) {
     throw new PaperError(paperError("no-results", "openalex"));
   }

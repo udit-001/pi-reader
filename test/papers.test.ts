@@ -86,6 +86,13 @@ test("parseDoi returns null for absent or non-doi.org values — never invents a
   assert.equal(parseDoi(""), null);
 });
 
+test("parseDoi tolerates the explicit null OpenAlex sends for works without a DOI", () => {
+  // OpenAlex emits "doi": null rather than omitting the key; a null that
+  // reached the .match() used to crash the whole search (TypeError, escaping
+  // the in-band PaperError contract).
+  assert.equal(parseDoi(null), null);
+});
+
 // ── chooseRecordUrl / chooseOaUrl — the two URL decisions ─────────────────────
 
 test("chooseRecordUrl prefers the DOI, falls back to landing page, then the OpenAlex record", () => {
@@ -158,6 +165,17 @@ test("papers normalizer tolerates missing fields — no invented tokens or keys"
   assert.equal("citedBy" in r!, false);
   assert.equal("doi" in r!, false);
   assert.equal(r!.url, "https://openalex.org/W9999999999");
+});
+
+test("papers normalizer keeps a work whose doi is an explicit null — record stays, doi key absent", () => {
+  // The wire quirk that crashed the normalizer: OpenAlex sends "doi": null,
+  // not a missing key. The record must survive normalization with no doi.
+  const [r] = normalizePaperResults([
+    { id: "https://openalex.org/W1234567890", title: "An older record without a DOI", doi: null },
+  ]);
+  assert.equal(r!.title, "An older record without a DOI");
+  assert.equal(r!.url, "https://openalex.org/W1234567890");
+  assert.equal("doi" in r!, false);
 });
 
 test("papers normalizer drops works with no record URL — no url, no action", () => {
