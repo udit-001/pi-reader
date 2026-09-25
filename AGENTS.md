@@ -42,7 +42,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 - [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the full chain, SSRF guard, body caps, timeouts, cache layout. Open before touching the fetch chain, the network guard, or the cache, or when debugging a URL that returns nothing.
 - [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path and warm-up, Exa transport, search cache, key resolution, the wizard. Open before touching a provider, routing, recency/page behavior, or config/key handling.
 - [`docs/github.md`](docs/github.md) — repo checkouts (size gate, runtime cache) and issue/PR rendering (gh-first, REST fallback, one renderer). Open before touching `github-clone.ts` or `github-issue-pr.ts`.
-- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), in-band error contract, `mailto` politeness, citation-graph approximation. Open before touching the papers vertical, scholarly search, or citation traversal.
+- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), in-band error contract, record URL policy, `mailto` politeness, citation-graph approximation. Open before touching the papers vertical, scholarly search, citation traversal, or a paper row's URL choice.
 
 ## Conventions
 

@@ -12,8 +12,9 @@
 //   venue       ← journalInfo.journal.title, else journalTitle
 //   citedBy     ← citedByCount
 //   doi         ← the bare doi field (Europe PMC ships it bare already)
-//   url         ← doi.org URL when doi present (stable), else the PMC
-//                 article landing page, else the Europe PMC record page
+//   url         ← the most fetchable copy (shared chooseFetchableUrl):
+//                 the PMC article page when a PMCID exists, else the
+//                 doi.org resolution, else the Europe PMC record page
 //   oaUrl       ← inEPMC === "Y" or inPMC === "Y" → the PMC article URL
 //                 Europe PMC's own inEPMC record is the full-text body
 //   snippet     ← buildPaperSnippet (shared): venue · year · citations ·
@@ -26,6 +27,7 @@ import {
   DEFAULT_PAGE_SIZE,
   applyYearFilter,
   buildPaperSnippet,
+  chooseFetchableUrl,
   paperError,
   parsePaperSeed,
   PaperError,
@@ -94,13 +96,16 @@ export function isFlagY(v: string | undefined): boolean {
   return v === "Y" || v === "y";
 }
 
-/** `url` — doi.org when doi present (stable, resolvable), else the PMC copy
- *  page, else the Europe PMC record page by source+id. Pure; exported. */
+/** `url` — the most fetchable copy, through the shared policy
+ *  (chooseFetchableUrl): the PMC copy page first (Europe PMC serves its full
+ *  text keyless), then the doi.org resolution, then the record page by
+ *  source+id. Pure; exported. */
 export function chooseRecordUrl(r: EuropePmcResult): string | null {
-  if (r.doi) return `https://doi.org/${r.doi}`;
-  if (r.pmcid) return `https://europepmc.org/article/${r.pmcid}`;
-  if (r.id && r.source) return `https://europepmc.org/article/${r.source}/${r.id}`;
-  return null;
+  return chooseFetchableUrl([
+    r.pmcid ? `https://europepmc.org/article/${r.pmcid}` : undefined,
+    r.doi ? `https://doi.org/${r.doi}` : undefined,
+    r.id && r.source ? `https://europepmc.org/article/${r.source}/${r.id}` : undefined,
+  ]);
 }
 
 /** `oaUrl` — the full-text body when a PMC copy exists; absent (closed or

@@ -25,6 +25,7 @@ import {
   PaperError,
   paperError,
   buildPaperSnippet,
+  chooseFetchableUrl,
   parsePaperSeed,
   type PaperCitationGraph,
   type PaperFilters,
@@ -63,6 +64,10 @@ export interface OpenAlexWork {
   } | null;
   open_access?: { is_oa?: boolean; oa_status?: string; oa_url?: string | null } | null;
   best_oa_location?: { landing_page_url?: string; pdf_url?: string | null } | null;
+  /** Every copy the work has a record of: publisher, PMC, DOAJ, repositories.
+   *  Landing pages here are the raw record URL — most are doi.org forms, but
+ *  the PMC/DOAJ/repo copies are not, and they are what fetches cleanly. */
+  locations?: Array<{ landing_page_url?: string | null } | null> | null;
   authorships?: Array<{ author?: { display_name?: string } | null }>;
   [key: string]: unknown;
 }
@@ -79,24 +84,37 @@ export function parseDoi(doiUrl: string | null | undefined): string | null {
   return m?.[1] ?? null;
 }
 
-/** `url` — the canonical place the agent acts on: the DOI when present
- *  (stable, resolvable), else the primary landing page, else the OpenAlex
- *  record URL. Pure; exported for tests. */
+/** `url` — the canonical place the agent acts on: the most fetchable copy the
+ *  work carries, ranked by the shared policy (chooseFetchableUrl in
+ *  paper-backend.ts). Candidates in backend preference order: every
+ *  location's landing page, then the primary landing, then the best-OA
+ *  landing, then the DOI. Pure; exported for tests. */
 export function chooseRecordUrl(w: OpenAlexWork): string | null {
-  if (w.doi) return w.doi;
-  if (w.primary_location?.landing_page_url) return w.primary_location.landing_page_url;
-  if (typeof w.id === "string" && w.id) return w.id;
-  return null;
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const push = (u: unknown) => {
+    if (typeof u === "string" && u && !seen.has(u)) {
+      seen.add(u);
+      candidates.push(u);
+    }
+  };
+  for (const l of w.locations ?? []) push(l?.landing_page_url);
+  push(w.primary_location?.landing_page_url);
+  push(w.best_oa_location?.landing_page_url);
+  push(w.doi);
+  push(w.id);
+  return chooseFetchableUrl(candidates);
 }
 
-/** `oaUrl` — the best reachable full text: best_oa_location's PDF, then its
- *  landing page, then the top-level oa_url. Absent (null) when closed. Pure;
- *  exported for tests. */
+/** `oaUrl` — the best reachable full text, through the same fetchability
+ *  policy: best_oa_location's PDF, then its landing page, then the top-level
+ *  oa_url. Absent (null) when closed. Pure; exported for tests. */
 export function chooseOaUrl(w: OpenAlexWork): string | null {
-  if (w.best_oa_location?.pdf_url) return w.best_oa_location.pdf_url;
-  if (w.best_oa_location?.landing_page_url) return w.best_oa_location.landing_page_url;
-  const oaUrl = w.open_access?.oa_url;
-  return typeof oaUrl === "string" && oaUrl ? oaUrl : null;
+  return chooseFetchableUrl([
+    w.best_oa_location?.pdf_url,
+    w.best_oa_location?.landing_page_url,
+    w.open_access?.oa_url,
+  ]);
 }
 
 // ── Pure seam: normalization (agent-POV, OpenAlex) ────────────────────────────

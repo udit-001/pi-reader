@@ -4,8 +4,14 @@ Reference for `search/papers.ts` (backend dispatch), `search/paper-backend.ts` (
 
 ## Shape
 
-- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, PIWEB-16's filters) never branches on the backend.
+- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, PIWEB-16's filters) never branches on the backend.
 - Failure throws `PaperError`, whose message is built by `paperError()` — the entry passes it verbatim. Three statuses: `no-results`, `backend-down`, `malformed`, each naming the backend, the retry `index`, and a manual-DOI escape hatch. The entry's generic error rewriter never touches these — the retry hint IS the actionability.
+
+## The record URL: most fetchable copy wins
+
+Each row's `url` is the canonical place the agent acts on — the link a human clicks and the fetch chain resolves. Both backends rank their candidates through `chooseFetchableUrl` in `search/paper-backend.ts` — one URL policy for the vertical, the rank ladder in its comment. The row points at the most fetchable copy the work carries; the bare DOI always rides the `doi` key, so citation seeds and the `DOI:` meta line lose nothing when the URL is a copy, and a closed work with no copy anywhere keeps the doi.org link.
+
+The ordering is the point — verified live in this session: doi.org rate-limits per IP, so 429s bite when an agent walks a result set of DOI links, and the redirect lands on the most bot-walled corner of publishing (Cloudflare challenges, auth transit pages) while the PMC/DOAJ/repo copies fetch keylessly. One wire fact drives the adapters: OpenAlex's own `landing_page_url` is usually the doi.org form, so the OpenAlex adapter reads `locations` for the copies, and Europe PMC ranks its PMC copy over its DOI.
 
 ## Why in-band failure, not degrade-to-text
 
@@ -17,7 +23,7 @@ A text-search result is not a paper record — no substitutes exist. The news ve
 
 ## Why OpenAlex + Europe PMC
 
-- **OpenAlex** is breadth: ~250M works across all disciplines, keyless, one JSON endpoint. Its metadata is the universal index; full text rides on the DOI.
+- **OpenAlex** is breadth: ~250M works across all disciplines, keyless, one JSON endpoint. Its metadata is the universal index, and its `locations` list carries every copy — PMC, DOAJ, publisher, repository — the URL policy feeds on.
 - **Europe PMC** is biomedical depth: PubMed abstracts, PMC full-text copies, preprints, and patents, with the OA flag and PMC URL reaching the agent — a biomedical query gets the readable body, not just the abstract page.
 - **Semantic Scholar stays deferred:** it 429s in keyless testing — the free tier is unusable without a key. Reconsider when a keyless quota appears or the extension gains a key store it can trust.
 

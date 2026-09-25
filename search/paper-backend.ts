@@ -80,6 +80,49 @@ export function buildPaperSnippet(meta: PaperSnippetMeta): string {
   return tokens.join(" · ");
 }
 
+// ── Pure seam: record URL choice ─────────────────────────────────────────────
+
+/** The record's `url` is the canonical place the agent acts on — the link a
+ *  human clicks and the fetch chain resolves. doi.org is a poor default for
+ *  it: the resolution hop rate-limits under volume (429s bite when an agent
+ *  walks a result set), and where it lands is the most bot-walled corner of
+ *  publishing (Cloudflare challenges, auth transit pages). Every backend
+ *  carries copies that fetch cleanly — PMC full text, DOAJ, repository and
+ *  publisher pages — so the policy ranks candidates by fetchability:
+ *
+ *    4  PMC full-text copies (ncbi.nlm.nih.gov/pmc/, europepmc.org/article/PMC…)
+ *    3  any other publisher/repository/preprint page
+ *    2  doi.org resolution
+ *    1  bare metadata records (openalex.org/W…, europepmc.org/article/MED…)
+ *
+ *  Ties break by candidate order — backends pass their own preference first.
+ *  Closed works with doi.org as the only candidate keep it; the bare DOI
+ *  always rides the record's `doi` key, so a copy-URL never costs citation
+ *  seeds. Shared by every backend — one URL policy, wherever the record came
+ *  from. Pure; exported for tests. */
+export function chooseFetchableUrl(candidates: Array<string | null | undefined>): string | null {
+  const rank = (u: string): number => {
+    if (/^https?:\/\/(?:www\.)?ncbi\.nlm\.nih\.gov\/pmc\//i.test(u)) return 4;
+    if (/^https?:\/\/europepmc\.org\/article\/PMC/i.test(u)) return 4;
+    if (/^https?:\/\/(?:dx\.)?doi\.org\//i.test(u)) return 2;
+    // Metadata record views — the record's provenance, not the paper.
+    if (/^https?:\/\/europepmc\.org\/article\/(?!PMC)/i.test(u)) return 1;
+    if (/^https?:\/\/openalex\.org\//i.test(u)) return 1;
+    return 3;
+  };
+  let best: string | null = null;
+  let bestRank = -1;
+  for (const c of candidates) {
+    if (typeof c !== "string" || !/^https?:\/\//i.test(c)) continue;
+    const r = rank(c);
+    if (r > bestRank) {
+      best = c;
+      bestRank = r;
+    }
+  }
+  return best;
+}
+
 // ── Filters + citation traversal (PIWEB-16) ───────────────────────────────
 
 /** Constrain a papers search, or turn it into a citation walk. Shared across

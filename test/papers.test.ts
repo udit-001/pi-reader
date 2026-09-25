@@ -17,7 +17,7 @@ import {
   type OpenAlexWork,
   type OpenAlexDeps,
 } from "../search/papers.ts";
-import { buildPaperSnippet, type PaperRecord } from "../search/paper-backend.ts";
+import { buildPaperSnippet, chooseFetchableUrl, type PaperRecord } from "../search/paper-backend.ts";
 import { isPaperRecord } from "../search/paper-backend.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
 
@@ -95,11 +95,36 @@ test("parseDoi tolerates the explicit null OpenAlex sends for works without a DO
 
 // ── chooseRecordUrl / chooseOaUrl — the two URL decisions ─────────────────────
 
-test("chooseRecordUrl prefers the DOI, falls back to landing page, then the OpenAlex record", () => {
+test("chooseRecordUrl keeps the DOI when no more fetchable copy exists — the openalex record ranks below it", () => {
   assert.equal(chooseRecordUrl(NATURE_WORK), "https://doi.org/10.1038/s41587-020-0561-9");
+  assert.equal(chooseRecordUrl({ doi: "https://doi.org/10.1/x" }), "https://doi.org/10.1/x");
   assert.equal(chooseRecordUrl({ primary_location: { landing_page_url: "https://e.com/x" } }), "https://e.com/x");
   assert.equal(chooseRecordUrl(BARE_WORK), "https://openalex.org/W9999999999");
   assert.equal(chooseRecordUrl({}), null);
+});
+
+test("chooseRecordUrl prefers a direct copy from locations over the doi.org resolution", () => {
+  // The live shape from the lichen session: OpenAlex's own landing_page_url
+  // is the doi.org form, but locations also carries the PMC/repo copies that
+  // fetch without the doi.org hop.
+  assert.equal(
+    chooseRecordUrl({
+      doi: "https://doi.org/10.1093/aob/mcm030",
+      locations: [
+        { landing_page_url: "https://doi.org/10.1093/aob/mcm030" },
+        { landing_page_url: "https://pubmed.ncbi.nlm.nih.gov/17353205" },
+        { landing_page_url: "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2802918" },
+      ],
+    }),
+    "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2802918",
+  );
+  assert.equal(
+    chooseRecordUrl({
+      doi: "https://doi.org/10.1093/aob/mcm030",
+      locations: [{ landing_page_url: "https://research.vu.nl/en/publications/abc" }],
+    }),
+    "https://research.vu.nl/en/publications/abc",
+  );
 });
 
 test("chooseOaUrl picks the best_oa pdf first, then its landing page, then the top-level oa_url", () => {
@@ -107,6 +132,16 @@ test("chooseOaUrl picks the best_oa pdf first, then its landing page, then the t
   assert.equal(
     chooseOaUrl({ open_access: { oa_url: "https://repo.org/1" } }),
     "https://repo.org/1",
+  );
+});
+
+test("chooseOaUrl ranks a direct copy above a doi.org landing or oa_url in the same list", () => {
+  assert.equal(
+    chooseOaUrl({
+      best_oa_location: { landing_page_url: "https://doi.org/10.1515/znc-2010-3-401" },
+      open_access: { oa_url: "https://www.degruyter.com/document/doi/10.1515/znc-2010-3-401/pdf" },
+    }),
+    "https://www.degruyter.com/document/doi/10.1515/znc-2010-3-401/pdf",
   );
 });
 
@@ -139,6 +174,12 @@ test("papers normalizer leaves oaUrl absent on closed works, sets it on OA works
   assert.equal(oa!.oaUrl, "https://dash.harvard.edu/bitstream/1/37370913/3/manuscript.pdf");
 });
 
+test("papers normalizer points an OA work's row url at its copy — the bare doi stays for seeds", () => {
+  const [oa] = normalizePaperResults([OA_WORK]);
+  assert.equal(oa!.url, "https://dash.harvard.edu/handle/1/37370913");
+  assert.equal(oa!.doi, "10.1038/s41592-023-01898-x");
+});
+
 test("papers normalizer builds the snippet from venue/year/citations/status/authors", () => {
   const [closed, oa] = normalizePaperResults([NATURE_WORK, OA_WORK]);
   assert.equal(
@@ -154,6 +195,34 @@ test("buildPaperSnippet joins tokens and tolerates absent fields — the shared 
   assert.equal(buildPaperSnippet({}), "");
   assert.equal(buildPaperSnippet({ authors: ["Solo Author"] }), "Solo Author");
   assert.equal(buildPaperSnippet({ authors: ["A", "B"] }), "A et al.");
+});
+
+// The shared URL policy directly (same module both backends rank through):
+test("chooseFetchableUrl ranks PMC full text above doi.org, and doi.org above bare record pages", () => {
+  assert.equal(
+    chooseFetchableUrl([
+      "https://doi.org/10.1/x",
+      "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1/",
+      "https://doaj.org/article/x",
+    ]),
+    "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1/",
+  );
+  assert.equal(
+    chooseFetchableUrl(["https://doi.org/10.1/x", "https://openalex.org/W1"]),
+    "https://doi.org/10.1/x",
+  );
+  // Metadata record views never outrank a doi.org resolution.
+  assert.equal(
+    chooseFetchableUrl(["https://doi.org/10.1/x", "https://europepmc.org/article/MED/1"]),
+    "https://doi.org/10.1/x",
+  );
+  // Ties break by candidate order — the backend's preference wins.
+  assert.equal(
+    chooseFetchableUrl(["https://a.org/x", "https://b.org/y"]),
+    "https://a.org/x",
+  );
+  assert.equal(chooseFetchableUrl([]), null);
+  assert.equal(chooseFetchableUrl(["not-a-url", null, undefined]), null);
 });
 
 test("papers normalizer tolerates missing fields — no invented tokens or keys", () => {

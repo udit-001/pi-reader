@@ -110,7 +110,9 @@ test("parseAuthors splits the comma string and drops empties", () => {
 
 // ── chooseRecordUrl / chooseOaUrl — the two URL decisions ─────────────────────
 
-test("europepmc chooseRecordUrl prefers doi.org, then PMC copy, then the source+id record page", () => {
+test("europepmc chooseRecordUrl prefers the PMC copy, keeps doi.org for records without one, record page last", () => {
+  assert.equal(chooseRecordUrl(PMC_REC), "https://europepmc.org/article/PMC13434336");
+  // Closed PubMed record: no copy exists, the doi.org resolution stands.
   assert.equal(chooseRecordUrl(PUBMED_REC), "https://doi.org/10.1038/s41551-026-01747-y");
   assert.equal(chooseRecordUrl(PATENT_REC), "https://europepmc.org/article/PAT/3540589");
   assert.equal(chooseRecordUrl({}), null);
@@ -136,7 +138,7 @@ test("europepmc normalizer maps the same flat keys the OpenAlex backend emits", 
     { title: pmc!.title, url: pmc!.url, year: pmc!.year, authors: pmc!.authors, venue: pmc!.venue, citedBy: pmc!.citedBy, doi: pmc!.doi, oaUrl: pmc!.oaUrl },
     {
       title: "BASELINE: a CRISPR base editing platform for mammalian-scale single-cell lineage tracing.",
-      url: "https://doi.org/10.1093/nar/gkag769",
+      url: "https://europepmc.org/article/PMC13434336",
       year: 2026,
       authors: ["Winter E", "Emiliani F", "McKenna A."],
       venue: "Nucleic Acids Research",
