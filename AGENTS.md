@@ -21,6 +21,8 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 | `search/search.ts` | Provider seam: routing, fallback, answer synthesis |
 | `search/ddgs-uv.ts` | ddgs adapter seam: shared argv plan (`buildDdgsArgs`), private tmp dir, warm-up, recency/license maps |
 | `search/news.ts`, `search/images.ts`, `search/duckduckgo.ts` | ddgs verticals: news, images, and the HTML degrade |
+| `search/videos.ts` | Videos vertical: direct DDG v.js client, keyless |
+| `search/papers.ts`, `search/paper-backend.ts`, `search/europepmc.ts` | Papers vertical: backend dispatch (`index`), shared record seam, Europe PMC backend |
 | `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
 | `fetch/handlers/` | Per-site structured rendering (GitHub, registries, HN, feeds, …) |
 | `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, size gate, runtime cache), `renderRepoView` |
@@ -40,6 +42,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 - [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the full chain, SSRF guard, body caps, timeouts, cache layout. Open before touching the fetch chain, the network guard, or the cache, or when debugging a URL that returns nothing.
 - [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path and warm-up, Exa transport, search cache, key resolution, the wizard. Open before touching a provider, routing, recency/page behavior, or config/key handling.
 - [`docs/github.md`](docs/github.md) — repo checkouts (size gate, runtime cache) and issue/PR rendering (gh-first, REST fallback, one renderer). Open before touching `github-clone.ts` or `github-issue-pr.ts`.
+- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), in-band error contract, `mailto` politeness, citation-graph approximation. Open before touching the papers vertical, scholarly search, or citation traversal.
 
 ## Conventions
 

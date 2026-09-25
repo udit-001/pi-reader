@@ -41,6 +41,10 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 - `recency` binds at the source via the `f=publishedAfter:{d|w|m|y}` slot of the v.js filter string; `page` via `s=(page-1)*60`. `domains` is not supported.
 - No degrade-to-text. The fragile seam is the VQD regex (markup-pinned fixture test); a missing token, non-200, or non-JSON response surfaces as an actionable in-band error naming the cause and the text + `domains: ["youtube.com"]` workaround. No 403 retries — a fingerprint ban isn't retry-recoverable, and the boring-UA client exists precisely to avoid earning one.
 
+## Papers vertical (`search/papers.ts`)
+
+- Explicit-only like the other verticals; two backends behind one dispatch — `index` picks OpenAlex (default) or Europe PMC for biomedical full text — both normalizing into one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the `mailto` politeness contract, and the citation-graph approximation — is [papers.md](papers.md).
+
 ## Exa MCP (`search/exa-mcp.ts`)
 
 - Remote JSON-RPC over SSE — network errors are expected: the adapter retries once, then auto-routing falls back to DDG.
@@ -50,7 +54,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 ## Config (`config.ts`)
 
 - Single file: `~/.pi/agent/pi-reader.json`. Writes are atomic (tmp + rename); reads are forgiving — missing or malformed resolves to null.
-- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
+- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `papers.openalexEmail` (OpenAlex politeness — [papers.md](papers.md)), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
 
 ## Wizard (`/exa-setup`, `search/exa-setup.ts`)
 
