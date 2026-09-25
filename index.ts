@@ -32,6 +32,7 @@ import { exaCategoryList } from "./search/exa-mcp.ts";
 import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
+import { isPaperRecord } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -45,6 +46,7 @@ const providerSchema = Type.Optional(
       Type.Literal("news"),
       Type.Literal("images"),
       Type.Literal("videos"),
+      Type.Literal("papers"),
       Type.Literal("wikipedia"),
       Type.Literal("hn"),
       Type.Literal("context7"),
@@ -67,7 +69,10 @@ const providerSchema = Type.Optional(
         "image itself, with dimensions and source in the snippet; honors query, page, and license.\n" +
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
-        "back to text search with domains: ['youtube.com'].",
+        "back to text search with domains: ['youtube.com'].\n" +
+        "• 'papers' — scholarly literature ('what does the research say about X', 'find papers " +
+        "on X'): record-shaped results with year, venue, citation count, open-access URL, and " +
+        "DOI alongside the standard url/title/snippet, sourced from OpenAlex's ~250M works.",
     },
   ),
 );
@@ -233,9 +238,10 @@ export default function piWeb(pi: ExtensionAPI): void {
       "(category, includeContent, includeSummary, domains) start at Exa. Name a provider when " +
       "you know the need — 'context7' for API reference (a named library or SDK's endpoints, " +
       "signatures, and config), 'wikipedia' for facts, 'hn' for Hacker News discussions, " +
-      "'news' for dated coverage, 'images' and 'videos' for media discovery. " +
+      "'news' for dated coverage, 'images' and 'videos' for media discovery, " +
+      "'papers' for scholarly literature (OpenAlex, record-shaped results). " +
       "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
-    promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures).",
+    promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures); 'papers' returns scholarly paper records (year/venue/DOI).",
     parameters: webSearchParams,
     async execute(
       _callId: string,
@@ -270,6 +276,16 @@ export default function piWeb(pi: ExtensionAPI): void {
           lines.push(`   ${r.url}`);
           if (r.publishedDate) lines.push(`   Published: ${r.publishedDate}`);
           if (r.author) lines.push(`   By: ${r.author}`);
+          if (isPaperRecord(r)) {
+            const meta: string[] = [];
+            if (r.year !== undefined) meta.push(`Year: ${r.year}`);
+            if (r.venue) meta.push(`Venue: ${r.venue}`);
+            if (r.citedBy !== undefined) meta.push(`Cited by: ${r.citedBy}`);
+            if (r.doi) meta.push(`DOI: ${r.doi}`);
+            if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
+            if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
+            if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
+          }
           if (hasContent) lines.push(`   ${r.content!.replace(/\s+/g, " ").trim().slice(0, 400)}`);
         }
 
@@ -284,6 +300,16 @@ export default function piWeb(pi: ExtensionAPI): void {
               snippet: r.snippet.slice(0, 500),
               ...(r.publishedDate ? { publishedDate: r.publishedDate } : {}),
               ...(r.author ? { author: r.author } : {}),
+              ...(isPaperRecord(r)
+                ? {
+                  ...(r.year !== undefined ? { year: r.year } : {}),
+                  ...(r.venue ? { venue: r.venue } : {}),
+                  ...(r.citedBy !== undefined ? { citedBy: r.citedBy } : {}),
+                  ...(r.oaUrl ? { oaUrl: r.oaUrl } : {}),
+                  ...(r.doi ? { doi: r.doi } : {}),
+                  ...(r.authors?.length ? { authors: r.authors } : {}),
+                }
+                : {}),
               ...(typeof r.content === "string" && r.content ? { contentLength: r.content.length } : {}),
             })),
           },

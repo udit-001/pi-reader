@@ -9,6 +9,7 @@ import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
 import { searchNews } from "./news.ts";
 import { searchImages } from "./images.ts";
 import { searchVideos } from "./videos.ts";
+import { searchPapers } from "./papers.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
 import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
@@ -17,7 +18,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos";
+export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
 
 export type ExaCategory =
   | "company"
@@ -106,6 +107,17 @@ const autoProviders: Record<AutoProviderName, SearchProvider> = {
   duckduckgo: duckduckgoProvider,
   exa: exaProvider,
   news: newsProvider,
+};
+
+// The papers vertical — scholarly literature (OpenAlex). PaperRecord's flat
+// keys ride on the standard SearchResult so agents get year/venue/citations
+// without a new result taxonomy. Explicit-only: never chosen by auto-routing
+// (PIWEB-14).
+const papersProvider: SearchProvider = {
+  async search(query, options) {
+    const results = await searchPapers(query, options);
+    return { answer: buildAnswer(results), results, provider: "papers" };
+  },
 };
 
 // The images vertical: ddgs images subcommand — free, keyless. Explicit-only:
@@ -267,6 +279,8 @@ export async function webSearch(
     response = await imagesProvider.search(query, options);
   } else if (requested === "videos") {
     response = await videosProvider.search(query, options);
+  } else if (requested === "papers") {
+    response = await papersProvider.search(query, options);
   } else if (requested === "wikipedia" || requested === "hn" || requested === "context7") {
     // Domain-specific providers — only when explicitly requested
     response = await freeProviders.search(query, { ...options, source: requested } as any);

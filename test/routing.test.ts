@@ -75,6 +75,23 @@ test("autoChain: videos intent never enters the chain — explicit provider only
   }
 });
 
+test("autoChain: papers intent never enters the chain — explicit provider only", () => {
+  // `provider: "papers"` is a deliberate dispatch, not an intent the router
+  // guesses (PIWEB-14). Scholarly-record search is a distinct job from web
+  // search — no param combination routes to or falls back to papers; the
+  // adapter lives outside autoProviders, compiler-enforced.
+  for (const options of [
+    {},
+    { category: "publication" as const },
+    { category: "news" as const, recency: "month" as const },
+    { includeContent: true, domains: ["arxiv.org"] },
+  ]) {
+    const [primary, fallback] = autoChain(options);
+    assert.notEqual(primary, "papers");
+    assert.notEqual(fallback, "papers");
+  }
+});
+
 // ── shouldCacheSearch — the cache-honesty decision ───────────────────────────
 
 const ok = (over: Partial<SearchResponse> = {}): SearchResponse => ({
@@ -89,6 +106,7 @@ test("shouldCacheSearch: successful free-provider results are cached", () => {
   assert.equal(shouldCacheSearch(ok({ provider: "news" })), true);
   assert.equal(shouldCacheSearch(ok({ provider: "duckduckgo" })), true);
   assert.equal(shouldCacheSearch(ok({ provider: "images" })), true);
+  assert.equal(shouldCacheSearch(ok({ provider: "papers" })), true);
 });
 
 test("shouldCacheSearch: Exa results are never cached — they cost quota", () => {

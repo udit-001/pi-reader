@@ -1,0 +1,229 @@
+// Tests for the papers vertical — `provider: "papers"` backed by OpenAlex.
+// Pure seams only: DOI parse, URL/OA choice, the papers normalizer, request
+// params, and the adapter's deps flow. Fixture is a trimmed live capture
+// (2026-09-25, api.openalex.org/works?search=CRISPR base editing). No network.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  parseDoi,
+  chooseRecordUrl,
+  chooseOaUrl,
+  buildPaperSnippet,
+  normalizePaperResults,
+  buildPaperParams,
+  isPaperRecord,
+  searchPapers,
+  type OpenAlexWork,
+  type OpenAlexDeps,
+} from "../search/papers.ts";
+import type { SearchOptions, SearchResult } from "../search/search.ts";
+
+// ── Fixture — trimmed live capture (2026-09-25) ───────────────────────────────
+
+// A richly-populated work: DOI, year, authors, venue, citations — closed
+// access (no oa_url), landing page is the doi.org URL itself.
+const NATURE_WORK: OpenAlexWork = {
+  id: "https://openalex.org/W3161425918",
+  doi: "https://doi.org/10.1038/s41587-020-0561-9",
+  title: "Genome editing with CRISPR–Cas nucleases, base editors, transposases and prime editors",
+  publication_year: 2020,
+  cited_by_count: 2387,
+  primary_location: {
+    landing_page_url: "https://doi.org/10.1038/s41587-020-0561-9",
+    source: { display_name: "Nature Biotechnology" },
+  },
+  open_access: { is_oa: false, oa_status: "closed", oa_url: null },
+  best_oa_location: null,
+  authorships: [
+    { author: { display_name: "Andrew V. Anzalone" } },
+    { author: { display_name: "Luke W. Koblan" } },
+    { author: { display_name: "David R. Liu" } },
+  ],
+};
+
+// An open-access work: pdf in best_oa_location, oa_status green.
+const OA_WORK: OpenAlexWork = {
+  id: "https://openalex.org/W4211394178",
+  doi: "https://doi.org/10.1038/s41592-023-01898-x",
+  title: "Prime editing precision and outcomes",
+  publication_year: 2023,
+  cited_by_count: 312,
+  primary_location: {
+    landing_page_url: "https://doi.org/10.1038/s41592-023-01898-x",
+    source: { display_name: "Nature Methods" },
+  },
+  open_access: { is_oa: true, oa_status: "green", oa_url: "https://dash.harvard.edu/handle/1/37370913" },
+  best_oa_location: {
+    landing_page_url: "https://dash.harvard.edu/handle/1/37370913",
+    pdf_url: "https://dash.harvard.edu/bitstream/1/37370913/3/manuscript.pdf",
+  },
+  authorships: [{ author: { display_name: "S. Qin" } }],
+};
+
+// A minimal work: only the record URL (no doi, no landing page) — the OpenAlex
+// record itself is the last-resort url.
+const BARE_WORK: OpenAlexWork = {
+  id: "https://openalex.org/W9999999999",
+  title: "A preprint with almost no metadata",
+};
+
+// ── parseDoi — URL form → bare identifier ────────────────────────────────────
+
+test("parseDoi strips the doi.org URL form down to the bare identifier", () => {
+  assert.equal(parseDoi("https://doi.org/10.1038/s41587-020-0561-9"), "10.1038/s41587-020-0561-9");
+  assert.equal(parseDoi("https://doi.org/10.5281/zenodo.x"), "10.5281/zenodo.x");
+});
+
+test("parseDoi returns null for absent or non-doi.org values — never invents a DOI", () => {
+  assert.equal(parseDoi(undefined), null);
+  assert.equal(parseDoi("https://openalex.org/W3161425918"), null);
+  assert.equal(parseDoi(""), null);
+});
+
+// ── chooseRecordUrl / chooseOaUrl — the two URL decisions ─────────────────────
+
+test("chooseRecordUrl prefers the DOI, falls back to landing page, then the OpenAlex record", () => {
+  assert.equal(chooseRecordUrl(NATURE_WORK), "https://doi.org/10.1038/s41587-020-0561-9");
+  assert.equal(chooseRecordUrl({ primary_location: { landing_page_url: "https://e.com/x" } }), "https://e.com/x");
+  assert.equal(chooseRecordUrl(BARE_WORK), "https://openalex.org/W9999999999");
+  assert.equal(chooseRecordUrl({}), null);
+});
+
+test("chooseOaUrl picks the best_oa pdf first, then its landing page, then the top-level oa_url", () => {
+  assert.equal(chooseOaUrl(OA_WORK), "https://dash.harvard.edu/bitstream/1/37370913/3/manuscript.pdf");
+  assert.equal(
+    chooseOaUrl({ open_access: { oa_url: "https://repo.org/1" } }),
+    "https://repo.org/1",
+  );
+});
+
+test("chooseOaUrl returns null for a closed work — oaUrl stays absent, never faked", () => {
+  assert.equal(chooseOaUrl(NATURE_WORK), null);
+  assert.equal(chooseOaUrl({}), null);
+});
+
+// ── normalizePaperResults — agent-POV normalization ───────────────────────────
+
+test("papers normalizer maps the flat keys: year, authors, venue, citedBy, doi beside url/title/snippet", () => {
+  const [r] = normalizePaperResults([NATURE_WORK]);
+  assert.deepEqual(
+    { title: r!.title, url: r!.url, year: r!.year, authors: r!.authors, venue: r!.venue, citedBy: r!.citedBy, doi: r!.doi },
+    {
+      title: "Genome editing with CRISPR–Cas nucleases, base editors, transposases and prime editors",
+      url: "https://doi.org/10.1038/s41587-020-0561-9",
+      year: 2020,
+      authors: ["Andrew V. Anzalone", "Luke W. Koblan", "David R. Liu"],
+      venue: "Nature Biotechnology",
+      citedBy: 2387,
+      doi: "10.1038/s41587-020-0561-9",
+    },
+  );
+});
+
+test("papers normalizer leaves oaUrl absent on closed works, sets it on OA works", () => {
+  assert.equal("oaUrl" in normalizePaperResults([NATURE_WORK])[0]!, false);
+  const [oa] = normalizePaperResults([OA_WORK]);
+  assert.equal(oa!.oaUrl, "https://dash.harvard.edu/bitstream/1/37370913/3/manuscript.pdf");
+});
+
+test("papers normalizer builds the snippet from venue/year/citations/status/authors", () => {
+  const [closed, oa] = normalizePaperResults([NATURE_WORK, OA_WORK]);
+  assert.equal(
+    closed!.snippet,
+    "Nature Biotechnology · 2020 · 2387 citations · closed · Andrew V. Anzalone et al.",
+  );
+  assert.equal(oa!.snippet, "Nature Methods · 2023 · 312 citations · green · S. Qin");
+});
+
+test("papers normalizer tolerates missing fields — no invented tokens or keys", () => {
+  const [r] = normalizePaperResults([BARE_WORK]);
+  assert.equal(r!.snippet, "");
+  assert.equal("year" in r!, false);
+  assert.equal("authors" in r!, false);
+  assert.equal("venue" in r!, false);
+  assert.equal("citedBy" in r!, false);
+  assert.equal("doi" in r!, false);
+  assert.equal(r!.url, "https://openalex.org/W9999999999");
+});
+
+test("papers normalizer drops works with no record URL — no url, no action", () => {
+  const results = normalizePaperResults([{ title: "no url anywhere" }, BARE_WORK]);
+  assert.deepEqual(results.map((r) => r.title), ["A preprint with almost no metadata"]);
+});
+
+test("papers normalizer returns an empty array for empty input", () => {
+  assert.deepEqual(normalizePaperResults([]), []);
+});
+
+test("isPaperRecord detects the flat paper keys on generic result rows", () => {
+  const [r] = normalizePaperResults([NATURE_WORK]);
+  assert.equal(isPaperRecord(r as SearchResult), true);
+  assert.equal(isPaperRecord({ title: "t", url: "https://e.com", snippet: "s" }), false);
+  // An OA-only record — oaUrl alone is enough to read as a paper record.
+  assert.equal(isPaperRecord(normalizePaperResults([OA_WORK])[0] as unknown as SearchResult), true);
+});
+
+// ── buildPaperParams — search, per-page, mailto only when present ─────────────
+
+test("paper params carry the search query and per-page, and omit mailto when no contact is set", () => {
+  const p = buildPaperParams("CRISPR base editing", 10, null);
+  assert.equal(p.get("search"), "CRISPR base editing");
+  assert.equal(p.get("per-page"), "10");
+  assert.equal(p.get("mailto"), null);
+});
+
+test("paper params include the politeness mailto when one is configured", () => {
+  const p = buildPaperParams("q", 15, "udit@example.com");
+  assert.equal(p.get("mailto"), "udit@example.com");
+  assert.equal(p.get("per-page"), "15");
+});
+
+// ── searchPapers — deps flow, slicing, error shaping ──────────────────────────
+
+function depsWith(overrides: Partial<OpenAlexDeps>): OpenAlexDeps {
+  return {
+    fetchWorks: async () => [NATURE_WORK, OA_WORK],
+    ...overrides,
+  };
+}
+
+test("searchPapers returns normalized paper records on the happy path", async () => {
+  const results = await searchPapers("CRISPR base editing", {}, depsWith({}));
+  assert.equal(results.length, 2);
+  assert.equal(results[0]!.doi, "10.1038/s41587-020-0561-9");
+});
+
+test("searchPapers passes the query, numResults, and signal through to the fetch", async () => {
+  const seen: Array<{ params: URLSearchParams; signal?: AbortSignal }> = [];
+  const signal = new AbortController().signal;
+  const options: SearchOptions = { numResults: 7, signal };
+  await searchPapers("prime editing", options, depsWith({
+    fetchWorks: async (params, sig) => {
+      seen.push({ params, signal: sig });
+      return [NATURE_WORK];
+    },
+  }));
+  assert.equal(seen[0]!.params.get("search"), "prime editing");
+  assert.equal(seen[0]!.params.get("per-page"), "7");
+  assert.equal(seen[0]!.signal, signal);
+});
+
+test("searchPapers slices results to numResults", async () => {
+  const results = await searchPapers("q", { numResults: 1 }, depsWith({}));
+  assert.equal(results.length, 1);
+});
+
+test("searchPapers wraps fetch failures — cause visible, workaround named", async () => {
+  await assert.rejects(
+    searchPapers("q", {}, depsWith({ fetchWorks: async () => { throw new Error("OpenAlex returned 429"); } })),
+    /429.*category: 'publication'/s,
+  );
+});
+
+test("searchPapers throws on zero parseable records — no fake success", async () => {
+  await assert.rejects(
+    searchPapers("q", {}, depsWith({ fetchWorks: async () => [{ title: "no url anywhere" }] })),
+    /no parseable paper records/,
+  );
+});

@@ -45,6 +45,14 @@ export interface PiWebConfig {
   /** Allow fetching loopback/private-network addresses (intranet wikis, local dev
    *  servers). Default false. Cached responses are written 0600 either way. */
   allowPrivateNetwork?: boolean;
+  /** Papers vertical (see search/papers.ts). Absent fields use defaults. */
+  papers?: {
+    /** Contact address for OpenAlex's "polite pool" — absent-tolerant by
+     *  contract: the papers search works without it, rate limits just bite
+     *  sooner. Forwardable contact (name@example.com), used as the verbatim
+     *  mailto= query param on OpenAlex calls. */
+    openalexEmail?: string;
+  };
 }
 
 export function configPath(): string {
