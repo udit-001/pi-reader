@@ -32,6 +32,7 @@ import {
   paperError,
   parsePaperSeed,
   PaperError,
+  type PaperBackendStatus,
   type PaperCitationGraph,
   type PaperFilters,
   type PaperRecord,
@@ -319,6 +320,52 @@ async function searchEuropePmcWalk(
   return records.slice(0, n);
 }
 
+/** Europe PMC search failure classification, shared by the search and lookup
+ *  paths: 4xx (except 429) is the API rejecting the request — the
+ *  malformed-query case; every other failure is the backend being down.
+ *  Live behavior: Europe PMC's parser is loose (unbalanced quotes don't
+ *  400), so a 400 is a genuinely rejected query, not parser fuzz. Pure;
+ *  exported for tests. */
+export function classifyEuropePmcFailure(err: unknown): PaperBackendStatus {
+  if (err instanceof PaperError) return "no-results";
+  const message = err instanceof Error ? err.message : String(err);
+  return /returned 4\d\d/.test(message) && !/returned 429/.test(message)
+    ? "malformed"
+    : "backend-down";
+}
+
+/** The lookup query for a Europe PMC identifier: PMID rides EXT_ID + SRC,
+ *  PMCID has a dedicated field, DOI is quoted (verified live: all three
+ *  return exactly the anchored record). Pure; exported for tests. */
+export function buildEuropePmcLookupQuery(seed: PaperSeed): string {
+  if (seed.kind === "pmid") return `EXT_ID:${seed.value} AND SRC:MED`;
+  if (seed.kind === "pmcid") return `PMCID:${seed.value}`;
+  return `DOI:"${seed.value}"`;
+}
+
+/** Look up ONE paper by a Europe PMC-vocabulary identifier (PMID, PMCID, DOI)
+ *  — one search call, first hit normalized into the citeable record. Throws
+ *  PaperError shaped by paperError(), passed through verbatim. */
+export async function searchEuropePmcLookup(
+  seed: PaperSeed,
+  options: SearchOptions = {},
+  deps: EuropePmcDeps = defaultEuropePmcDeps,
+): Promise<PaperRecord[]> {
+  const params = buildEuropePmcParams(buildEuropePmcLookupQuery(seed), 1);
+  let body: EuropePmcResponse;
+  try {
+    body = await deps.fetchResults(params, options.signal);
+  } catch (err) {
+    if (err instanceof PaperError) throw err;
+    throw new PaperError(paperError(classifyEuropePmcFailure(err), "europepmc", err instanceof Error ? err.message : String(err)));
+  }
+  const records = normalizeEuropePmcResults(body.resultList?.result ?? []);
+  if (records.length === 0) {
+    throw new PaperError(paperError("no-results", "europepmc", `identifier matched no Europe PMC record`));
+  }
+  return records.slice(0, 1);
+}
+
 /** Search the papers vertical's Europe PMC backend. Throws PaperError whose
  *  message IS the in-band error text — named backend, retry hint, status
  *  distinction — so the entry passes it through verbatim. */
@@ -337,14 +384,7 @@ export async function searchEuropePmc(
   } catch (err) {
     if (err instanceof PaperError) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    // 4xx (except 429) is the API rejecting the request — the malformed-query
-    // case; every other failure is the backend being down. Live behavior:
-    // Europe PMC's parser is loose (unbalanced quotes don't 400), so a 400 is
-    // a genuinely rejected query, not parser fuzz.
-    const status = /returned 4\d\d/.test(message) && !/returned 429/.test(message)
-      ? "malformed"
-      : "backend-down";
-    throw new PaperError(paperError(status, "europepmc", message));
+    throw new PaperError(paperError(classifyEuropePmcFailure(err), "europepmc", message));
   }
   const results = normalizeEuropePmcResults(body.resultList?.result ?? []);
   if (results.length === 0) {

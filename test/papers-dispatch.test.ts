@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { searchPapers, OPENALEX_FILTER_OR_CAP, type OpenAlexWork } from "../search/papers.ts";
 import { parsePaperSeed, filtersCacheKey, applySort } from "../search/paper-backend.ts";
-import { paperError, otherIndex, type PaperRecord } from "../search/paper-backend.ts";
+import { paperError, otherIndex, PaperError, type PaperRecord } from "../search/paper-backend.ts";
 import type { EuropePmcResult, EuropePmcResponse } from "../search/europepmc.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
 
@@ -318,6 +318,72 @@ test("applySort ranks by descending citation count; uncounted records keep posit
   assert.deepEqual(sorted.map((r) => r.title), ["c", "a", "b"]);
   // No sort requested — identity.
   assert.equal(applySort(records, undefined), records);
+});
+
+// ── identifier lookup ─────────────────────────────────────────────────────────
+
+test("searchPapers dispatches a DOI lookup to the OpenAlex record endpoint — one record out, no search", async () => {
+  let recordLookup = "";
+  let worksCalled = 0;
+  const results = await searchPapers("", { filters: { lookup: "10.1038/s41587-020-0561-9" } }, depsWith({
+    openalex: {
+      fetchWorks: async () => { worksCalled++; return []; },
+      fetchRecord: async (lookup) => { recordLookup = lookup; return OPENALEX_WORK; },
+    },
+  }));
+  assert.equal(recordLookup, "doi:10.1038/s41587-020-0561-9");
+  assert.equal(worksCalled, 0);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.doi, "10.1038/s41587-020-0561-9");
+});
+
+test("searchPapers routes a PMID lookup to Europe PMC by identifier kind — index is ignored", async () => {
+  let query = "";
+  const results = await searchPapers("", { index: "openalex", filters: { lookup: "23812562" } }, depsWith({
+    openalex: {
+      fetchRecord: async () => { throw new Error("PMID must not hit OpenAlex"); },
+      fetchWorks: async () => { throw new Error("must not be called"); },
+    },
+    europepmc: {
+      fetchResults: async (params) => {
+        query = params.get("query") ?? "";
+        return { hitCount: 1, resultList: { result: [EPMC_RESULT] } } as EuropePmcResponse;
+      },
+    },
+  }));
+  assert.match(query, /EXT_ID:23812562 AND SRC:MED/);
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.doi, "10.1093/nar/gkag769");
+});
+
+test("a lookup miss surfaces the no-results contract error with the escape hatch", async () => {
+  await assert.rejects(
+    searchPapers("", { filters: { lookup: "10.9999/not-real" } }, depsWith({
+      openalex: { fetchRecord: async () => null },
+    })),
+    (err: PaperError) => /matched no OpenAlex record/.test(err.message) && /fetch a specific paper/.test(err.message),
+  );
+});
+
+test("an unparseable lookup is a malformed error naming the accepted forms", async () => {
+  await assert.rejects(
+    searchPapers("", { filters: { lookup: "not an identifier" } }, depsWith({})),
+    (err: PaperError) => /not a paper identifier/.test(err.message) && /DOI, PMID, PMCID/.test(err.message),
+  );
+});
+
+test("lookup and citationGraph are mutually exclusive — one intent per call", async () => {
+  await assert.rejects(
+    searchPapers("", { filters: { lookup: "10.1038/s41587-020-0561-9", citationGraph: { seed: "10.1038/x" } } }, depsWith({})),
+    (err: PaperError) => /mutually exclusive/.test(err.message),
+  );
+});
+
+test("lookup rides the search-cache key", () => {
+  assert.notEqual(
+    filtersCacheKey({}),
+    filtersCacheKey({ lookup: "10.1038/s41587-020-0561-9" }),
+  );
 });
 
 // unused-parameter guards for the fixture imports the tests don't need twice

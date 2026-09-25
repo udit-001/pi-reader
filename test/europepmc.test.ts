@@ -15,12 +15,14 @@ import {
   normalizeEuropePmcResults,
   buildEuropePmcParams,
   buildEuropePmcFilterQuery,
+  buildEuropePmcLookupQuery,
+  searchEuropePmcLookup,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
   type EuropePmcResponse,
 } from "../search/europepmc.ts";
-import { PaperError } from "../search/paper-backend.ts";
+import { PaperError, parsePaperSeed } from "../search/paper-backend.ts";
 
 // ── Fixtures — trimmed live capture (2026-09-25) ─────────────────────────────
 
@@ -212,6 +214,39 @@ test("parsePubYear reads both entry shapes, invents nothing", () => {
   assert.equal(parsePubYear("2026-07-01"), 2026);
   assert.equal(parsePubYear(undefined), undefined);
   assert.equal(parsePubYear("soon"), undefined);
+});
+
+// ── buildEuropePmcFilterQuery — filters ride inside the query string ──────────
+
+// Lookup query plan: one identifier, one record (verified live forms).
+test("europepmc lookup query per identifier kind: PMID, PMCID, DOI", () => {
+  assert.equal(buildEuropePmcLookupQuery(parsePaperSeed("23812562")!), "EXT_ID:23812562 AND SRC:MED");
+  assert.equal(buildEuropePmcLookupQuery(parsePaperSeed("PMC4544277")!), "PMCID:PMC4544277");
+  assert.equal(
+    buildEuropePmcLookupQuery(parsePaperSeed("10.1007/s10286-013-0206-x")!),
+    'DOI:"10.1007/s10286-013-0206-x"',
+  );
+});
+
+test("searchEuropePmcLookup normalizes the anchored record; empty result is the no-results error", async () => {
+  const fetched: string[] = [];
+  const results = await searchEuropePmcLookup(parsePaperSeed("PMC4544277")!, {}, {
+    fetchResults: async (params) => {
+      fetched.push(params.get("query") ?? "");
+      return { hitCount: 1, resultList: { result: [PUBMED_REC] } } as EuropePmcResponse;
+    },
+    fetchRoute: async () => { throw new Error("must not be called"); },
+  });
+  assert.deepEqual(fetched, ["PMCID:PMC4544277"]);
+  assert.equal(results.length, 1);
+
+  await assert.rejects(
+    searchEuropePmcLookup(parsePaperSeed("10.9999/nope")!, {}, {
+      fetchResults: async () => ({ hitCount: 0, resultList: { result: [] } } as EuropePmcResponse),
+      fetchRoute: async () => { throw new Error("must not be called"); },
+    }),
+    (err: PaperError) => /matched no Europe PMC record/.test(err.message),
+  );
 });
 
 // ── buildEuropePmcFilterQuery — filters ride inside the query string ──────────

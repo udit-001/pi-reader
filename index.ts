@@ -73,7 +73,7 @@ const providerSchema = Type.Optional(
         "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
         "is a citeable record — year, venue, citation count, open-access URL, and DOI " +
         "ride on the standard title/url/snippet; honors query, numResults, index, and " +
-        "filters (year/OA/citation walks/citedBy sort).",
+        "filters (year/OA, citedBy sort, citation walks, identifier lookup).",
     },
   ),
 );
@@ -104,6 +104,9 @@ const paperFiltersSchema = Type.Optional(
       sort: Type.Optional(Type.Union([Type.Literal("citedBy")], {
         description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
       })),
+      lookup: Type.Optional(Type.String({
+        description: "Look up ONE paper by identifier instead of searching — a DOI (10.… or doi.org link), PMID, PMCID, an NLM/Europe PMC article URL, or an OpenAlex W-id; anything a papers row or a user-pasted link provides. Returns that paper's citeable record; the identifier picks the backend (index is ignored, no query needed, other filters don't apply). Mutually exclusive with citationGraph.",
+      })),
       citationGraph: Type.Optional(
         Type.Object(
           {
@@ -133,8 +136,8 @@ const paperFiltersSchema = Type.Optional(
     {
       description:
         "Papers provider only: constrain the search (year window, open access, " +
-        "citation ranking) or walk the citation graph from a seed paper. Other " +
-        "providers ignore it.",
+        "citation ranking), walk the citation graph from a seed paper, or look " +
+        "up one paper by identifier. Other providers ignore it.",
     },
   ),
 );

@@ -31,7 +31,7 @@ import {
   type PaperFilters,
   type PaperRecord,
 } from "./paper-backend.ts";
-import { searchEuropePmc, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
+import { searchEuropePmc, searchEuropePmcLookup, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
 import { loadConfig } from "../config.ts";
 
 const TIMEOUT_MS = 25_000;
@@ -380,6 +380,40 @@ async function searchOpenAlex(
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
+/** The identifier lookup: resolve ONE paper from a parsePaperSeed form (DOI
+ *  or doi.org link, PMID, PMCID, Europe PMC/NCBI article URL, OpenAlex W-id)
+ *  into a single citeable record. The identifier picks the backend — DOI
+ *  and W-ids are OpenAlex's vocabulary, PMID/PMCID are Europe PMC's — so
+ *  `index` is ignored here, and the other filters don't apply (a lookup
+ *  retrieves, it doesn't constrain). One OpenAlex wire form: /works/{doi}
+ *  and /works/{W-id} are the same record endpoint (verified live), the
+ *  same call the backward walk's DOI seed already makes. */
+export async function searchPaperLookup(
+  seed: string,
+  options: SearchOptions = {},
+  deps: { openalex?: OpenAlexDeps; europepmc?: EuropePmcDeps } = {},
+): Promise<PaperRecord[]> {
+  const parsed = parsePaperSeed(seed);
+  if (parsed === null) {
+    throw new PaperError(paperError("malformed", "openalex",
+      `not a paper identifier: "${seed}" — use a DOI, PMID, PMCID, Europe PMC/NCBI article URL, or OpenAlex W-id`));
+  }
+  if (parsed.kind === "pmid" || parsed.kind === "pmcid") {
+    return searchEuropePmcLookup(parsed, options, deps.europepmc ?? defaultEuropePmcDeps);
+  }
+  const lookup = parsed.kind === "openalex" ? bareOpenAlexId(parsed.value) : `doi:${parsed.value}`;
+  let rec: OpenAlexWork | null;
+  try {
+    rec = await (deps.openalex ?? defaultOpenAlexDeps).fetchRecord(lookup, options.signal);
+  } catch (err) {
+    throw new PaperError(paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)));
+  }
+  if (rec === null) {
+    throw new PaperError(paperError("no-results", "openalex", `"${seed}" matched no OpenAlex record`));
+  }
+  return normalizePaperResults([rec]);
+}
+
 /** Search the papers vertical. `index` selects the backend ("openalex"
  *  default, "europepmc" for biomedical full text). Throws PaperError whose
  *  message IS the in-band error text — named backend, retry hint, status
@@ -389,6 +423,15 @@ export async function searchPapers(
   options: SearchOptions = {},
   deps: { openalex?: OpenAlexDeps; europepmc?: EuropePmcDeps } = {},
 ): Promise<PaperRecord[]> {
+  // Lookup rides the same seam as search — one filters bag, three modes
+  // (search / walk / lookup), dispatched here at the one fork point.
+  if (options.filters?.lookup !== undefined) {
+    if (options.filters.citationGraph !== undefined) {
+      throw new PaperError(paperError("malformed", "openalex",
+        "filters.lookup and filters.citationGraph are mutually exclusive — one intent per call"));
+    }
+    return searchPaperLookup(options.filters.lookup, options, deps);
+  }
   const requested = (options.index ?? "openalex") as PaperIndexName;
   const index = PAPER_INDEXES.includes(requested)
     ? requested

@@ -141,6 +141,13 @@ export interface PaperFilters {
    *  sort field on its search endpoint, so it sorts post-fetch on the page
    *  it already fetched — a top-N over one page, not the whole index. */
   sort?: "citedBy";
+  /** Look up ONE paper by identifier instead of searching — a parsePaperSeed
+   *  form: DOI (10.… or a doi.org link), PMID, PMCID, a Europe PMC/NCBI
+   *  article URL, or an OpenAlex W-id. The identifier picks the backend,
+   *  so `index` is ignored, and the other filters don't apply (a lookup
+   *  retrieves, it doesn't constrain). Mutually exclusive with
+   *  citationGraph — one intent per call. */
+  lookup?: string;
   /** Turn the search into a graph walk from a seed paper: "cites" (default)
  *  walks forward — works citing the seed; "citedBy" walks backward — the
  *  seed's own references. The walk replaces the free-text query. */
@@ -217,6 +224,7 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.yearRange?.[1] ?? "",
     f.openAccess === true ? "y" : "",
     f.sort ?? "",
+    f.lookup ?? "",
     f.citationGraph?.seed ?? "",
     f.citationGraph?.direction ?? "",
   ];
@@ -262,7 +270,7 @@ export function paperError(
       return `${backend} was unreachable${cause}. ` +
         `Retry with ${retry}, or fetch a specific paper directly if you already hold its DOI or URL.`;
     case "no-results":
-      return `${backend} returned no results for this query. ` +
+      return `${backend} returned no results for this query${cause}. ` +
         `Retry with ${retry}, rephrase the query, or fetch a specific paper directly if you already hold its DOI or URL.`;
   }
 }

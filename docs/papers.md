@@ -4,7 +4,7 @@ Reference for `search/papers.ts` (backend dispatch), `search/paper-backend.ts` (
 
 ## Shape
 
-- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, the filters) never branches on the backend.
+- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, the shared helpers in `paper-backend.ts`) never branches on the backend.
 - Failure throws `PaperError`, whose message is built by `paperError()` — the entry passes it verbatim. Three statuses: `no-results`, `backend-down`, `malformed`, each naming the backend, the retry `index`, and a manual-DOI escape hatch. The entry's generic error rewriter never touches these — the retry hint IS the actionability.
 
 ## The record URL: most fetchable copy wins
@@ -28,6 +28,10 @@ A text-search result is not a paper record — no substitutes exist. The news ve
 - **Semantic Scholar stays deferred:** it 429s in keyless testing — the free tier is unusable without a key. Reconsider when a keyless quota appears or the extension gains a key store it can trust.
 - **Semantic recall is Exa's job, explicitly:** `provider: "exa"`, `category: "publication"` runs a dedicated academic index (~350M publications) that retrieves a specific paper from a fact, result, or half-remembered description — the known-item retrieval this vertical's keyword indexes are weakest at. It returns generic rows, so a hit resolves back through this vertical for the citeable record; no code integration, the schema wording carries the workflow.
 
+## The identifier lookup
+
+`filters.lookup` resolves one paper from a user-pasted link or a papers row's identifiers: web_fetching a doi.org link lands on the publisher's bot-walled redirect (the wall documented above), so the lookup goes through the API instead — `fetchRecord` on OpenAlex (`/works/{doi:…}`, the same call the backward walk's DOI seed makes) or an `EXT_ID`/`PMCID`/`DOI` query on Europe PMC. The identifier kind picks the backend — which is why `index` is ignored on lookups, and the other filters don't apply: a lookup retrieves, it doesn't constrain.
+
 ## The mailto politeness contract
 
 OpenAlex rate-limits by contact address: without one, you share the 10k/day anonymous pool (403s bite early); with `papers.openalexEmail` set, the limit rises to the credited 100k/day. The address is optional-but-recommended in the config file, and the call is absent-tolerant by contract — it must work without it. `readMailto()` in `search/papers.ts` is the single home for the read; tests inject the address via deps, never through the config file.
@@ -40,4 +44,4 @@ OpenAlex rate-limits by contact address: without one, you share the 10k/day anon
 
 ## The citedBy sort
 
-`filters.sort: "citedBy"` answers the "find papers on X which are highly cited" ask — relevance-ranked retrieval surfaces the pool, but the ordering the agent cites must be the citations'. OpenAlex sorts server-side (`sort=cited_by_count:desc`), so the ordering is exact. Europe PMC's search endpoint takes no sort field, so `applySort` ranks the fetched page post-fetch — a top-N of that page, not the index. Acceptable by the same logic as the walk filters.
+`filters.sort: "citedBy"` answers the "find papers on X which are highly cited" ask — relevance-ranked retrieval surfaces the pool, but the ordering the agent cites must be the citations'. OpenAlex sorts server-side (`sort=cited_by_count:desc`), so the ordering is exact. Europe PMC's search endpoint takes no sort field, so `applySort` ranks the fetched page post-fetch — a top-N of that page, not the index. Acceptable because relevance ranking already picked the pool: only the ordering of the fetched page is approximate, and the exact version is one `index: "openalex"` flip away.
