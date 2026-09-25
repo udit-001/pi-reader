@@ -20,6 +20,10 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
 
+/** Which scholarly-index backend the papers provider queries. Lives here so
+ *  SearchOptions, the schema literals, and the cache key share one type. */
+export type PaperIndexName = "openalex" | "europepmc";
+
 export type ExaCategory =
   | "company"
   | "publication"
@@ -40,6 +44,9 @@ export interface SearchOptions {
   category?: ExaCategory;
   includeContent?: boolean;
   includeSummary?: boolean;
+  /** Papers provider only: which scholarly-index backend to query
+   *  ("openalex" default, "europepmc" for biomedical full text). */
+  index?: PaperIndexName;
   signal?: AbortSignal;
 }
 
@@ -207,6 +214,8 @@ function getSearchCacheKey(query: string, options: SearchOptions & { provider?: 
     String(options.page ?? 1),
     String(options.includeContent ?? false),
     String(options.includeSummary ?? false),
+    // Papers vertical: the backend choice changes results — keyed.
+    options.index ?? "",
   ];
   // Simple hash
   let hash = 0;

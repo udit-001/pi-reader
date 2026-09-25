@@ -32,7 +32,7 @@ import { exaCategoryList } from "./search/exa-mcp.ts";
 import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
-import { isPaperRecord } from "./search/papers.ts";
+import { isPaperRecord, PaperError } from "./search/paper-backend.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -72,10 +72,22 @@ const providerSchema = Type.Optional(
         "back to text search with domains: ['youtube.com'].\n" +
         "• 'papers' — scholarly paper records ('find papers on X'): citeable records, not " +
         "prose snippets — year, venue, citation count, open-access URL, and DOI ride on the " +
-        "standard title/url/snippet; sourced from OpenAlex's ~250M works; honors query and " +
-        "numResults only (recency, page, domains, license don't apply).",
+        "standard title/url/snippet; sourced from scholarly indexes — OpenAlex by default " +
+        "(all disciplines), `index: 'europepmc'` for biomedical full text with PubMed, " +
+        "preprints, and patents; honors query and numResults only (recency, page, domains, " +
+        "license don't apply).",
     },
   ),
+);
+
+const paperIndexSchema = Type.Optional(
+  Type.Union([Type.Literal("openalex"), Type.Literal("europepmc")], {
+    description:
+      "Papers provider only: which backend to query. 'openalex' (default) — open " +
+      "scholarly metadata across all disciplines. 'europepmc' — biomedical full text: " +
+      "PubMed, PMC copies, preprints, patents; reach the full text, not just the " +
+      "abstract. On a backend failure the error names the other index to retry.",
+  }),
 );
 
 const licenseSchema = Type.Optional(
@@ -121,6 +133,7 @@ const webSearchParams = Type.Object({
   })),
   recency: recencySchema,
   license: licenseSchema,
+  index: paperIndexSchema,
   domains: domainSchema,
   category: Type.Optional(Type.Union(
     exaCategoryList().map((c) => Type.Literal(c)) as [ReturnType<typeof Type.Literal<string>>, ...ReturnType<typeof Type.Literal<string>>[]],
@@ -265,6 +278,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           category: params.category as "company" | "publication" | "news" | "personal site" | "people" | "pdf" | "github" | "financial report" | undefined,
           includeContent: params.includeContent,
           includeSummary: params.includeSummary,
+          index: params.index,
           signal,
         });
 
@@ -317,9 +331,13 @@ export default function piWeb(pi: ExtensionAPI): void {
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // Actionable errors: tell the agent what to do next
+        // Actionable errors: tell the agent what to do next. Papers errors
+        // are already contract-shaped (named backend, retry index, status) —
+        // passed verbatim; a generic rewriter would strip the recovery path.
         let error: string;
-        if (/DuckDuckGo/i.test(message)) {
+        if (err instanceof PaperError) {
+          error = err.message;
+        } else if (/DuckDuckGo/i.test(message)) {
           error = "Search failed. Try provider: 'exa' or rephrase with a descriptive query.";
         } else if (/rate.?limit/i.test(message)) {
           error = "Search failed. Run /exa-setup to replace the key, or wait and retry.";

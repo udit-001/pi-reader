@@ -1,28 +1,35 @@
-// papers.ts — the papers vertical adapter: `provider: "papers"`, backed by
-// OpenAlex (open scholarly metadata, no key, ~250M works). Explicit-only:
-// never chosen by auto-routing — searching the scholarly record is a
-// deliberate dispatch, not an intent the router guesses — so this adapter
-// lives outside the auto chain and is dispatched only when the agent names it.
+// papers.ts — the papers vertical dispatcher: `provider: "papers"`.
+// Explicit-only: never chosen by auto-routing — searching the scholarly
+// record is a deliberate dispatch, not an intent the router guesses — so this
+// adapter lives outside the auto chain and is dispatched only when the agent
+// names it.
 //
-// The single high seam is `searchPapers(query, options)`. The second backend
-// (Europe PMC, PIWEB-15) joins by extending the backend dispatch; the record
-// shape produced here — `year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi`
-// flat keys beside the standard title/url/snippet — is the contract every
-// backend must normalize into.
+// Two backends behind one call (PIWEB-14 OpenAlex, PIWEB-15 Europe PMC),
+// selected with `index` (default "openalex"):
+//   openalex  — OpenAlex: open scholarly metadata across all disciplines,
+//               ~250M works, no key, `mailto` politeness param.
+//   europepmc — Europe PMC: biomedical full text — PubMed abstracts, PMC
+//               copies, preprints, patents; the DOI, PMC URL, and OA tag
+//               reach the agent, not just the abstract page.
+// Both normalize into the same PaperRecord shape (search/paper-backend.ts:
+// year, authors, venue, citedBy, oaUrl, doi flat keys beside the standard
+// title/url/snippet) — no per-backend forking downstream.
 //
-// The OpenAlex `mailto` politeness param is config-read and absent-tolerant
-// by contract: the call works without it, OpenAlex's fair-use rate limits
-// just bite sooner.
-//
-// No degrade-to-text: prose snippets cannot substitute for paper records, so
-// failure surfaces as an in-band error naming the cause (PIWEB-15 completes
-// the error contract with the retry `index` hint).
+// Failure is in-band, never degrade-to-text: prose cannot substitute for
+// paper records, so every failure throws PaperError with the contract
+// grammar (named backend, no-results/backend-down/malformed distinction,
+// retry `index`, manual-URL escape hatch) and the entry passes it verbatim.
 
-import type { SearchOptions, SearchResult } from "./search.ts";
+import type { SearchOptions, PaperIndexName } from "./search.ts";
+import { PaperError, paperError, buildPaperSnippet, type PaperRecord } from "./paper-backend.ts";
+import { searchEuropePmc, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
 import { loadConfig } from "../config.ts";
 
 const TIMEOUT_MS = 25_000;
 const DEFAULT_PAGE_SIZE = 10;
+/** The dispatch vocabulary — the schema's `index` literals and the runtime
+ *  guard read this one array. */
+export const PAPER_INDEXES: readonly PaperIndexName[] = ["openalex", "europepmc"];
 
 // ── Raw shape (OpenAlex work — trimmed live capture 2026-09-25) ───────────────
 // Only the fields normalization reads are named; the rest (topics, mesh,
@@ -47,35 +54,7 @@ export interface OpenAlexWork {
   [key: string]: unknown;
 }
 
-// ── PaperRecord — the record shape (the seam's result contract) ──────────────
-
-/** Paper keys ride on the standard SearchResult as flat extra keys — the agent
- *  (and PIWEB-16's citation traversal) reads them without a new result
- *  taxonomy. Absent when the API doesn't provide the field; never invented. */
-export interface PaperRecord extends SearchResult {
-  /** Publication year. */
-  year?: number;
-  /** Author display names, in the API's order. */
-  authors?: string[];
-  /** Hosting venue — journal, repository, or preprint server. */
-  venue?: string;
-  /** Total citation count. */
-  citedBy?: number;
-  /** Best reachable open-access URL; absent when the work is closed. */
-  oaUrl?: string;
-  /** Bare DOI identifier ("10.1038/s41587-020-0561-9"), not the URL form. */
-  doi?: string;
-}
-
-/** Structural probe: does this result carry the flat paper keys? Used by the
- *  entry to render paper fields on generic SearchResult rows. Pure; exported
- *  for tests. */
-export function isPaperRecord(r: SearchResult): r is PaperRecord {
-  return "year" in r || "venue" in r || "citedBy" in r || "oaUrl" in r || "doi" in r
-    || Array.isArray((r as PaperRecord).authors);
-}
-
-// ── Pure seam: DOI parse ─────────────────────────────────────────────────────
+// ── Pure seams (OpenAlex): DOI parse, URL choice, OA URL choice ──────────────
 
 /** OpenAlex carries the DOI as an https URL ("https://doi.org/10.1038/…");
  *  agents expect the bare identifier ("10.1038/…"). Absent or not a doi.org
@@ -85,8 +64,6 @@ export function parseDoi(doiUrl: string | undefined): string | null {
   const m = doiUrl.match(/^https?:\/\/doi\.org\/(.+)$/i);
   return m?.[1] ?? null;
 }
-
-// ── Pure seam: URL choice ────────────────────────────────────────────────────
 
 /** `url` — the canonical place the agent acts on: the DOI when present
  *  (stable, resolvable), else the primary landing page, else the OpenAlex
@@ -98,8 +75,6 @@ export function chooseRecordUrl(w: OpenAlexWork): string | null {
   return null;
 }
 
-// ── Pure seam: OA URL choice ─────────────────────────────────────────────────
-
 /** `oaUrl` — the best reachable full text: best_oa_location's PDF, then its
  *  landing page, then the top-level oa_url. Absent (null) when closed. Pure;
  *  exported for tests. */
@@ -110,28 +85,7 @@ export function chooseOaUrl(w: OpenAlexWork): string | null {
   return typeof oaUrl === "string" && oaUrl ? oaUrl : null;
 }
 
-// ── Pure seam: snippet ────────────────────────────────────────────────────────
-
-/** The agent skims a papers hit the way it skims a video token —
- *    "Nature Biotechnology · 2020 · 2387 citations · closed · Anzalone et al."
- *  Tokens join with " · "; missing fields tolerated (no invented tokens).
- *  Pure; exported for tests. */
-export function buildPaperSnippet(w: OpenAlexWork): string {
-  const tokens: string[] = [];
-  const venue = w.primary_location?.source?.display_name;
-  if (venue) tokens.push(venue);
-  if (w.publication_year !== undefined) tokens.push(String(w.publication_year));
-  if (w.cited_by_count !== undefined) tokens.push(`${w.cited_by_count} citations`);
-  if (w.open_access) tokens.push(w.open_access.oa_status ?? (w.open_access.is_oa ? "open" : "closed"));
-  const authors = (w.authorships ?? [])
-    .map((a) => a.author?.display_name)
-    .filter((n): n is string => typeof n === "string");
-  const first = authors[0];
-  if (first !== undefined) tokens.push(authors.length === 1 ? first : `${first} et al.`);
-  return tokens.join(" · ");
-}
-
-// ── Pure seam: normalization (agent-POV) ──────────────────────────────────────
+// ── Pure seam: normalization (agent-POV, OpenAlex) ────────────────────────────
 
 /** OpenAlex works → PaperRecords. year←publication_year, authors←authorships
  *  display names, venue←primary_location.source.display_name,
@@ -143,24 +97,32 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
   for (const w of works) {
     const url = chooseRecordUrl(w);
     if (url === null) continue;
-    const r: PaperRecord = {
-      title: w.title ?? "",
-      url,
-      snippet: buildPaperSnippet(w),
-    };
-    if (w.publication_year !== undefined) r.year = w.publication_year;
     const authors = (w.authorships ?? [])
       .map((a) => a.author?.display_name)
       .filter((n): n is string => typeof n === "string");
-    if (authors.length > 0) r.authors = authors;
+    const rec: PaperRecord = {
+      title: w.title ?? "",
+      url,
+      snippet: buildPaperSnippet({
+        venue: w.primary_location?.source?.display_name,
+        year: w.publication_year,
+        citedBy: w.cited_by_count,
+        authors,
+        oaToken: w.open_access
+          ? w.open_access.oa_status ?? (w.open_access.is_oa ? "open" : "closed")
+          : undefined,
+      }),
+    };
+    if (w.publication_year !== undefined) rec.year = w.publication_year;
+    if (authors.length > 0) rec.authors = authors;
     const venue = w.primary_location?.source?.display_name;
-    if (venue) r.venue = venue;
-    if (w.cited_by_count !== undefined) r.citedBy = w.cited_by_count;
+    if (venue) rec.venue = venue;
+    if (w.cited_by_count !== undefined) rec.citedBy = w.cited_by_count;
     const oaUrl = chooseOaUrl(w);
-    if (oaUrl) r.oaUrl = oaUrl;
+    if (oaUrl) rec.oaUrl = oaUrl;
     const doi = parseDoi(w.doi);
-    if (doi) r.doi = doi;
-    records.push(r);
+    if (doi) rec.doi = doi;
+    records.push(rec);
   }
   return records;
 }
@@ -190,7 +152,7 @@ function readMailto(): string | null {
   return mailto ? mailto : null;
 }
 
-// ── Adapter ──────────────────────────────────────────────────────────────────
+// ── Adapter (OpenAlex) ───────────────────────────────────────────────────────
 
 /** Injectable seams so the adapter is testable without network. */
 export interface OpenAlexDeps {
@@ -224,27 +186,47 @@ export const defaultOpenAlexDeps: OpenAlexDeps = {
   },
 };
 
-/** Search the papers vertical (OpenAlex backend). Throws when the backend is
- *  unavailable or the query yields nothing parseable — the entry surfaces the
- *  error as an actionable in-band message instead of fake results. */
-export async function searchPapers(
+/** The OpenAlex backend call: params → normalized records, failure shaped as
+ *  the contract error. Backend-specific import; the shared dispatch lives in
+ *  searchPapers. */
+async function searchOpenAlex(
   query: string,
-  options: SearchOptions = {},
-  deps: OpenAlexDeps = defaultOpenAlexDeps,
+  options: SearchOptions,
+  deps: OpenAlexDeps,
 ): Promise<PaperRecord[]> {
-  const params = buildPaperParams(query, options.numResults ?? DEFAULT_PAGE_SIZE, readMailto());
+  const n = options.numResults ?? DEFAULT_PAGE_SIZE;
+  const params = buildPaperParams(query, n, readMailto());
   let works: OpenAlexWork[];
   try {
     works = await deps.fetchWorks(params, options.signal);
   } catch (err) {
-    throw new Error(
-      `OpenAlex paper search failed (${err instanceof Error ? err.message : String(err)}). ` +
-      "Workaround: retry later or use a general provider (e.g. Exa with category: 'publication')",
+    throw new PaperError(
+      paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)),
     );
   }
   const results = normalizePaperResults(works);
   if (results.length === 0) {
-    throw new Error("OpenAlex search returned no parseable paper records");
+    throw new PaperError(paperError("no-results", "openalex"));
   }
-  return results.slice(0, options.numResults ?? DEFAULT_PAGE_SIZE);
+  return results.slice(0, n);
+}
+
+// ── Dispatch ─────────────────────────────────────────────────────────────────
+
+/** Search the papers vertical. `index` selects the backend ("openalex"
+ *  default, "europepmc" for biomedical full text). Throws PaperError whose
+ *  message IS the in-band error text — named backend, retry hint, status
+ *  distinction — so the entry passes it through verbatim. */
+export async function searchPapers(
+  query: string,
+  options: SearchOptions = {},
+  deps: { openalex?: OpenAlexDeps; europepmc?: EuropePmcDeps } = {},
+): Promise<PaperRecord[]> {
+  const requested = (options.index ?? "openalex") as PaperIndexName;
+  const index = PAPER_INDEXES.includes(requested)
+    ? requested
+    : "openalex";
+  return index === "europepmc"
+    ? searchEuropePmc(query, options, deps.europepmc ?? defaultEuropePmcDeps)
+    : searchOpenAlex(query, options, deps.openalex ?? defaultOpenAlexDeps);
 }

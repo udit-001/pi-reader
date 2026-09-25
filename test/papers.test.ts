@@ -9,15 +9,18 @@ import {
   parseDoi,
   chooseRecordUrl,
   chooseOaUrl,
-  buildPaperSnippet,
   normalizePaperResults,
   buildPaperParams,
-  isPaperRecord,
   searchPapers,
   type OpenAlexWork,
   type OpenAlexDeps,
 } from "../search/papers.ts";
+import { buildPaperSnippet, type PaperRecord } from "../search/paper-backend.ts";
+import { isPaperRecord } from "../search/paper-backend.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
+
+// buildPaperSnippet lives in the shared paper-backend.ts — the OpenAlex
+// normalizer now renders through it (one snippet shape across backends).
 
 // ── Fixture — trimmed live capture (2026-09-25) ───────────────────────────────
 
@@ -136,6 +139,14 @@ test("papers normalizer builds the snippet from venue/year/citations/status/auth
   assert.equal(oa!.snippet, "Nature Methods · 2023 · 312 citations · green · S. Qin");
 });
 
+// The shared builder directly (same module Europe PMC renders through):
+test("buildPaperSnippet joins tokens and tolerates absent fields — the shared shape", () => {
+  assert.equal(buildPaperSnippet({ venue: "V", year: 2020 }), "V · 2020");
+  assert.equal(buildPaperSnippet({}), "");
+  assert.equal(buildPaperSnippet({ authors: ["Solo Author"] }), "Solo Author");
+  assert.equal(buildPaperSnippet({ authors: ["A", "B"] }), "A et al.");
+});
+
 test("papers normalizer tolerates missing fields — no invented tokens or keys", () => {
   const [r] = normalizePaperResults([BARE_WORK]);
   assert.equal(r!.snippet, "");
@@ -180,11 +191,16 @@ test("paper params include the politeness mailto when one is configured", () => 
 });
 
 // ── searchPapers — deps flow, slicing, error shaping ──────────────────────────
+// The dispatch's third arg now carries per-backend deps; Europe PMC gets a
+// tripwire here — these tests pin the OpenAlex path, so any silent misroute
+// fails loudly.
 
-function depsWith(overrides: Partial<OpenAlexDeps>): OpenAlexDeps {
+function depsWith(overrides: Partial<OpenAlexDeps>): Parameters<typeof searchPapers>[2] {
   return {
-    fetchWorks: async () => [NATURE_WORK, OA_WORK],
-    ...overrides,
+    openalex: { fetchWorks: async () => [NATURE_WORK, OA_WORK], ...overrides },
+    europepmc: {
+      fetchResults: async () => { throw new Error("Europe PMC must not be called for index: 'openalex' tests"); },
+    },
   };
 }
 
@@ -214,16 +230,26 @@ test("searchPapers slices results to numResults", async () => {
   assert.equal(results.length, 1);
 });
 
-test("searchPapers wraps fetch failures — cause visible, workaround named", async () => {
+test("searchPapers wraps fetch failures as the in-band contract — backend named, retry index offered", async () => {
   await assert.rejects(
     searchPapers("q", {}, depsWith({ fetchWorks: async () => { throw new Error("OpenAlex returned 429"); } })),
-    /429.*category: 'publication'/s,
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /OpenAlex was unreachable \(OpenAlex returned 429\)/);
+      assert.match(m, /index: "europepmc"/);
+      return true;
+    },
   );
 });
 
-test("searchPapers throws on zero parseable records — no fake success", async () => {
+test("searchPapers throws no-results on zero parseable records — no fake success", async () => {
   await assert.rejects(
     searchPapers("q", {}, depsWith({ fetchWorks: async () => [{ title: "no url anywhere" }] })),
-    /no parseable paper records/,
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /returned no results/);
+      assert.doesNotMatch(m, /unreachable/);
+      return true;
+    },
   );
 });
