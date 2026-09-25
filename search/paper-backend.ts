@@ -87,8 +87,10 @@ export function buildPaperSnippet(meta: PaperSnippetMeta): string {
 export interface PaperFilters {
   /** Exact publication year. */
   year?: number;
-  /** Inclusive [from, to] publication years. */
-  yearRange?: [number, number];
+  /** Inclusive [from, to] publication years — the tool schema enforces
+   *  exactly two integer items (a TypeBox tuple emits draft-07 positional
+   *  `items`, which 2020-12 validators reject). */
+  yearRange?: number[];
   /** Restrict to open-access-readable results. */
   openAccess?: boolean;
   /** Turn the search into a graph walk from a seed paper: "cites" (default)
@@ -139,7 +141,8 @@ export function applyYearFilter(records: PaperRecord[], filters?: PaperFilters):
   return records.filter((r) => {
     if (r.year === undefined) return false;
     if (year !== undefined && r.year !== year) return false;
-    if (range && (r.year < range[0] || r.year > range[1])) return false;
+    if (range?.[0] !== undefined && range[1] !== undefined
+      && (r.year < range[0] || r.year > range[1])) return false;
     return true;
   });
 }

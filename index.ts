@@ -96,8 +96,10 @@ const paperFiltersSchema = Type.Optional(
       year: Type.Optional(Type.Integer({
         description: "Restrict to this publication year. papers provider only.",
       })),
-      yearRange: Type.Optional(Type.Tuple([Type.Integer(), Type.Integer()], {
-        description: "Inclusive [from, to] publication years. papers provider only.",
+      yearRange: Type.Optional(Type.Array(Type.Integer(), {
+        minItems: 2,
+        maxItems: 2,
+        description: "Inclusive [from, to] publication years — exactly two items. papers provider only.",
       })),
       openAccess: Type.Optional(Type.Boolean({
         description: "Restrict to open-access-readable results. papers provider only.",
