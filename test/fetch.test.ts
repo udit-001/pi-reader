@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel } from "../fetch/fetch.ts";
+import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel, opencodeSessionHeaders } from "../fetch/fetch.ts";
 
 test("fetch: converts a simple article to clean markdown", () => {
   const html = `
@@ -152,4 +152,54 @@ test("fetch: every transport in fetch.ts goes through httpGet (per-hop SSRF vali
     directFetches.length, 1,
     `expected exactly one direct fetch( (fetchWithTimeout, fixed-host fallbacks), found ${directFetches.length}`,
   );
+});
+
+// ── OpenCode identity (direct-completion session header) ─────────────────────
+// The summarize pass calls modelRegistry.complete() directly, outside pi's
+// agent pipeline — so without our own header finalization, an OpenCode-hosted
+// model (opencode-go, pi-zen) dies at the gateway with 400 MissingSessionID.
+
+test("opencodeSessionHeaders: opencode-go model gets a ses_ session id", () => {
+  const headers = opencodeSessionHeaders(
+    { provider: "opencode-go", baseUrl: "https://opencode.ai/go/v1" },
+    "01a0cf45-af2f-76e0-b13b-af1ce4552b15",
+  );
+  assert.ok(headers, "expected identity headers for an opencode-go model");
+  assert.match(headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+});
+
+test("opencodeSessionHeaders: same session id mints the same ses_ id (sticky routing)", () => {
+  const a = opencodeSessionHeaders({ provider: "opencode-go" }, "session-abc");
+  const b = opencodeSessionHeaders({ provider: "pi-zen", baseUrl: "https://opencode.ai/zen/v1" }, "session-abc");
+  assert.equal(a?.["x-opencode-session"], b?.["x-opencode-session"]);
+});
+
+test("opencodeSessionHeaders: different sessions mint different ses_ ids", () => {
+  const a = opencodeSessionHeaders({ provider: "opencode-go" }, "session-one");
+  const b = opencodeSessionHeaders({ provider: "opencode-go" }, "session-two");
+  assert.notEqual(a?.["x-opencode-session"], b?.["x-opencode-session"]);
+});
+
+test("opencodeSessionHeaders: unrecognized providers are never touched", () => {
+  assert.equal(
+    opencodeSessionHeaders({ provider: "anthropic", baseUrl: "https://api.anthropic.com/v1" }, "session-abc"),
+    null,
+  );
+  assert.equal(
+    opencodeSessionHeaders({ provider: "zai", baseUrl: "https://api.z.ai/paas/v4" }, "session-abc"),
+    null,
+  );
+});
+
+test("opencodeSessionHeaders: no session id, no headers (not our session)", () => {
+  assert.equal(
+    opencodeSessionHeaders({ provider: "opencode-go", baseUrl: "https://opencode.ai/go/v1" }, undefined),
+    null,
+  );
+});
+
+test("opencodeSessionHeaders: pi-zen provider is recognized even with a foreign baseUrl", () => {
+  const headers = opencodeSessionHeaders({ provider: "pi-zen", baseUrl: "https://example.com/zen/v1" }, "session-abc");
+  assert.ok(headers, "expected identity headers for the pi-zen provider");
+  assert.match(headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
 });
