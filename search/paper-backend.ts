@@ -32,6 +32,15 @@ export interface PaperRecord extends SearchResult {
   oaUrl?: string;
   /** Bare DOI identifier ("10.1038/s41587-020-0561-9"), not the URL form. */
   doi?: string;
+  /** Retraction flag — true when the index knows the work is retracted.
+   *  Absent when the API doesn't provide the field; never invented. */
+  retracted?: boolean;
+  /** Primary topic display name — the work's discipline. Absent when the API
+   *  doesn't provide the field; never invented. */
+  topic?: string;
+  /** Work type — article, book chapter, dataset, preprint, …. Absent when
+   *  the API doesn't provide the field; never invented. */
+  type?: string;
 }
 
 /** Structural probe: does this result carry the flat paper keys? Used by the
@@ -39,6 +48,7 @@ export interface PaperRecord extends SearchResult {
  *  for tests. */
 export function isPaperRecord(r: SearchResult): r is PaperRecord {
   return "year" in r || "venue" in r || "citedBy" in r || "oaUrl" in r || "doi" in r
+    || "retracted" in r || "topic" in r || "type" in r
     || Array.isArray((r as PaperRecord).authors);
 }
 
@@ -60,6 +70,12 @@ export interface PaperSnippetMeta {
   /** Open-access badge the backend already classified ("closed", "green",
    *  "open"); absent → no token. */
   oaToken?: string;
+  /** Retraction flag — true renders the retracted badge, which takes
+   *  precedence in reading order: a retraction changes how every other token
+   *  is weighed. */
+  retracted?: boolean;
+  /** Primary topic display name; absent → no token. */
+  topic?: string;
 }
 
 /** The agent skims a papers hit the way it skims a video token —
@@ -72,7 +88,11 @@ export function buildPaperSnippet(meta: PaperSnippetMeta): string {
   if (meta.venue) tokens.push(meta.venue);
   if (meta.year !== undefined) tokens.push(String(meta.year));
   if (meta.citedBy !== undefined) tokens.push(`${meta.citedBy} citations`);
+  // The retracted badge precedes the OA badge — a retraction changes how
+  // every token after it should be weighed.
+  if (meta.retracted === true) tokens.push("retracted");
   if (meta.oaToken) tokens.push(meta.oaToken);
+  if (meta.topic) tokens.push(meta.topic);
   const first = meta.authors?.[0];
   if (first !== undefined) {
     tokens.push((meta.authors?.length ?? 1) === 1 ? first : `${first} et al.`);

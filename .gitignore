@@ -3,3 +3,11 @@ node_modules/
 _pi-web-access/
 docs/specs/
 .lific.json
+
+# Session-local tooling state — never project artifacts
+.agents/
+.claude/
+.dispatch/
+.serena/
+.pi/
+*.jsonl

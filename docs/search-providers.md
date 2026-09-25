@@ -43,7 +43,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 ## Papers vertical (`search/papers.ts`)
 
-- Explicit-only like the other verticals; two backends behind one dispatch — `index` picks OpenAlex (default) or Europe PMC for biomedical full text — both normalizing into one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the `mailto` politeness contract, and the citation-graph approximation — is [papers.md](papers.md).
+- Explicit-only like the other verticals; two backends behind one dispatch — `index` picks OpenAlex (default) or Europe PMC for biomedical full text — both normalizing into one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the key + metering contract, and the citation-graph approximation — is [papers.md](papers.md).
 
 ## Exa MCP (`search/exa-mcp.ts`)
 
@@ -54,10 +54,12 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 ## Config (`config.ts`)
 
 - Single file: `~/.pi/agent/pi-reader.json`. Writes are atomic (tmp + rename); reads are forgiving — missing or malformed resolves to null.
-- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `papers.openalexEmail` (OpenAlex politeness — [papers.md](papers.md)), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
+- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `papers.openalexApiKey` (OpenAlex metering — [papers.md](papers.md)), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
 
-## Wizard (`/exa-setup`, `search/exa-setup.ts`)
+## Wizard (`/exa-setup`, `/openalex-setup`; skeleton in `search/key-setup.ts`)
 
-- Validates, previews, and writes the key atomically. Imports a key from `mcp.json` when present (checks `~/.pi/agent/mcp.json`, `~/.pi/mcp.json`, `./.pi/mcp.json`) and dedupes the entry.
+- One shared skeleton (`search/key-setup.ts`) owns the flow — intro → dashboard → hidden paste → validate → save (masked preview, atomic write) → done — plus the spinner, redaction, the headless manual-path fallback, and the reopen guard. A provider's wizard is a spec plus a thin subclass for its extras.
+- `/exa-setup` (`search/exa-setup.ts`) validates, previews, and writes the key atomically. Imports a key from `mcp.json` when present (checks `~/.pi/agent/mcp.json`, `~/.pi/mcp.json`, `./.pi/mcp.json`) and dedupes the entry — those two places live in the Exa instance, never the skeleton.
+- `/openalex-setup` (`search/openalex-setup.ts`) is the thinnest instance: validation is one free singleton work lookup (401/403 → key rejected, 429 → rate-limited, classified by the same grammar as the papers error contract), and the done screen reads the real daily budget and reset from the free `/rate-limit` endpoint.
 - Duplicate detection: an `mcp.json` exa entry with `directTools` puts Exa's raw tools beside `web_search` in every session. Detected at session start; the full explanation fires once (persisted via `hints.mcpDuplicate`), later sessions get a brief reminder while the condition persists. Both self-heal when the entry is removed.
-- The wizard opens only via `/exa-setup` — it needs keyboard focus, so it prints a hint rather than auto-opening.
+- A wizard opens only via its command — it needs keyboard focus, so headless mode prints the manual path (config shape + key URL) instead.

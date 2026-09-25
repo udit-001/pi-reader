@@ -30,6 +30,7 @@ import { consumeExaIssue } from "./search/exa-issue.ts";
 import { warmDdgs } from "./search/ddgs-uv.ts";
 import { exaCategoryList } from "./search/exa-mcp.ts";
 import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
+import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { isPaperRecord, PaperError } from "./search/paper-backend.ts";
@@ -72,7 +73,8 @@ const providerSchema = Type.Optional(
         "back to text search with domains: ['youtube.com'].\n" +
         "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
         "is a citeable record — year, venue, citation count, open-access URL, and DOI " +
-        "ride on the standard title/url/snippet; honors query, numResults, index, and " +
+        "ride on the standard title/url/snippet, with retracted flag, primary topic " +
+        "(discipline), and work type as extra flat keys; honors query, numResults, index, and " +
         "filters (year/OA, citedBy sort, citation walks, identifier lookup).",
     },
   ),
@@ -267,6 +269,13 @@ export default function piWeb(pi: ExtensionAPI): void {
     },
   });
 
+  pi.registerCommand("openalex-setup", {
+    description: "Set up the free OpenAlex API key for papers search (guided wizard)",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      openOpenAlexSetup(ctx);
+    },
+  });
+
   // Duplication hygiene: an mcp.json exa entry with directTools puts exa's
   // raw tools next to web_search/web_fetch in every session. The detailed
   // explanation fires once per user (persisted flag in our config); while the
@@ -356,6 +365,9 @@ export default function piWeb(pi: ExtensionAPI): void {
             if (r.citedBy !== undefined) meta.push(`Cited by: ${r.citedBy}`);
             if (r.doi) meta.push(`DOI: ${r.doi}`);
             if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
+            if (r.retracted === true) meta.push("Retracted: yes");
+            if (r.type) meta.push(`Type: ${r.type}`);
+            if (r.topic) meta.push(`Topic: ${r.topic}`);
             if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
             if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
           }
@@ -380,6 +392,9 @@ export default function piWeb(pi: ExtensionAPI): void {
                   ...(r.citedBy !== undefined ? { citedBy: r.citedBy } : {}),
                   ...(r.oaUrl ? { oaUrl: r.oaUrl } : {}),
                   ...(r.doi ? { doi: r.doi } : {}),
+                  ...(r.retracted !== undefined ? { retracted: r.retracted } : {}),
+                  ...(r.type ? { type: r.type } : {}),
+                  ...(r.topic ? { topic: r.topic } : {}),
                   ...(r.authors?.length ? { authors: r.authors } : {}),
                 }
                 : {}),

@@ -1,49 +1,45 @@
 // exa-setup.ts — guided Exa API key setup (`/exa-setup`).
 //
-// A wizard in the wizard-skill sense, rendered as an inline TUI component in
-// the pi-go-usage pattern (`ctx.ui.custom`, theme.fg styling, keyboard-only,
-// footer hints). Places:
+// A thin instance of the shared key-setup skeleton (search/key-setup.ts):
+// the flow (intro → dashboard → paste → validate → save → done), the
+// spinner, redaction, the headless fallback, and the reopen guard all live
+// in the skeleton. What's Exa-specific stays here:
 //
-//   Intro      i imports a key found in mcp.json    → Validating
-//              enter opens the dashboard            → Paste
-//              esc closes
-//   Paste      hidden key entry                     → Validating
-//   Validating one cheap tools/call check           → Save
-//   Save       previews pi-reader.json, enter writes   → Remove (if duplicate)
-//   Remove     opt-in deletion of the mcp.json exa  → Done
-//   Done       what was written
-//
-// plus an Error place for the never-clobber path: a malformed mcp.json is
-// reported with manual instructions, never overwritten. pi-reader.json is our
-// own file and self-heals (malformed reads as null; the wizard's save
-// replaces it with valid JSON).
-//
-// Validation issues one web_search_exa with numResults: 1 through the same
-// MCP client the adapter uses — it costs ~$0.005 of search credit when the
-// key is valid and nothing when it isn't (401s arrive before metering).
+//   • mcp.json detection & removal — pi-reader no longer reads mcp.json for
+//     credentials, so the wizard imports a key found there and offers to
+//     delete the duplicate entry (opt-in, confirmation-gated, never clobber:
+//     a malformed mcp.json is reported with manual instructions, never
+//     overwritten).
+//   • validation issues one web_search_exa with numResults: 1 through the
+//     same MCP client the adapter uses — ~$0.005 of search credit when the
+//     key is valid, nothing when it isn't (401s arrive before metering).
 //
 // The key is never rendered (masked in previews, redacted from error text).
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { spawn } from "node:child_process";
 import {
   EXA_MCP_URL,
-  EXA_TOOLS,
   callExaTool,
   exaKeySource,
   resetExaKeyCache,
 } from "./exa-mcp.ts";
+import {
+  KeySetupWizard,
+  isCloseKey,
+  openKeySetup,
+  redact,
+  type KeySetupSpec,
+  type ValidationResult,
+  type WizardPhase,
+} from "./key-setup.ts";
 import { configPath, loadConfig, saveConfig, type PiWebConfig } from "../config.ts";
 
 const DASHBOARD_URL = "https://dashboard.exa.ai/api-keys";
 const VALIDATE_TIMEOUT_MS = 20_000;
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_MS = 100;
-const WIZARD_WIDTH = 72;
 
 // ── mcp.json paths (the foreign config we detect in, import from, dedupe) ────
 
@@ -57,10 +53,6 @@ export function mcpConfigPaths(): string[] {
 }
 
 // ── mcp.json detection & removal ─────────────────────────────────────────────
-// pi-reader no longer reads mcp.json for credentials. findMcpExaEntry is the
-// read-only detector behind the wizard's import offer and the session-start
-// dedup warning; removeMcpExaEntry is the opt-in, confirmation-gated surgery
-// that deletes exactly the exa server and nothing else — never clobber.
 
 export interface McpExaEntry {
   /** Config file the entry was found in. */
@@ -133,22 +125,7 @@ export function removeMcpExaEntry(path: string): void {
   renameSync(tmp, path);
 }
 
-// ── Masking / redaction ──────────────────────────────────────────────────────
-
-/** Scrub a secret from text before it can reach an error surface. */
-export function redact(text: string, secret: string): string {
-  if (secret.length > 4) return text.split(secret).join("[redacted]");
-  return text;
-}
-
 // ── Key validation (one cheap search; 401s arrive before metering) ───────────
-
-export type ValidationOk = { ok: true };
-export type ValidationFail =
-  | { ok: false; kind: "invalid"; reason: string }
-  | { ok: false; kind: "rate-limited"; reason: string }
-  | { ok: false; kind: "unreachable"; reason: string };
-export type ValidationResult = ValidationOk | ValidationFail;
 
 export async function validateExaKey(key: string, signal?: AbortSignal): Promise<ValidationResult> {
   try {
@@ -170,197 +147,105 @@ export async function validateExaKey(key: string, signal?: AbortSignal): Promise
   }
 }
 
-// ── Wizard state ─────────────────────────────────────────────────────────────
+// ── The Exa instance — skeleton + import and dedupe-removal places ──────────
 
-type WizardPhase = "intro" | "paste" | "validating" | "save" | "remove" | "done" | "error";
-
-const closeKeys = (data: string): boolean =>
-  matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"));
-
-export class ExaSetupWizard {
-  private readonly theme: Theme;
-  private readonly onClose: () => void;
-  private readonly requestRender: () => void;
-
-  private phase: WizardPhase = "intro";
-  private key = "";
+export class ExaSetupWizard extends KeySetupWizard {
   private imported = false; // true when the key came from the mcp.json import
-  private pasteError: string | null = null; // last validation failure, shown at Paste
-  private pasteErrorKind: "invalid" | "rate-limited" | "unreachable" | null = null;
-  private spinnerFrame = 0;
-  private spinnerTimer: NodeJS.Timeout | null = null;
-  private validationAbort: AbortController | null = null;
   private mcpEntry: McpExaEntry | null = null; // set at Intro; removal target after save
   private removeError: string | null = null;
-  private wrote: { configPath: string; removedMcp: boolean } | null = null;
-  private writeError: string | null = null;
-  private cachedWidth?: number;
-  private cachedLines?: string[];
+  private removedMcp = false;
 
-  constructor(options: { theme: Theme; onClose: () => void; requestRender: () => void }) {
-    this.theme = options.theme;
-    this.onClose = options.onClose;
-    this.requestRender = options.requestRender;
+  constructor(spec: KeySetupSpec, options: { theme: Theme; onClose: () => void; requestRender: () => void }) {
+    super(spec, options);
     this.mcpEntry = findImportableMcpExaKey();
   }
 
-  dispose(): void {
-    this.stopSpinner();
-    this.validationAbort?.abort();
-    this.validationAbort = null;
-  }
-
-  handleInput(data: string): void {
-    switch (this.phase) {
-      case "intro":
-        if (closeKeys(data) || matchesKey(data, "q")) this.onClose();
-        else if (this.mcpEntry?.apiKey && (matchesKey(data, "i") || matchesKey(data, Key.enter))) {
-          if (matchesKey(data, "i")) this.startImport();
-          else this.enterFromIntro();
-        }
-        else if (matchesKey(data, Key.enter)) this.enterFromIntro();
-        return;
-      case "paste":
-        this.handlePasteInput(data);
-        return;
-      case "validating":
-        if (closeKeys(data)) this.cancelValidation();
-        return;
-      case "save":
-        if (closeKeys(data)) this.backToPaste();
-        else if (matchesKey(data, Key.enter)) this.write();
-        return;
-      case "remove":
-        if (closeKeys(data)) this.go("done"); // skip removal
-        else if (matchesKey(data, Key.enter)) this.removeEntry();
-        else if (matchesKey(data, "s")) this.go("done");
-        return;
-      case "done":
-      case "error":
-        if (closeKeys(data) || matchesKey(data, Key.enter) || matchesKey(data, "q")) this.onClose();
-        return;
-    }
-  }
-
-  private enterFromIntro(): void {
-    openUrlBestEffort(DASHBOARD_URL);
-    this.pasteError = null;
-    this.pasteErrorKind = null;
-    this.go("paste");
-  }
-
-  private startImport(): void {
-    this.key = this.mcpEntry!.apiKey!.trim();
-    this.imported = true;
-    this.startValidation();
-  }
-
-  private handlePasteInput(data: string): void {
-    if (matchesKey(data, Key.enter) || data === "\r") {
-      if (this.key.trim().length > 0) this.startValidation();
-      return;
-    }
-    if (closeKeys(data)) {
-      this.go("intro");
-      return;
-    }
-    if (matchesKey(data, Key.backspace) || data === "\x7f") {
-      this.key = this.key.slice(0, -1);
-      this.invalidate();
-      return;
-    }
-    // Bracketed paste: ESC[200~ <text> ESC[201~ — strip markers, take content.
-    const bracketed = /\x1b\[200~([\s\S]*?)\x1b\[201~/.exec(data);
-    if (bracketed) {
-      this.key = bracketed[1]!.replace(/[\r\n]/g, "").trim();
-      this.pasteError = null;
-      this.invalidate();
-      return;
-    }
-    if (data.startsWith("\x1b")) return; // other escape sequences aren't text
-    if (/^[\x20-\x7e]+$/.test(data)) {
-      this.key += data;
-      this.pasteError = null;
-      this.invalidate();
-    }
-  }
-
-  private startValidation(): void {
-    this.go("validating");
-    this.spinnerTimer = setInterval(() => {
-      this.spinnerFrame = (this.spinnerFrame + 1) % SPINNER_FRAMES.length;
-      this.requestRender();
-    }, SPINNER_MS);
-    this.validationAbort = new AbortController();
-    const key = this.key.trim();
-    void validateExaKey(key, this.validationAbort.signal)
-      .then((result) => {
-        if (this.phase !== "validating") return; // cancelled meanwhile
-        this.stopSpinner();
-        if (result.ok) {
-          this.go("save");
-        } else {
-          this.pasteErrorKind = result.kind;
-          this.pasteError = result.reason;
-          this.go("paste");
-        }
-      })
-      .catch(() => {
-        if (this.phase !== "validating") return;
-        this.stopSpinner();
-        this.pasteErrorKind = "unreachable";
-        this.pasteError = "validation failed";
-        this.go("paste");
-      });
-  }
-
-  private cancelValidation(): void {
-    this.stopSpinner();
-    this.validationAbort?.abort();
-    this.validationAbort = null;
-    this.go("paste");
-  }
-
-  private backToPaste(): void {
-    this.imported = false;
-    this.go("paste");
-  }
-
-  private write(): void {
-    try {
-      const current = loadConfig();
-      const next: PiWebConfig = {
-        ...(current ?? {}),
-        version: 1,
-        exa: {
-          url: current?.exa?.url ?? EXA_MCP_URL,
-          apiKey: this.key.trim(),
-        },
-      };
-      saveConfig(configPath(), next);
-      resetExaKeyCache(); // lazy resolution: the next Exa call sees the new key
-      this.wrote = { configPath: configPath(), removedMcp: false };
-      // Offer dedup exactly when a live mcp.json exa entry would duplicate
-      // the agent-facing surface.
-      const duplicate = detectMcpDuplicate();
-      if (duplicate) {
-        this.mcpEntry = duplicate;
-        this.go("remove");
-      } else {
-        this.go("done");
+  protected override handlePhaseInput(data: string): boolean {
+    if (this.phase === "intro") {
+      // Import: only the explicit 'i' key; Enter keeps opening the dashboard.
+      if (this.mcpEntry?.apiKey && matchesKey(data, "i")) {
+        this.key = this.mcpEntry.apiKey.trim();
+        this.imported = true;
+        this.startValidation();
+        return true;
       }
-    } catch (err) {
-      this.writeError = err instanceof Error && err.message
-        ? redact(err.message, this.key)
-        : String(err);
-      this.go("error");
+      return false;
     }
+    if (this.phase === "remove") {
+      if (isCloseKey(data)) this.go("done"); // skip removal
+      else if (matchesKey(data, Key.enter)) this.removeEntry();
+      else if (matchesKey(data, "s")) this.go("done");
+      return true;
+    }
+    return false;
+  }
+
+  protected override pasteInstructions(): string {
+    return this.imported
+      ? "Re-enter a key (the imported one was rejected):"
+      : this.spec.pasteInstructions;
+  }
+
+  protected override showDashboardAtPaste(): boolean {
+    return !this.imported;
+  }
+
+  protected override introHintLines(): string[] {
+    return this.mcpEntry?.apiKey
+      ? [`Found a key in ${this.mcpEntry.path} — press i to import it.`]
+      : [];
+  }
+
+  protected override introFooter(hasHint: boolean): string {
+    return hasHint
+      ? "i import found key · enter open dashboard · esc close"
+      : super.introFooter(hasHint);
+  }
+
+  protected override onSaved(): void {
+    this.imported = false;
+    // Offer dedup exactly when a live mcp.json exa entry would duplicate
+    // the agent-facing surface.
+    const duplicate = detectMcpDuplicate();
+    if (duplicate) {
+      this.mcpEntry = duplicate;
+      this.go("remove");
+    } else {
+      this.go("done");
+    }
+  }
+
+  protected override doneLines(): string[] {
+    const lines: string[] = [];
+    if (this.removedMcp) {
+      lines.push(`Removed the exa entry from ${this.mcpEntry?.path}.`);
+    }
+    if (this.removeError) {
+      lines.push(`✗ Could not remove the mcp.json entry: ${this.removeError} — the key is saved; remove it by hand to dedupe.`);
+    }
+    return lines;
+  }
+
+  protected override renderPhase(add: (s?: string) => void, wrap: (text: string, style?: "text" | "dim" | "error" | "warning" | "accent", indent?: number) => void): boolean {
+    if (this.phase !== "remove") return false;
+    wrap("Duplicate found: mcp.json also exposes Exa tools.");
+    add();
+    wrap("Remove it? Both tool sets load in every session until removed.", "text");
+    add();
+    if (this.mcpEntry) {
+      wrap(`Target: ${this.mcpEntry.path}. Other servers untouched.`, "dim");
+    }
+    return true;
+  }
+
+  protected override phaseFooter(phase: WizardPhase): string | null {
+    return phase === "remove" ? "enter remove duplicate · s skip · esc skip" : null;
   }
 
   private removeEntry(): void {
     try {
       removeMcpExaEntry(this.mcpEntry!.path);
-      this.wrote = { configPath: this.wrote?.configPath ?? configPath(), removedMcp: true };
+      this.removedMcp = true;
       this.removeError = null;
       this.go("done");
     } catch (err) {
@@ -368,234 +253,49 @@ export class ExaSetupWizard {
       this.go("done"); // key is saved; removal failure is reported, not fatal
     }
   }
+}
 
-  private go(phase: WizardPhase): void {
-    this.phase = phase;
-    this.invalidate();
-  }
+// ── The Exa spec + opener ────────────────────────────────────────────────────
 
-  invalidate(): void {
-    this.cachedLines = undefined;
-    this.requestRender();
-  }
-
-  private stopSpinner(): void {
-    if (this.spinnerTimer) clearInterval(this.spinnerTimer);
-    this.spinnerTimer = null;
-  }
-
-  // ── Rendering ──────────────────────────────────────────────────────────────
-
-  render(width: number): string[] {
-    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-    const W = Math.min(width, WIZARD_WIDTH);
-    const lines: string[] = [];
-    const add = (s = "") => lines.push(s);
-    const wrap = (text: string, style: "text" | "dim" | "error" | "warning" | "accent" = "text", indent = 0) => {
-      const pad = " ".repeat(2 + indent);
-      for (const l of wrapTextWithAnsi(text, W - 2 - indent)) {
-        lines.push(`${pad}${this.theme.fg(style, l)}`);
-      }
+const exaSpec: KeySetupSpec = {
+  title: "Exa setup",
+  dashboardUrl: DASHBOARD_URL,
+  introLines: ["Exa semantic search needs a key. Search and fetch work without one."],
+  currentKeyLabel: () => exaKeySource(),
+  pasteInstructions: "On the dashboard: API Keys -> Create key -> copy it.",
+  validatingLabel: "Testing the key (one search)...",
+  validate: validateExaKey,
+  save(key) {
+    const current = loadConfig();
+    const next: PiWebConfig = {
+      ...(current ?? {}),
+      version: 1,
+      exa: {
+        url: current?.exa?.url ?? EXA_MCP_URL,
+        apiKey: key,
+      },
     };
-
-    add(this.theme.fg("border", "─".repeat(W)));
-    add(`  ${this.theme.fg("accent", this.theme.bold("Exa setup"))}`);
-    add();
-
-    switch (this.phase) {
-      case "intro": {
-        wrap("Exa semantic search needs a key. Search and fetch work without one.");
-        add();
-        const source = exaKeySource();
-        wrap(source
-          ? `Current key: set (${source})`
-          : "Current key: none configured");
-        add();
-        wrap("Get a key — Enter opens the dashboard.");
-        add();
-        add(`  ${this.theme.fg("dim", DASHBOARD_URL)}`);
-        if (this.mcpEntry?.apiKey) {
-          add();
-          wrap(`Found a key in ${this.mcpEntry.path} — press i to import it.`, "accent");
-        }
-        break;
-      }
-      case "paste": {
-        wrap(this.imported
-          ? "Re-enter a key (the imported one was rejected):"
-          : "On the dashboard: API Keys -> Create key -> copy it.");
-        if (!this.imported) {
-          add();
-          add(`  ${this.theme.fg("dim", DASHBOARD_URL)}`);
-        }
-        add();
-        if (this.pasteError) {
-          const lead = this.pasteErrorKind === "rate-limited"
-            ? "✗ Key is valid but rate-limited right now — saving it won't restore search until the limit resets. "
-            : this.pasteErrorKind === "unreachable"
-              ? "✗ Could not check the key: "
-              : "✗ Invalid key: ";
-          wrap(`${lead}${this.pasteError}`, this.pasteErrorKind === "invalid" ? "error" : "warning");
-          add();
-        }
-        wrap("Paste or type the key (hidden):");
-        add();
-        const masked = "•".repeat(Math.min(this.key.length, 24));
-        const cursor = this.key.length > 0 || this.pasteError ? " " : "█";
-        add(`  ${this.theme.fg("text", `key: ${masked}${cursor}`)}`);
-        break;
-      }
-      case "validating": {
-        const frame = SPINNER_FRAMES[this.spinnerFrame] ?? "⠋";
-        add(`  ${this.theme.fg("accent", `${frame} Testing the key (one search)...`)}`);
-        break;
-      }
-      case "save": {
-        wrap("New config:", "text");
-        add();
-        const preview = JSON.stringify(previewConfig(this.key.trim()), null, 2);
-        for (const l of preview.split("\n")) {
-          lines.push(`    ${this.theme.fg("text", truncateToWidth(l, W - 6, "…"))}`);
-        }
-        add();
-        wrap(`Written to ${configPath()}. No restart needed.`, "dim");
-        break;
-      }
-      case "remove": {
-        wrap("Duplicate found: mcp.json also exposes Exa tools.");
-        add();
-        wrap("Remove it? Both tool sets load in every session until removed.", "text");
-        add();
-        if (this.mcpEntry) {
-          wrap(`Target: ${this.mcpEntry.path}. Other servers untouched.`, "dim");
-        }
-        break;
-      }
-      case "done": {
-        const path = this.wrote?.configPath ?? configPath();
-        add(`  ${this.theme.fg("accent", this.theme.bold("✓ Key saved"))}`);
-        add();
-        wrap(`Written to ${path}. No restart needed.`);
-        if (this.wrote?.removedMcp) {
-          add();
-          wrap(`Removed the exa entry from ${this.mcpEntry?.path}.`, "dim");
-        }
-        if (this.removeError) {
-          add();
-          wrap(`✗ Could not remove the mcp.json entry: ${this.removeError} — the key is saved; remove it by hand to dedupe.`, "warning");
-        }
-        break;
-      }
-      case "error": {
-        add(`  ${this.theme.fg("error", this.theme.bold("✗ Could not save the config"))}`);
-        add();
-        wrap(`${this.writeError ?? "unknown error"}. Nothing was changed.`);
-        add();
-        wrap("Fix by hand: set EXA_API_KEY, or check permissions on ~/.pi/agent/ and re-run /exa-setup.");
-        break;
-      }
-    }
-
-    add();
-    add(`  ${this.theme.fg("dim", footerFor(this.phase, this.mcpEntry?.apiKey != null))}`);
-    add(this.theme.fg("border", "─".repeat(W)));
-
-    this.cachedWidth = width;
-    this.cachedLines = lines;
-    return lines;
-  }
-}
-
-function footerFor(phase: WizardPhase, importable: boolean): string {
-  switch (phase) {
-    case "intro": return importable
-      ? "i import found key · enter open dashboard · esc close"
-      : "enter open dashboard · esc close";
-    case "paste": return "enter validate · backspace edit · esc back";
-    case "validating": return "esc cancel";
-    case "save": return "enter write & finish · esc back";
-    case "remove": return "enter remove duplicate · s skip · esc skip";
-    case "done": return "enter / q close";
-    case "error": return "enter / q close";
-  }
-}
-
-// The Save preview shows the exact config the write would produce, key masked.
-function previewConfig(key: string): PiWebConfig {
-  const current = loadConfig();
-  const preview = {
-    ...(current ?? {}),
-    version: 1 as const,
-    exa: {
-      url: current?.exa?.url ?? EXA_MCP_URL,
-      apiKey: "•".repeat(Math.min(key.length, 12)),
-    },
-  };
-  return preview;
-}
-
-// ── Opening ──────────────────────────────────────────────────────────────────
-
-let wizardOpen = false;
+    saveConfig(configPath(), next);
+  },
+  afterSave: () => resetExaKeyCache(), // lazy resolution: the next Exa call sees the new key
+  previewConfig(key) {
+    const current = loadConfig();
+    return {
+      ...(current ?? {}),
+      version: 1 as const,
+      exa: {
+        url: current?.exa?.url ?? EXA_MCP_URL,
+        apiKey: "•".repeat(Math.min(key.length, 12)),
+      },
+    };
+  },
+  manualInstructions:
+    `The Exa setup wizard needs TUI mode. To add the key by hand, either set EXA_API_KEY in your environment or create ${configPath()}:\n` +
+    `  { "version": 1, "exa": { "url": "${EXA_MCP_URL}", "apiKey": "<your-key>" } }\n` +
+    `Create a key at ${DASHBOARD_URL}`,
+  writeErrorHint: "Fix by hand: set EXA_API_KEY, or check permissions on ~/.pi/agent/ and re-run /exa-setup.",
+};
 
 export function openExaSetup(ctx: ExtensionCommandContext): void {
-  if (ctx.mode !== "tui") {
-    // Headless: no takeover possible — print the manual path instead.
-    ctx.ui.notify(
-      `The Exa setup wizard needs TUI mode. To add the key by hand, either set EXA_API_KEY in your environment or create ${configPath()}:\n` +
-      `  { "version": 1, "exa": { "url": "${EXA_MCP_URL}", "apiKey": "<your-key>" } }\n` +
-      `Create a key at ${DASHBOARD_URL}`,
-      "info",
-    );
-    return;
-  }
-  if (wizardOpen) {
-    ctx.ui.notify("The Exa setup wizard is already open.", "info");
-    return;
-  }
-
-  let wizard: ExaSetupWizard | undefined;
-  wizardOpen = true;
-
-  void ctx.ui
-    .custom<void>((tui, theme, _keybindings, done) => {
-      wizard = new ExaSetupWizard({
-        theme,
-        onClose: () => done(undefined),
-        requestRender: () => tui.requestRender(),
-      });
-      return {
-        render(width: number) {
-          return wizard?.render(width) ?? [];
-        },
-        invalidate() {
-          wizard?.invalidate();
-        },
-        handleInput(data: string) {
-          wizard?.handleInput(data);
-          tui.requestRender();
-        },
-      };
-    })
-    .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`Failed to open the Exa setup wizard: ${message}`, "error");
-    })
-    .finally(() => {
-      wizard?.dispose();
-      wizardOpen = false;
-    });
-}
-
-// Best-effort browser open. The URL is always shown as text too, so a missing
-// opener is an inconvenience, not a dead end.
-function openUrlBestEffort(url: string): void {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  try {
-    const child = spawn(cmd, [url], { detached: true, stdio: "ignore" });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    // ignore — the URL is visible in the wizard
-  }
+  openKeySetup(ctx, exaSpec, (wiring) => new ExaSetupWizard(exaSpec, wiring));
 }

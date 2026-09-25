@@ -12,7 +12,10 @@ import {
   normalizePaperResults,
   buildPaperParams,
   buildOpenAlexFilter,
-  buildOpenAlexBackwardFilter,
+  OPENALEX_SELECT,
+  resolveOpenAlexKey,
+  openAlexErrorDetail,
+  OpenAlexHttpError,
   searchPapers,
   type OpenAlexWork,
   type OpenAlexDeps,
@@ -189,12 +192,58 @@ test("papers normalizer builds the snippet from venue/year/citations/status/auth
   assert.equal(oa!.snippet, "Nature Methods · 2023 · 312 citations · green · S. Qin");
 });
 
+// ── Enrichment (PIWEB-20): retracted / topic / type — present and absent ─────
+
+const ENRICHED_WORK: OpenAlexWork = {
+  ...NATURE_WORK,
+  is_retracted: true,
+  type: "article",
+  primary_topic: { display_name: "Biotechnology" },
+};
+
+test("papers normalizer maps retracted, topic, and type onto the flat keys when the API provides them", () => {
+  const [r] = normalizePaperResults([ENRICHED_WORK]);
+  assert.equal(r!.retracted, true);
+  assert.equal(r!.topic, "Biotechnology");
+  assert.equal(r!.type, "article");
+  // The retracted badge precedes the OA badge in the rendered snippet.
+  assert.match(r!.snippet, /2387 citations · retracted · closed ·/);
+  assert.match(r!.snippet, /closed · Biotechnology ·/);
+});
+
+test("papers normalizer omits the enrichment keys when the API lacks them — never invented", () => {
+  const [r] = normalizePaperResults([NATURE_WORK]);
+  assert.equal("retracted" in r!, false);
+  assert.equal("topic" in r!, false);
+  assert.equal("type" in r!, false);
+  // Explicit null retraction (index doesn't know) is absent, not false.
+  const [unknown] = normalizePaperResults([{ ...NATURE_WORK, is_retracted: null, type: null, primary_topic: null }]);
+  assert.equal("retracted" in unknown!, false);
+  assert.equal("topic" in unknown!, false);
+  assert.equal("type" in unknown!, false);
+});
+
 // The shared builder directly (same module Europe PMC renders through):
 test("buildPaperSnippet joins tokens and tolerates absent fields — the shared shape", () => {
   assert.equal(buildPaperSnippet({ venue: "V", year: 2020 }), "V · 2020");
   assert.equal(buildPaperSnippet({}), "");
   assert.equal(buildPaperSnippet({ authors: ["Solo Author"] }), "Solo Author");
   assert.equal(buildPaperSnippet({ authors: ["A", "B"] }), "A et al.");
+});
+
+test("buildPaperSnippet places the retracted badge before the OA badge — reading order weights it first", () => {
+  assert.equal(
+    buildPaperSnippet({ venue: "Nature Biotechnology", year: 2020, citedBy: 2387, retracted: true, oaToken: "closed", authors: ["Anzalone"] }),
+    "Nature Biotechnology · 2020 · 2387 citations · retracted · closed · Anzalone",
+  );
+  // retracted: false renders nothing — only the flag, never a "clean" token.
+  assert.equal(buildPaperSnippet({ oaToken: "closed", retracted: false }), "closed");
+});
+
+test("buildPaperSnippet carries the topic token and drops it when absent", () => {
+  assert.equal(buildPaperSnippet({ venue: "V", topic: "Biotechnology" }), "V · Biotechnology");
+  assert.equal(buildPaperSnippet({ venue: "V" }), "V");
+  assert.equal(buildPaperSnippet({ venue: "V", retracted: true, oaToken: "green", topic: "Genetics" }), "V · retracted · green · Genetics");
 });
 
 // The shared URL policy directly (same module both backends rank through):
@@ -264,19 +313,25 @@ test("isPaperRecord detects the flat paper keys on generic result rows", () => {
   assert.equal(isPaperRecord(normalizePaperResults([OA_WORK])[0] as unknown as SearchResult), true);
 });
 
-// ── buildPaperParams — search, per-page, mailto only when present ─────────────
+// ── buildPaperParams — search, per-page, api_key only when a key resolves ────
 
-test("paper params carry the search query and per-page, and omit mailto when no contact is set", () => {
+test("paper params carry the search query, per-page, the shared select= projection, and omit api_key when keyless", () => {
   const p = buildPaperParams("CRISPR base editing", 10, null);
   assert.equal(p.get("search"), "CRISPR base editing");
   assert.equal(p.get("per-page"), "10");
-  assert.equal(p.get("mailto"), null);
+  assert.equal(p.get("api_key"), null);
+  // Lean payloads: every works-list call projects the same field list.
+  assert.equal(p.get("select"), OPENALEX_SELECT);
+  assert.match(OPENALEX_SELECT, /^id,doi,title,publication_year,cited_by_count,is_retracted,type,/);
+  assert.match(OPENALEX_SELECT, /open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids$/);
 });
 
-test("paper params include the politeness mailto when one is configured", () => {
-  const p = buildPaperParams("q", 15, "udit@example.com");
-  assert.equal(p.get("mailto"), "udit@example.com");
+test("paper params carry api_key when a key resolves; mailto never appears", () => {
+  const p = buildPaperParams("q", 15, "oa-key-123");
+  assert.equal(p.get("api_key"), "oa-key-123");
   assert.equal(p.get("per-page"), "15");
+  // The retired politeness param is dead on every built shape.
+  assert.equal(p.get("mailto"), null);
 });
 
 test("paper params carry the citedBy sort server-side; relevance when sort is absent", () => {
@@ -284,6 +339,58 @@ test("paper params carry the citedBy sort server-side; relevance when sort is ab
   assert.equal(sorted.get("sort"), "cited_by_count:desc");
   const unsorted = buildPaperParams("lichen", 10, null);
   assert.equal(unsorted.get("sort"), null);
+});
+
+// ── resolveOpenAlexKey — config wins, env fallback, keyless tolerated ─────────
+
+test("openalex key resolution: config wins over env; env alone works; neither → keyless", () => {
+  assert.equal(resolveOpenAlexKey("cfg-key", "env-key"), "cfg-key");
+  assert.equal(resolveOpenAlexKey(undefined, "env-key"), "env-key");
+  assert.equal(resolveOpenAlexKey("cfg-key", undefined), "cfg-key");
+  assert.equal(resolveOpenAlexKey(undefined, undefined), null);
+  // Blank config falls through to env; both blank → keyless, not an empty param.
+  assert.equal(resolveOpenAlexKey("  ", "env-key"), "env-key");
+  assert.equal(resolveOpenAlexKey("", "  "), null);
+  assert.equal(resolveOpenAlexKey("  padded  ", undefined), "padded");
+});
+
+// ── openAlexErrorDetail — the metering slice of the backend-down contract ───
+
+test("openalex error detail: 429 with zero remaining reports credits exhausted — keyless names the key fix", () => {
+  const d = openAlexErrorDetail(429, 0, null, 300, false);
+  assert.match(d!, /daily credits exhausted/);
+  assert.match(d!, /openalex\.org\/settings\/api/);
+  assert.match(d!, /\/openalex-setup/);
+});
+
+test("openalex error detail: keyed exhaustion names the reset from X-RateLimit-Reset", () => {
+  const d = openAlexErrorDetail(429, 0, null, 120, true);
+  assert.match(d!, /daily credits exhausted/);
+  assert.match(d!, /120 seconds/);
+  assert.match(d!, /midnight UTC/);
+  assert.doesNotMatch(d!, /settings\/api/);
+  // Header absent — still keyed-exhaustion, just no countdown.
+  assert.match(openAlexErrorDetail(429, 0, null, null, true)!, /resets at midnight UTC/);
+});
+
+test("openalex error detail: 429 with remaining budget reports throttling, retry shortly", () => {
+  assert.match(openAlexErrorDetail(429, 7, null, 60, false)!, /temporary throttling/);
+  assert.match(openAlexErrorDetail(429, null, 0.05, 60, true)!, /temporary throttling/);
+  assert.match(openAlexErrorDetail(429, 7, null, 60, false)!, /retry shortly/);
+});
+
+test("openalex error detail: 401/403 report key rejected without ever echoing the key", () => {
+  for (const status of [401, 403]) {
+    const d = openAlexErrorDetail(status, null, null, null, true)!;
+    assert.match(d, /key rejected/);
+    assert.match(d, /OPENALEX_API_KEY/);
+    assert.doesNotMatch(d, /secret-oa-key/);
+  }
+});
+
+test("openalex error detail: non-metering statuses fall through to null", () => {
+  assert.equal(openAlexErrorDetail(500, null, null, null, false), null);
+  assert.equal(openAlexErrorDetail(503, null, null, null, true), null);
 });
 
 // ── buildOpenAlexFilter — the exact filter= grammar (PIWEB-16) ────────────────
@@ -306,21 +413,17 @@ test("openalex filter string: year range splits into from/to dates, combos comma
   );
 });
 
-test("openalex filter string carries the forward walk's cites:W leg in the same list", () => {
+test("openalex filter string carries the walk legs in the same list — cites:W forward, cited_by:W backward", () => {
   assert.equal(
     buildOpenAlexFilter({ openAccess: true }, "W3161425918"),
     "is_oa:true,cites:W3161425918",
   );
-});
-
-test("openalex backward filter strips record URLs into one OR-list", () => {
+  // Backward: the seed's own references, resolved server-side in one call.
   assert.equal(
-    buildOpenAlexBackwardFilter([
-      "https://openalex.org/W1504222414",
-      "https://openalex.org/W1919257374",
-    ]),
-    "openalex_id:W1504222414|W1919257374",
+    buildOpenAlexFilter({ openAccess: true }, "W3161425918", "citedBy"),
+    "is_oa:true,cited_by:W3161425918",
   );
+  assert.equal(buildOpenAlexFilter(undefined, "W1", "citedBy"), "cited_by:W1");
 });
 
 test("paper params carry the filter and omit search when the walk leaves it empty", () => {
@@ -382,6 +485,73 @@ test("searchPapers wraps fetch failures as the in-band contract — backend name
       const m = (err as Error).message;
       assert.match(m, /OpenAlex was unreachable \(OpenAlex returned 429\)/);
       assert.match(m, /index: "europepmc"/);
+      return true;
+    },
+  );
+});
+
+test("searchPapers carries api_key on the built params when a key resolves; keyless omits it", async () => {
+  const seen: URLSearchParams[] = [];
+  await searchPapers("q", {}, depsWith({
+    resolveKey: () => "secret-oa-key",
+    fetchWorks: async (params) => { seen.push(params); return [NATURE_WORK]; },
+  }));
+  assert.equal(seen[0]!.get("api_key"), "secret-oa-key");
+  assert.equal(seen[0]!.get("mailto"), null);
+  seen.length = 0;
+  await searchPapers("q", {}, depsWith({
+    resolveKey: () => null,
+    fetchWorks: async (params) => { seen.push(params); return [NATURE_WORK]; },
+  }));
+  assert.equal(seen[0]!.get("api_key"), null);
+});
+
+test("a metered 429 (zero remaining) surfaces the credits-exhausted text — keyed vs keyless", async () => {
+  await assert.rejects(
+    searchPapers("q", {}, depsWith({
+      resolveKey: () => "secret-oa-key",
+      fetchWorks: async () => { throw new OpenAlexHttpError(429, 0, null, 45); },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /daily credits exhausted — budget resets in 45 seconds/);
+      assert.doesNotMatch(m, /secret-oa-key/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    searchPapers("q", {}, depsWith({
+      resolveKey: () => null,
+      fetchWorks: async () => { throw new OpenAlexHttpError(429, 0, null, 45); },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /daily credits exhausted/);
+      assert.match(m, /\/openalex-setup/);
+      return true;
+    },
+  );
+});
+
+test("a metered 429 with remaining budget surfaces the throttled/retry text", async () => {
+  await assert.rejects(
+    searchPapers("q", {}, depsWith({
+      fetchWorks: async () => { throw new OpenAlexHttpError(429, 6, null, null); },
+    })),
+    (err: unknown) => {
+      assert.match((err as Error).message, /temporary throttling .* retry shortly/);
+      return true;
+    },
+  );
+});
+
+test("a 401 from OpenAlex surfaces the key-rejected text", async () => {
+  await assert.rejects(
+    searchPapers("q", {}, depsWith({
+      fetchWorks: async () => { throw new OpenAlexHttpError(401, null, null, null); },
+    })),
+    (err: unknown) => {
+      assert.match((err as Error).message, /key rejected \(HTTP 401\)/);
       return true;
     },
   );

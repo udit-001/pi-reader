@@ -4,7 +4,7 @@ Reference for `search/papers.ts` (backend dispatch), `search/paper-backend.ts` (
 
 ## Shape
 
-- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, the shared helpers in `paper-backend.ts`) never branches on the backend.
+- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi`, `retracted`, `topic`, `type` flat keys beside the standard `title`/`url`/`snippet`). Enrichment keys are absent-tolerant — present when the API provides them, never invented. The snippet renders the `retracted` badge before the open-access badge (a retraction changes how every other token is weighed) and the topic token after it. `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, the shared helpers in `paper-backend.ts`) never branches on the backend.
 - Failure throws `PaperError`, whose message is built by `paperError()` — the entry passes it verbatim. Three statuses: `no-results`, `backend-down`, `malformed`, each naming the backend, the retry `index`, and a manual-DOI escape hatch. The entry's generic error rewriter never touches these — the retry hint IS the actionability.
 
 ## The record URL: most fetchable copy wins
@@ -23,22 +23,28 @@ A text-search result is not a paper record — no substitutes exist. The news ve
 
 ## Why OpenAlex + Europe PMC
 
-- **OpenAlex** is breadth: ~250M works across all disciplines, keyless, one JSON endpoint. Its metadata is the universal index, and its `locations` list carries every copy — PMC, DOAJ, publisher, repository — the URL policy feeds on.
+- **OpenAlex** is breadth: ~250M works across all disciplines, one JSON endpoint. It works keylessly (smaller metered budget) and takes a free key — the key + metering contract below. Its metadata is the universal index, and its `locations` list carries every copy — PMC, DOAJ, publisher, repository — the URL policy feeds on.
 - **Europe PMC** is biomedical depth: PubMed abstracts, PMC full-text copies, preprints, and patents, with the OA flag and PMC URL reaching the agent — a biomedical query gets the readable body, not just the abstract page.
-- **Semantic Scholar stays deferred:** it 429s in keyless testing — the free tier is unusable without a key. Reconsider when a keyless quota appears or the extension gains a key store it can trust.
+- **Semantic Scholar stays deferred:** it 429s in keyless testing — the free tier is unusable without a key. The extension now has a key store and a wizard skeleton, so reconsidering is one spec + thin instance away; the blocker is the provider's unusable free tier, not our plumbing.
 - **Semantic recall is Exa's job, explicitly:** `provider: "exa"`, `category: "publication"` runs a dedicated academic index (~350M publications) that retrieves a specific paper from a fact, result, or half-remembered description — the known-item retrieval this vertical's keyword indexes are weakest at. It returns generic rows, so a hit resolves back through this vertical for the citeable record; no code integration, the schema wording carries the workflow.
 
 ## The identifier lookup
 
 `filters.lookup` resolves one paper from a user-pasted link or a papers row's identifiers: web_fetching a doi.org link lands on the publisher's bot-walled redirect (the wall documented above), so the lookup goes through the API instead — `fetchRecord` on OpenAlex (`/works/{doi:…}`, the same call the backward walk's DOI seed makes) or an `EXT_ID`/`PMCID`/`DOI` query on Europe PMC. The identifier kind picks the backend — which is why `index` is ignored on lookups, and the other filters don't apply: a lookup retrieves, it doesn't constrain.
 
-## The mailto politeness contract
+## The key + metering contract
 
-OpenAlex rate-limits by contact address: without one, you share the 10k/day anonymous pool (403s bite early); with `papers.openalexEmail` set, the limit rises to the credited 100k/day. The address is optional-but-recommended in the config file, and the call is absent-tolerant by contract — it must work without it. `readMailto()` in `search/papers.ts` is the single home for the read; tests inject the address via deps, never through the config file.
+OpenAlex meters per request: a `search=` query costs $0.001, a filter list $0.0001, and the anonymous budget is $0.10/day — roughly 100 searches before 429s bite. A free API key (openalex.org/settings/api) raises the budget 10×, sent as the `api_key=` query param on every works call (list, singleton, walk). Resolution precedence: config `papers.openalexApiKey` wins, env `OPENALEX_API_KEY` is the fallback, absent → keyless — the call must work without a key (smaller budget, not absent). `resolveOpenAlexKey` in `search/papers.ts` is the pure resolver; the adapter injects the key through deps, so tests stub it rather than touching config or env. The retired `mailto` politeness param appears nowhere: response headers are identical with and without it, and the ecosystem (pyalex, openalex-py) has migrated to keys.
 
-## Citation-graph approximation
+The error contract reads the metering headers, not a probe: a 429 with zero remaining (`X-RateLimit-Remaining` / `X-RateLimit-Remaining-USD`) is *daily credits exhausted* — keyless callers are told the free key and `/openalex-setup` fix it, keyed callers get the countdown from `X-RateLimit-Reset` (seconds to midnight UTC); a 429 with remaining budget is *temporary throttling* (the >100 req/s limit) — retry shortly; 401/403 are *key rejected*. These are causes within the existing `backend-down` status, not new top-level statuses.
 
-- **OpenAlex is exact:** forward walk = `filter=cites:W…`; backward = the seed record's `referenced_works` hydrated through `filter=openalex_id:W…|…` OR-lists, chunked at the API's 50-value cap. There is no server-side "works this paper cites" filter — `referenced_works:W…` auto-maps onto the forward direction (verified live), so the backward leg must hydrate.
+Lean payloads ride the same economy: every works-list call projects the shared `select=` list (`OPENALEX_SELECT` — exactly the fields normalization reads plus the enrichment fields), shrinking a full-record row ~4.5×. The DOI-seed record fetch is a free singleton and stays unprojected.
+
+Setup is `/openalex-setup` — a thin instance of the shared key-setup wizard (`search/key-setup.ts`): free singleton-lookup validation, masked save, and a done screen that reads the real budget from `/rate-limit`. See the wizard section in [search-providers.md](search-providers.md).
+
+## Citation-graph walks
+
+- **OpenAlex is exact, both directions, one request each:** forward walk = `filter=cites:W…` (works citing the seed); backward = `filter=cited_by:W…` — the seed's own references, resolved server-side (verified live: 133 refs returned in one request where the forward filter on the same seed returned 8,092). The former chunked `referenced_works` hydration is gone — no OR-cap math survives. DOI seeds resolve through one free singleton record fetch first to get the W-id; W-id seeds go straight to the filter.
 - **Europe PMC approximates:** its search query has no `CITES` field (verified, hitCount 0), so the walk runs its `/citations` (forward) and `/references` (backward) REST endpoints instead — the documented approximation. DOI seeds resolve through one search lookup first.
 - Year constraints bind post-fetch on Europe PMC walks (`applyYearFilter` — the walk endpoints take no filter params); openAccess is dropped there, because walk entries carry no OA flag to verify. Acceptable: the walk is a discovery aid — the seed paper's own record is exact, and the agent can re-tighten with `index: "openalex"`.
 

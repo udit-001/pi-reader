@@ -30,7 +30,9 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 | `cache/cache.ts` | Fetch cache on disk: lookup/store/prune, sqlite index in `cachedb.ts` |
 | `config.ts` | All config file I/O: `~/.pi/agent/pi-reader.json`, atomic |
 | `search/exa-mcp.ts` | Exa MCP transport: JSON-RPC, SSE, key resolution |
-| `search/exa-setup.ts` | Wizard TUI: key validation, save, import-from-mcp.json |
+| `search/key-setup.ts` | Wizard skeleton: the paste→validate→save→done flow, spinner, redaction, headless fallback, reopen guard |
+| `search/exa-setup.ts` | Exa wizard instance: mcp.json import + dedupe removal on the shared skeleton |
+| `search/openalex-setup.ts` | OpenAlex wizard instance: free-probe validation, /rate-limit budget readout |
 | `search/exa-issue.ts` | Shared state: classify Exa failures for one-shot hints |
 
 **Two adapters = real seam.** One adapter is hypothetical; two is the proof. A third provider satisfies `SearchProvider` in `search/search.ts` and registers in the provider map. The auto-router `autoChain()` decides the `[primary, failure-fallback]` pair by intent params — a pure function, tested separately.
@@ -42,7 +44,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 - [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the full chain, SSRF guard, body caps, timeouts, cache layout. Open before touching the fetch chain, the network guard, or the cache, or when debugging a URL that returns nothing.
 - [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path and warm-up, Exa transport, search cache, key resolution, the wizard. Open before touching a provider, routing, recency/page behavior, or config/key handling.
 - [`docs/github.md`](docs/github.md) — repo checkouts (size gate, runtime cache) and issue/PR rendering (gh-first, REST fallback, one renderer). Open before touching `github-clone.ts` or `github-issue-pr.ts`.
-- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), in-band error contract, record URL policy, `mailto` politeness, citation-graph approximation. Open before touching the papers vertical, scholarly search, citation traversal, or a paper row's URL choice.
+- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), in-band error contract, record URL policy, the key + metering contract, citation-graph walk. Open before touching the papers vertical, scholarly search, citation traversal, or a paper row's URL choice.
 
 ## Conventions
 

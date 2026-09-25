@@ -47,11 +47,12 @@ export interface PiWebConfig {
   allowPrivateNetwork?: boolean;
   /** Papers vertical (see search/papers.ts). Absent fields use defaults. */
   papers?: {
-    /** Contact address for OpenAlex's "polite pool" — absent-tolerant by
-     *  contract: the papers search works without it, rate limits just bite
-     *  sooner. Forwardable contact (name@example.com), used as the verbatim
-     *  mailto= query param on OpenAlex calls. */
-    openalexEmail?: string;
+    /** OpenAlex free API key — raises the keyless daily budget 10×. Sent
+     *  verbatim as the api_key= query param on OpenAlex calls; absent →
+     *  keyless (the papers search must work without it, budget just bites
+     *  sooner). Env fallback: OPENALEX_API_KEY. Get one at
+     *  openalex.org/settings/api. */
+    openalexApiKey?: string;
   };
 }
 

@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { searchPapers, OPENALEX_FILTER_OR_CAP, type OpenAlexWork } from "../search/papers.ts";
+import { searchPapers, type OpenAlexWork } from "../search/papers.ts";
 import { parsePaperSeed, filtersCacheKey, applySort } from "../search/paper-backend.ts";
 import { paperError, otherIndex, PaperError, type PaperRecord } from "../search/paper-backend.ts";
 import type { EuropePmcResult, EuropePmcResponse } from "../search/europepmc.ts";
@@ -214,15 +214,17 @@ test("isPaperRecord (shared probe) recognizes records from both backends", async
 
 // ── The OpenAlex citation walk (PIWEB-16) ─────────────────────────────────────
 
-test("openalex forward walk: DOI seed resolves, then cites:W filter carries the walk", async () => {
+test("openalex forward walk: DOI seed resolves, then one cites:W works call", async () => {
   const seen: Array<{ record?: string; filter?: string | null }> = [];
+  let worksCalls = 0;
   const results = await searchPapers("", { filters: { citationGraph: { seed: "10.1038/s41587-020-0561-9" } } }, depsWith({
     openalex: {
       fetchRecord: async (lookup) => {
         seen.push({ record: lookup });
-        return { ...OPENALEX_WORK, id: "https://openalex.org/W3161425918", referenced_works: ["https://openalex.org/W1504222414"] };
+        return { ...OPENALEX_WORK, id: "https://openalex.org/W3161425918" };
       },
       fetchWorks: async (params) => {
+        worksCalls++;
         seen.push({ filter: params.get("filter") });
         return [OPENALEX_WORK];
       },
@@ -232,37 +234,55 @@ test("openalex forward walk: DOI seed resolves, then cites:W filter carries the 
     "doi:10.1038/s41587-020-0561-9",
     "cites:W3161425918",
   ]);
+  assert.equal(worksCalls, 1);
   assert.equal(results.length, 1);
 });
 
-test("openalex backward walk hydrates the seed's references in chunks at the OR cap", async () => {
-  assert.equal(OPENALEX_FILTER_OR_CAP, 50);
-  const refs = Array.from({ length: 60 }, (_, i) => `https://openalex.org/W${1000 + i}`);
-  const filters: string[] = [];
-  await searchPapers("", { filters: { citationGraph: { seed: "W3161425918", direction: "citedBy" } }, numResults: 5 }, depsWith({
+test("openalex backward walk is one server-side cited_by:W call — no record re-fetch, no chunk loop", async () => {
+  let recordCalls = 0;
+  let worksCalls = 0;
+  const filters: (string | null)[] = [];
+  const results = await searchPapers("", { filters: { citationGraph: { seed: "W3161425918", direction: "citedBy" } }, numResults: 5 }, depsWith({
     openalex: {
-      fetchRecord: async (lookup) => {
-        assert.equal(lookup, "W3161425918");
-        return { ...OPENALEX_WORK, referenced_works: refs };
-      },
+      fetchRecord: async () => { recordCalls++; return OPENALEX_WORK; },
       fetchWorks: async (params) => {
-        filters.push(params.get("filter") ?? "");
+        worksCalls++;
+        filters.push(params.get("filter"));
         return [OPENALEX_WORK];
       },
     },
   }));
-  // First chunk holds 50 ids, the second the remaining 10 — no silent drop.
-  assert.equal(filters[0]!.split("openalex_id:")[1]!.split("|").length, 50);
-  assert.equal(filters[1]!.split("openalex_id:")[1]!.split("|").length, 10);
+  // W-id seed goes straight to the filter — exactly one works call, no
+  // OR-cap math, no chunking anywhere.
+  assert.equal(recordCalls, 0);
+  assert.equal(worksCalls, 1);
+  assert.deepEqual(filters, ["cited_by:W3161425918"]);
+  assert.equal(results.length, 1);
 });
 
-test("openalex rejects PMID/PMCID seeds with the europepmc retry named", async () => {
+test("backward walk with a DOI seed: one record fetch resolves the W-id, then one works call; constraints combine", async () => {
+  let recordCalls = 0;
+  let worksCalls = 0;
+  let filter = "";
+  await searchPapers("", { filters: { citationGraph: { seed: "10.1038/s41587-020-0561-9", direction: "citedBy" }, openAccess: true, year: 2020 } }, depsWith({
+    openalex: {
+      fetchRecord: async () => { recordCalls++; return { ...OPENALEX_WORK, id: "https://openalex.org/W3161425918" }; },
+      fetchWorks: async (params) => { worksCalls++; filter = params.get("filter") ?? ""; return [OPENALEX_WORK]; },
+    },
+  }));
+  assert.equal(recordCalls, 1);
+  assert.equal(worksCalls, 1);
+  assert.equal(filter, "publication_year:2020,is_oa:true,cited_by:W3161425918");
+});
+
+test("openalex walk rejects PMID/PMCID seeds naming the concrete identifier and the europepmc retry", async () => {
   await assert.rejects(
     searchPapers("", { filters: { citationGraph: { seed: "32581362" } } }, depsWith({})),
     (err: unknown) => {
       const m = (err as Error).message;
-      assert.match(m, /rejected the query as malformed .*pmid id/);
+      assert.match(m, /rejected the query as malformed .*pmid id \(32581362\)/);
       assert.match(m, /index: "europepmc"/);
+      assert.match(m, /same seed/);
       return true;
     },
   );
