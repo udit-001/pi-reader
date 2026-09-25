@@ -193,8 +193,8 @@ const webSearchParams = Type.Object({
         "'publication' — semantic search over Exa's academic publication index: retrieves " +
         "a specific paper from a fact, result, or half-remembered description ('the paper " +
         "where …'); returns generic rows — pair a hit with provider: 'papers' for its " +
-        "citeable record. Requires a key and uses quota; under auto an Exa failure falls " +
-        "to plain text search, the category dropped. 'github' for code/repos.",
+        "citeable record. Under auto an Exa failure falls to plain text search, the " +
+        "category dropped. 'github' for code/repos.",
     },
   )),
   includeContent: Type.Optional(Type.Boolean({
