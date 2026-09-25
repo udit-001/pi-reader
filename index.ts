@@ -70,9 +70,10 @@ const providerSchema = Type.Optional(
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
-        "• 'papers' — scholarly literature ('what does the research say about X', 'find papers " +
-        "on X'): record-shaped results with year, venue, citation count, open-access URL, and " +
-        "DOI alongside the standard url/title/snippet, sourced from OpenAlex's ~250M works.",
+        "• 'papers' — scholarly paper records ('find papers on X'): citeable records, not " +
+        "prose snippets — year, venue, citation count, open-access URL, and DOI ride on the " +
+        "standard title/url/snippet; sourced from OpenAlex's ~250M works; honors query and " +
+        "numResults only (recency, page, domains, license don't apply).",
     },
   ),
 );
@@ -239,7 +240,7 @@ export default function piWeb(pi: ExtensionAPI): void {
       "you know the need — 'context7' for API reference (a named library or SDK's endpoints, " +
       "signatures, and config), 'wikipedia' for facts, 'hn' for Hacker News discussions, " +
       "'news' for dated coverage, 'images' and 'videos' for media discovery, " +
-      "'papers' for scholarly literature (OpenAlex, record-shaped results). " +
+      "'papers' for scholarly paper records. " +
       "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
     promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures); 'papers' returns scholarly paper records (year/venue/DOI).",
     parameters: webSearchParams,
