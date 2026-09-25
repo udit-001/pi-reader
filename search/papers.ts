@@ -21,7 +21,15 @@
 // retry `index`, manual-URL escape hatch) and the entry passes it verbatim.
 
 import type { SearchOptions, PaperIndexName } from "./search.ts";
-import { PaperError, paperError, buildPaperSnippet, type PaperRecord } from "./paper-backend.ts";
+import {
+  PaperError,
+  paperError,
+  buildPaperSnippet,
+  parsePaperSeed,
+  type PaperCitationGraph,
+  type PaperFilters,
+  type PaperRecord,
+} from "./paper-backend.ts";
 import { searchEuropePmc, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
 import { loadConfig } from "../config.ts";
 
@@ -39,6 +47,10 @@ export const PAPER_INDEXES: readonly PaperIndexName[] = ["openalex", "europepmc"
 export interface OpenAlexWork {
   /** OpenAlex ID, e.g. "https://openalex.org/W3161425918". */
   id?: string;
+  /** The works the seed cites — the backward citation walk hydrates these
+   *  (the filter API auto-maps referenced_works:W… onto cites:W…, the forward
+   *  direction only). */
+  referenced_works?: string[];
   /** URL form, e.g. "https://doi.org/10.1038/s41587-020-0561-9". */
   doi?: string;
   title?: string;
@@ -129,15 +141,42 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
 
 // ── Pure seam: request params ────────────────────────────────────────────────
 
+/** The OpenAlex `filter=` value for the search constraints — one comma list
+ *  (the API's grammar). Year exact: publication_year:2023; range:
+ *  from_publication_date,to_publication_date; OA: is_oa:true; a citation
+ *  walk's forward leg adds cites:W…. Verified live. Pure; exported. */
+export function buildOpenAlexFilter(filters?: PaperFilters, cites?: string): string {
+  const parts: string[] = [];
+  if (filters?.year !== undefined) parts.push(`publication_year:${filters.year}`);
+  if (filters?.yearRange) {
+    parts.push(`from_publication_date:${filters.yearRange[0]}-01-01`);
+    parts.push(`to_publication_date:${filters.yearRange[1]}-12-31`);
+  }
+  if (filters?.openAccess === true) parts.push("is_oa:true");
+  if (cites) parts.push(`cites:${cites}`);
+  return parts.join(",");
+}
+
+/** Backward hydration: the seed record's referenced_works (full openalex.org
+ *  URLs) become one OR-list filter. Pure; exported for tests. */
+export function buildOpenAlexBackwardFilter(wids: string[]): string {
+  return `openalex_id:${wids.map((u) => u.replace(/^https?:\/\/openalex\.org\//, "")).join("|")}`;
+}
+
+/** OpenAlex OR-lists cap at 50 values per filter — backward walks hydrate the
+ *  seed's references in chunks of this size. */
+export const OPENALEX_FILTER_OR_CAP = 50;
+
 /** Build the OpenAlex works query. per-page sized; `mailto` set only when a
- *  contact address exists (never sent empty). Filters (year window,
- *  open-access-only) are PIWEB-16 — no filter params pre-adopted. Pure;
- *  exported for tests. */
-export function buildPaperParams(query: string, numResults: number, mailto: string | null): URLSearchParams {
+ *  contact address exists (never sent empty); `filter` set only when the
+ *  caller carries constraints (search or citation walk). `search` is omitted
+ *  when the query is empty (a walk has none). Pure; exported for tests. */
+export function buildPaperParams(query: string, numResults: number, mailto: string | null, filter = ""): URLSearchParams {
   const params = new URLSearchParams({
-    search: query,
     "per-page": String(numResults),
   });
+  if (query) params.set("search", query);
+  if (filter) params.set("filter", filter);
   if (mailto) params.set("mailto", mailto);
   return params;
 }
@@ -158,6 +197,9 @@ function readMailto(): string | null {
 export interface OpenAlexDeps {
   /** Fetch the works endpoint with these params; return the results array. */
   fetchWorks: (params: URLSearchParams, signal?: AbortSignal) => Promise<OpenAlexWork[]>;
+  /** Fetch a single work record by lookup ("doi:10.…" or "W…"); null when
+   *  the record is absent. Used by the citation walk's seed resolution. */
+  fetchRecord: (lookup: string, signal?: AbortSignal) => Promise<OpenAlexWork | null>;
 }
 
 async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
@@ -172,6 +214,18 @@ async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
 }
 
 export const defaultOpenAlexDeps: OpenAlexDeps = {
+  async fetchRecord(lookup, signal) {
+    const url = `https://api.openalex.org/works/${lookup}`;
+    const res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.any(
+        signal ? [AbortSignal.timeout(TIMEOUT_MS), signal] : [AbortSignal.timeout(TIMEOUT_MS)],
+      ),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`OpenAlex returned ${res.status}`);
+    return (await res.json()) as OpenAlexWork;
+  },
   async fetchWorks(params, signal) {
     const url = `https://api.openalex.org/works?${params}`;
     const body = await fetchJson(url, signal);
@@ -186,6 +240,106 @@ export const defaultOpenAlexDeps: OpenAlexDeps = {
   },
 };
 
+/** Strip the openalex.org URL form from a work id, keeping the bare W-id. */
+function bareOpenAlexId(id: string): string {
+  return id.replace(/^https?:\/\/openalex\.org\//, "");
+}
+
+/** The OpenAlex citation walk (PIWEB-16). Forward: filter=cites:W… on the
+ *  works endpoint — the exact param-plan contract, and year/OA constraints
+ *  combine server-side in the same filter list. Backward: the works endpoint
+ *  has no "works this paper cites" filter (referenced_works:W… auto-maps to
+ *  the forward direction, verified live), so the seed record's
+ *  referenced_works list hydrates through filter=openalex_id:W…|…, chunked
+ *  at the API's 50-value OR cap. DOI seeds resolve through a record fetch
+ *  first; PMID/PMCID seeds are Europe PMC's vocabulary — an in-band error
+ *  names the other index. */
+async function searchOpenAlexWalk(
+  graph: PaperCitationGraph,
+  n: number,
+  options: SearchOptions,
+  deps: OpenAlexDeps,
+): Promise<PaperRecord[]> {
+  const seed = parsePaperSeed(graph.seed);
+  if (seed === null) {
+    throw new PaperError(paperError("malformed", "openalex", `unreadable seed "${graph.seed}" — pass a DOI, PMID, PMCID, or OpenAlex W-id`));
+  }
+  if (seed.kind === "pmid" || seed.kind === "pmcid") {
+    throw new PaperError(paperError("malformed", "openalex", `seed is a ${seed.kind} id; OpenAlex walks need a DOI or W-id — retry with index: "europepmc"`));
+  }
+  let wId: string;
+  let referenced: string[] | undefined;
+  try {
+    if (seed.kind === "openalex") {
+      wId = bareOpenAlexId(seed.value);
+    } else {
+      const rec = await deps.fetchRecord(`doi:${seed.value}`, options.signal);
+      if (rec === null) {
+        throw new PaperError(paperError("no-results", "openalex", `seed DOI "${seed.value}" matched no OpenAlex record`));
+      }
+      wId = bareOpenAlexId(rec.id ?? "");
+      referenced = rec.referenced_works;
+    }
+    if (graph.direction !== "citedBy") {
+      // Forward: one works query, filters combined server-side.
+      return await fetchOpenAlexWorks(
+        buildPaperParams("", n, readMailto(), buildOpenAlexFilter(options.filters, wId)),
+        n,
+        options,
+        deps,
+      );
+    }
+    // Backward: the seed record's references hydrate through the works list.
+    const refs = referenced ?? (await (async () => {
+      const rec = await deps.fetchRecord(wId, options.signal);
+      return rec?.referenced_works ?? [];
+    })());
+    if (refs.length === 0) {
+      throw new PaperError(paperError("no-results", "openalex"));
+    }
+    const records: PaperRecord[] = [];
+    for (let i = 0; i < refs.length; i += OPENALEX_FILTER_OR_CAP) {
+      const chunk = refs.slice(i, i + OPENALEX_FILTER_OR_CAP);
+      const page = await fetchOpenAlexWorks(
+        buildPaperParams("", n, readMailto(), buildOpenAlexBackwardFilter(chunk)),
+        n,
+        options,
+        deps,
+      );
+      records.push(...page);
+      if (records.length >= n) break;
+    }
+    if (records.length === 0) {
+      throw new PaperError(paperError("no-results", "openalex"));
+    }
+    return records.slice(0, n);
+  } catch (err) {
+    if (err instanceof PaperError) throw err;
+    throw new PaperError(paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)));
+  }
+}
+
+/** One works-list fetch → normalized records; failure shaped as the contract
+ *  error. Shared by the search and walk paths. */
+async function fetchOpenAlexWorks(
+  params: URLSearchParams,
+  n: number,
+  options: SearchOptions,
+  deps: OpenAlexDeps,
+): Promise<PaperRecord[]> {
+  let works: OpenAlexWork[];
+  try {
+    works = await deps.fetchWorks(params, options.signal);
+  } catch (err) {
+    throw new PaperError(paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)));
+  }
+  const results = normalizePaperResults(works);
+  if (results.length === 0) {
+    throw new PaperError(paperError("no-results", "openalex"));
+  }
+  return results.slice(0, n);
+}
+
 /** The OpenAlex backend call: params → normalized records, failure shaped as
  *  the contract error. Backend-specific import; the shared dispatch lives in
  *  searchPapers. */
@@ -195,20 +349,9 @@ async function searchOpenAlex(
   deps: OpenAlexDeps,
 ): Promise<PaperRecord[]> {
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
-  const params = buildPaperParams(query, n, readMailto());
-  let works: OpenAlexWork[];
-  try {
-    works = await deps.fetchWorks(params, options.signal);
-  } catch (err) {
-    throw new PaperError(
-      paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)),
-    );
-  }
-  const results = normalizePaperResults(works);
-  if (results.length === 0) {
-    throw new PaperError(paperError("no-results", "openalex"));
-  }
-  return results.slice(0, n);
+  const graph = options.filters?.citationGraph;
+  if (graph) return searchOpenAlexWalk(graph, n, options, deps);
+  return fetchOpenAlexWorks(buildPaperParams(query, n, readMailto(), buildOpenAlexFilter(options.filters)), n, options, deps);
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

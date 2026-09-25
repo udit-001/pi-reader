@@ -11,6 +11,8 @@ import {
   chooseOaUrl,
   normalizePaperResults,
   buildPaperParams,
+  buildOpenAlexFilter,
+  buildOpenAlexBackwardFilter,
   searchPapers,
   type OpenAlexWork,
   type OpenAlexDeps,
@@ -190,6 +192,50 @@ test("paper params include the politeness mailto when one is configured", () => 
   assert.equal(p.get("per-page"), "15");
 });
 
+// ── buildOpenAlexFilter — the exact filter= grammar (PIWEB-16) ────────────────
+
+test("openalex filter string: exact year, OA flag, and passthrough when empty", () => {
+  assert.equal(buildOpenAlexFilter({ year: 2023 }), "publication_year:2023");
+  assert.equal(buildOpenAlexFilter({ openAccess: true }), "is_oa:true");
+  assert.equal(buildOpenAlexFilter(undefined), "");
+  assert.equal(buildOpenAlexFilter({}), "");
+});
+
+test("openalex filter string: year range splits into from/to dates, combos comma-join", () => {
+  assert.equal(
+    buildOpenAlexFilter({ yearRange: [2019, 2021] }),
+    "from_publication_date:2019-01-01,to_publication_date:2021-12-31",
+  );
+  assert.equal(
+    buildOpenAlexFilter({ year: 2023, openAccess: true }),
+    "publication_year:2023,is_oa:true",
+  );
+});
+
+test("openalex filter string carries the forward walk's cites:W leg in the same list", () => {
+  assert.equal(
+    buildOpenAlexFilter({ openAccess: true }, "W3161425918"),
+    "is_oa:true,cites:W3161425918",
+  );
+});
+
+test("openalex backward filter strips record URLs into one OR-list", () => {
+  assert.equal(
+    buildOpenAlexBackwardFilter([
+      "https://openalex.org/W1504222414",
+      "https://openalex.org/W1919257374",
+    ]),
+    "openalex_id:W1504222414|W1919257374",
+  );
+});
+
+test("paper params carry the filter and omit search when the walk leaves it empty", () => {
+  const p = buildPaperParams("", 10, null, "cites:W3161425918");
+  assert.equal(p.get("search"), null);
+  assert.equal(p.get("filter"), "cites:W3161425918");
+  assert.equal(p.get("per-page"), "10");
+});
+
 // ── searchPapers — deps flow, slicing, error shaping ──────────────────────────
 // The dispatch's third arg now carries per-backend deps; Europe PMC gets a
 // tripwire here — these tests pin the OpenAlex path, so any silent misroute
@@ -197,9 +243,14 @@ test("paper params include the politeness mailto when one is configured", () => 
 
 function depsWith(overrides: Partial<OpenAlexDeps>): Parameters<typeof searchPapers>[2] {
   return {
-    openalex: { fetchWorks: async () => [NATURE_WORK, OA_WORK], ...overrides },
+    openalex: {
+      fetchWorks: async () => [NATURE_WORK, OA_WORK],
+      fetchRecord: async () => { throw new Error("OpenAlex record fetch must not run outside walk tests"); },
+      ...overrides,
+    },
     europepmc: {
       fetchResults: async () => { throw new Error("Europe PMC must not be called for index: 'openalex' tests"); },
+      fetchRoute: async () => { throw new Error("Europe PMC walk must not be called for index: 'openalex' tests"); },
     },
   };
 }

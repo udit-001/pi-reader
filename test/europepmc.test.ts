@@ -9,10 +9,13 @@ import assert from "node:assert/strict";
 import {
   isFlagY,
   parseAuthors,
+  parsePubYear,
   chooseRecordUrl,
   chooseOaUrl,
   normalizeEuropePmcResults,
   buildEuropePmcParams,
+  buildEuropePmcFilterQuery,
+  planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
   type EuropePmcResponse,
@@ -70,6 +73,18 @@ const PATENT_REC: EuropePmcResult = {
   pubYear: "2025",
   isOpenAccess: "Y",
   inEPMC: "Y",
+  citedByCount: 0,
+};
+
+// A citation-walk entry (what /citations and /references return): abbreviated
+// journal, numeric pubYear, no doi/pmcid/openAccess flags.
+const WALK_REC: EuropePmcResult = {
+  source: "MED",
+  id: "42725849",
+  title: "Integrative Long-Read Multi-Omics of a Patient With GPI Deficiency.",
+  authorString: "Stolarek I, Delimata-Raczek J, Figlerowicz M.",
+  journalAbbreviation: "J Cell Mol Med",
+  pubYear: 2026,
   citedByCount: 0,
 };
 
@@ -187,11 +202,63 @@ test("europepmc params carry the query, json format, and page size", () => {
   assert.equal(p.get("pageSize"), "10");
 });
 
+// ── parsePubYear — numeric walk entries and string search entries ────────────
+
+test("parsePubYear reads both entry shapes, invents nothing", () => {
+  assert.equal(parsePubYear(2026), 2026);
+  assert.equal(parsePubYear("2026"), 2026);
+  assert.equal(parsePubYear("2026-07-01"), 2026);
+  assert.equal(parsePubYear(undefined), undefined);
+  assert.equal(parsePubYear("soon"), undefined);
+});
+
+// ── buildEuropePmcFilterQuery — filters ride inside the query string ──────────
+
+test("europepmc filter query adds PUB_YEAR/OPEN_ACCESS field conditions", () => {
+  assert.equal(
+    buildEuropePmcFilterQuery("CRISPR base editing", { year: 2023 }),
+    'CRISPR base editing AND PUB_YEAR:"2023"',
+  );
+  assert.equal(
+    buildEuropePmcFilterQuery("CRISPR base editing", { openAccess: true }),
+    "CRISPR base editing AND OPEN_ACCESS:y",
+  );
+});
+
+test("europepmc filter query renders the inclusive year range and joins with AND", () => {
+  assert.equal(
+    buildEuropePmcFilterQuery("q", { yearRange: [2019, 2021] }),
+    "q AND (PUB_YEAR:[2019 TO 2021])",
+  );
+  assert.equal(
+    buildEuropePmcFilterQuery("q", { year: 2023, openAccess: true }),
+    'q AND PUB_YEAR:"2023" AND OPEN_ACCESS:y',
+  );
+});
+
+test("europepmc filter query passes an unfiltered query through unchanged", () => {
+  assert.equal(buildEuropePmcFilterQuery("q"), "q");
+  assert.equal(buildEuropePmcFilterQuery("q", {}), "q");
+});
+
+test("europepmc filter query stands alone when the walk leaves the query empty", () => {
+  assert.equal(buildEuropePmcFilterQuery("", { year: 2023 }), 'PUB_YEAR:"2023"');
+});
+
+// ── planEuropePmcWalk — the documented approximation: REST routes, not query ──
+
+test("europepmc walk plan: forward → /citations, backward → /references", () => {
+  assert.equal(planEuropePmcWalk("MED", "32581362", "cites"), "MED/32581362/citations");
+  assert.equal(planEuropePmcWalk("MED", "32581362", "citedBy"), "MED/32581362/references");
+  assert.equal(planEuropePmcWalk("PMC", "PMC3166943", "cites"), "PMC/PMC3166943/citations");
+});
+
 // ── searchEuropePmc — deps flow, slicing, in-band error shaping ──────────────
 
 function depsWith(overrides: Partial<EuropePmcDeps>): EuropePmcDeps {
   return {
     fetchResults: async () => RESPONSE,
+    fetchRoute: async () => { throw new Error("Europe PMC walk route must not be fetched outside walk tests"); },
     ...overrides,
   };
 }
@@ -262,6 +329,90 @@ test("searchEuropePmc keeps 429 rate-limiting in the backend-down bucket, not ma
       const m = (err as Error).message;
       assert.match(m, /unreachable/);
       assert.doesNotMatch(m, /malformed/);
+      return true;
+    },
+  );
+});
+
+// ── searchEuropePmcWalk — the citation-graph walk (PIWEB-16) ─────────────────
+
+test("searchEuropePmc walks forward from a PMID seed through the citations route", async () => {
+  const seen: Array<{ path: string; params: URLSearchParams }> = [];
+  const results = await searchEuropePmc("", { filters: { citationGraph: { seed: "32581362", direction: "cites" } } }, depsWith({
+    fetchRoute: async (path, params) => {
+      seen.push({ path, params });
+      return { hitCount: 445, citationList: { citation: [WALK_REC, PMC_REC] } };
+    },
+  }));
+  assert.equal(seen[0]!.path, "MED/32581362/citations");
+  assert.equal(seen[0]!.params.get("pageSize"), "10");
+  // Walk entries normalize into the SAME shape — journalAbbreviation as venue.
+  assert.equal(results.length, 2);
+  assert.equal(results[0]!.venue, "J Cell Mol Med");
+  assert.equal(results[0]!.year, 2026);
+  assert.equal(results[0]!.url, "https://europepmc.org/article/MED/42725849");
+});
+
+test("searchEuropePmc resolves a DOI seed through the search endpoint before walking", async () => {
+  const seen: Array<{ path: string; query?: string | null }> = [];
+  await searchEuropePmc("", { filters: { citationGraph: { seed: "10.1038/s41587-020-0561-9", direction: "citedBy" } } }, depsWith({
+    fetchResults: async (params) => {
+      seen.push({ path: "search", query: params.get("query") });
+      return { hitCount: 1, resultList: { result: [PUBMED_REC] } };
+    },
+    fetchRoute: async (path) => {
+      seen.push({ path });
+      return { hitCount: 59, referenceList: { reference: [WALK_REC] } };
+    },
+  }));
+  assert.deepEqual(seen.map((s) => s.path), ["search", "MED/42527584/references"]);
+  assert.match(seen[0]!.query!, /DOI:"10\.1038\/s41587-020-0561-9"/);
+});
+
+test("searchEuropePmc applies the year filter to walk results — the documented approximation", async () => {
+  const results = await searchEuropePmc("", {
+    filters: { citationGraph: { seed: "32581362" }, year: 2026 },
+  }, depsWith({
+    fetchRoute: async () => ({
+      hitCount: 2,
+      citationList: { citation: [WALK_REC, { ...PMC_REC, pubYear: 2019 }] },
+    }),
+  }));
+  assert.deepEqual(results.map((r) => r.year), [2026]);
+});
+
+test("searchEuropePmc rejects an OpenAlex seed on the europepmc walk — the other index named", async () => {
+  await assert.rejects(
+    searchEuropePmc("", { filters: { citationGraph: { seed: "W3161425918" } } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /rejected the query as malformed .*OpenAlex id/);
+      assert.match(m, /index: "openalex"/);
+      return true;
+    },
+  );
+});
+
+test("searchEuropePmc reports an unreadable seed as malformed, not backend-down", async () => {
+  await assert.rejects(
+    searchEuropePmc("", { filters: { citationGraph: { seed: "not-a-seed" } } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /rejected the query as malformed .*unreadable seed/);
+      return true;
+    },
+  );
+});
+
+test("searchEuropePmc walk route failures shape as backend-down with the retry index", async () => {
+  await assert.rejects(
+    searchEuropePmc("", { filters: { citationGraph: { seed: "32581362" } } }, depsWith({
+      fetchRoute: async () => { throw new Error("Europe PMC returned 503"); },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /unreachable \(Europe PMC returned 503\)/);
+      assert.match(m, /index: "openalex"/);
       return true;
     },
   );

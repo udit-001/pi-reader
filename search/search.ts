@@ -10,6 +10,7 @@ import { searchNews } from "./news.ts";
 import { searchImages } from "./images.ts";
 import { searchVideos } from "./videos.ts";
 import { searchPapers } from "./papers.ts";
+import { filtersCacheKey, type PaperFilters } from "./paper-backend.ts";
 import { webSearch as searchFreeProviders } from "./search-providers.ts";
 import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
@@ -47,6 +48,9 @@ export interface SearchOptions {
   /** Papers provider only: which scholarly-index backend to query
    *  ("openalex" default, "europepmc" for biomedical full text). */
   index?: PaperIndexName;
+  /** Papers provider only: year/OA constraints or a citation walk from a
+   *  seed paper (see PaperFilters). */
+  filters?: PaperFilters;
   signal?: AbortSignal;
 }
 
@@ -216,6 +220,7 @@ function getSearchCacheKey(query: string, options: SearchOptions & { provider?: 
     String(options.includeSummary ?? false),
     // Papers vertical: the backend choice changes results — keyed.
     options.index ?? "",
+    filtersCacheKey(options.filters),
   ];
   // Simple hash
   let hash = 0;

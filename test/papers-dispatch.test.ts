@@ -5,7 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { searchPapers, type OpenAlexWork } from "../search/papers.ts";
+import { searchPapers, OPENALEX_FILTER_OR_CAP, type OpenAlexWork } from "../search/papers.ts";
+import { parsePaperSeed, filtersCacheKey } from "../search/paper-backend.ts";
 import { paperError, otherIndex, type PaperRecord } from "../search/paper-backend.ts";
 import type { EuropePmcResult, EuropePmcResponse } from "../search/europepmc.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
@@ -48,10 +49,20 @@ const EPMC_RESULT: EuropePmcResult = {
 };
 
 // Destructured deps so each backend can be faked independently.
-type PapersDeps = Parameters<typeof searchPapers>[2];
+type PapersDeps = NonNullable<Parameters<typeof searchPapers>[2]>;
 
-function depsWith(overrides: NonNullable<Parameters<typeof searchPapers>[2]>): PapersDeps {
-  return overrides;
+function depsWith(overrides: PapersDeps): PapersDeps {
+  return {
+    openalex: {
+      fetchWorks: async () => [],
+      fetchRecord: async () => { throw new Error("OpenAlex record fetch must not run outside walk tests"); },
+    },
+    europepmc: {
+      fetchResults: async () => { throw new Error("Europe PMC must not be called outside walk tests"); },
+      fetchRoute: async () => { throw new Error("Europe PMC walk must not be called outside walk tests"); },
+    },
+    ...overrides,
+  };
 }
 
 // ── index routing ─────────────────────────────────────────────────────────────
@@ -199,6 +210,96 @@ test("isPaperRecord (shared probe) recognizes records from both backends", async
   // The probe is imported via the shared module; just verify shape here.
   assert.ok(Object.keys(fromOpenAlex[0]!).includes("doi"));
   assert.ok(Object.keys(fromEpmc[0]!).includes("doi"));
+});
+
+// ── The OpenAlex citation walk (PIWEB-16) ─────────────────────────────────────
+
+test("openalex forward walk: DOI seed resolves, then cites:W filter carries the walk", async () => {
+  const seen: Array<{ record?: string; filter?: string | null }> = [];
+  const results = await searchPapers("", { filters: { citationGraph: { seed: "10.1038/s41587-020-0561-9" } } }, depsWith({
+    openalex: {
+      fetchRecord: async (lookup) => {
+        seen.push({ record: lookup });
+        return { ...OPENALEX_WORK, id: "https://openalex.org/W3161425918", referenced_works: ["https://openalex.org/W1504222414"] };
+      },
+      fetchWorks: async (params) => {
+        seen.push({ filter: params.get("filter") });
+        return [OPENALEX_WORK];
+      },
+    },
+  }));
+  assert.deepEqual(seen.map((s) => s.record ?? s.filter), [
+    "doi:10.1038/s41587-020-0561-9",
+    "cites:W3161425918",
+  ]);
+  assert.equal(results.length, 1);
+});
+
+test("openalex backward walk hydrates the seed's references in chunks at the OR cap", async () => {
+  assert.equal(OPENALEX_FILTER_OR_CAP, 50);
+  const refs = Array.from({ length: 60 }, (_, i) => `https://openalex.org/W${1000 + i}`);
+  const filters: string[] = [];
+  await searchPapers("", { filters: { citationGraph: { seed: "W3161425918", direction: "citedBy" } }, numResults: 5 }, depsWith({
+    openalex: {
+      fetchRecord: async (lookup) => {
+        assert.equal(lookup, "W3161425918");
+        return { ...OPENALEX_WORK, referenced_works: refs };
+      },
+      fetchWorks: async (params) => {
+        filters.push(params.get("filter") ?? "");
+        return [OPENALEX_WORK];
+      },
+    },
+  }));
+  // First chunk holds 50 ids, the second the remaining 10 — no silent drop.
+  assert.equal(filters[0]!.split("openalex_id:")[1]!.split("|").length, 50);
+  assert.equal(filters[1]!.split("openalex_id:")[1]!.split("|").length, 10);
+});
+
+test("openalex rejects PMID/PMCID seeds with the europepmc retry named", async () => {
+  await assert.rejects(
+    searchPapers("", { filters: { citationGraph: { seed: "32581362" } } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /rejected the query as malformed .*pmid id/);
+      assert.match(m, /index: "europepmc"/);
+      return true;
+    },
+  );
+});
+
+// ── parsePaperSeed — the shared seed grammar ─────────────────────────────────
+
+test("parsePaperSeed reads the identifier forms a papers row hands the agent", () => {
+  assert.deepEqual(parsePaperSeed("10.1038/s41587-020-0561-9"), { kind: "doi", value: "10.1038/s41587-020-0561-9" });
+  assert.deepEqual(parsePaperSeed("https://doi.org/10.1038/x"), { kind: "doi", value: "10.1038/x" });
+  assert.deepEqual(parsePaperSeed("32581362"), { kind: "pmid", value: "32581362" });
+  assert.deepEqual(parsePaperSeed("PMC13434336"), { kind: "pmcid", value: "PMC13434336" });
+  assert.deepEqual(parsePaperSeed("https://europepmc.org/article/MED/32581362"), { kind: "pmid", value: "32581362" });
+  assert.deepEqual(parsePaperSeed("pmc13434336"), { kind: "pmcid", value: "PMC13434336" });
+  assert.deepEqual(parsePaperSeed("W3161425918"), { kind: "openalex", value: "W3161425918" });
+  assert.deepEqual(parsePaperSeed("https://openalex.org/W3161425918"), { kind: "openalex", value: "W3161425918" });
+  assert.equal(parsePaperSeed(""), null);
+  assert.equal(parsePaperSeed("not a seed"), null);
+});
+
+// ── Filters ride the search-cache key ────────────────────────────────────────
+
+test("filtersCacheKey serializes stably and distinguishes filter combos", () => {
+  assert.equal(filtersCacheKey(undefined), "");
+  assert.equal(filtersCacheKey({}), "");
+  assert.equal(
+    filtersCacheKey({ year: 2023, openAccess: true }),
+    filtersCacheKey({ openAccess: true, year: 2023 }),
+  );
+  assert.notEqual(
+    filtersCacheKey({ year: 2023 }),
+    filtersCacheKey({ year: 2024 }),
+  );
+  assert.notEqual(
+    filtersCacheKey({ citationGraph: { seed: "W1" } }),
+    filtersCacheKey({ citationGraph: { seed: "W1", direction: "citedBy" } }),
+  );
 });
 
 // unused-parameter guards for the fixture imports the tests don't need twice

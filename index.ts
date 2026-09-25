@@ -90,6 +90,52 @@ const paperIndexSchema = Type.Optional(
   }),
 );
 
+const paperFiltersSchema = Type.Optional(
+  Type.Object(
+    {
+      year: Type.Optional(Type.Integer({
+        description: "Restrict to this publication year. papers provider only.",
+      })),
+      yearRange: Type.Optional(Type.Tuple([Type.Integer(), Type.Integer()], {
+        description: "Inclusive [from, to] publication years. papers provider only.",
+      })),
+      openAccess: Type.Optional(Type.Boolean({
+        description: "Restrict to open-access-readable results. papers provider only.",
+      })),
+      citationGraph: Type.Optional(
+        Type.Object(
+          {
+            seed: Type.String({
+              description: "The paper the walk starts from — a DOI (10.…), PMID, PMCID, or OpenAlex W-id; anything a prior papers row handed you.",
+            }),
+            direction: Type.Optional(Type.Union(
+              [Type.Literal("cites"), Type.Literal("citedBy")],
+              {
+                description:
+                  "'cites' (default) — forward walk: works citing the seed. 'citedBy' — " +
+                  "backward walk: the seed's references. openalex combines year/openAccess " +
+                  "filters server-side; europepmc walks them through its /citations and " +
+                  "/references endpoints (its approximation — year binds there, openAccess " +
+                  "is dropped on walks).",
+              },
+            )),
+          },
+          {
+            description:
+              "Turn one paper into a citation-graph walk; replaces the free-text query " +
+              "(query may be empty when this drives the search). papers provider only.",
+          },
+        ),
+      ),
+    },
+    {
+      description:
+        "Papers provider only: constrain the search (year window, open access) or walk " +
+        "the citation graph from a seed paper. Other providers ignore it.",
+    },
+  ),
+);
+
 const licenseSchema = Type.Optional(
   Type.Union(
     [Type.Literal("any"), Type.Literal("share"), Type.Literal("commercial"), Type.Literal("modify")],
@@ -134,6 +180,7 @@ const webSearchParams = Type.Object({
   recency: recencySchema,
   license: licenseSchema,
   index: paperIndexSchema,
+  filters: paperFiltersSchema,
   domains: domainSchema,
   category: Type.Optional(Type.Union(
     exaCategoryList().map((c) => Type.Literal(c)) as [ReturnType<typeof Type.Literal<string>>, ...ReturnType<typeof Type.Literal<string>>[]],
@@ -279,6 +326,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           includeContent: params.includeContent,
           includeSummary: params.includeSummary,
           index: params.index,
+          filters: params.filters,
           signal,
         });
 

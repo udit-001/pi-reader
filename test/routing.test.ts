@@ -92,6 +92,17 @@ test("autoChain: papers intent never enters the chain — explicit provider only
   }
 });
 
+test("autoChain: papers filters never hijack routing — papers stays explicit-only", () => {
+  const filters = {
+    year: 2023,
+    openAccess: true,
+    citationGraph: { seed: "10.1038/s41587-020-0561-9", direction: "cites" as const },
+  };
+  const [primary, fallback] = autoChain({ filters });
+  assert.notEqual(primary, "papers");
+  assert.notEqual(fallback, "papers");
+});
+
 // ── shouldCacheSearch — the cache-honesty decision ───────────────────────────
 
 const ok = (over: Partial<SearchResponse> = {}): SearchResponse => ({
@@ -122,4 +133,11 @@ test("shouldCacheSearch: a degraded response is never cached — the flag travel
   // The news adapter sets degraded when it fell to text; the cache guard reads
   // the flag instead of re-deriving which provider names mean "degraded".
   assert.equal(shouldCacheSearch(ok({ degraded: true })), false);
+});
+
+test("shouldCacheSearch: a degraded papers response is refused — never cached under the papers key", () => {
+  // Papers cannot degrade to text (a fake row would masquerade as a paper
+  // record), but the guard's flag check must hold for this provider too —
+  // the guard is one decision, not a provider table.
+  assert.equal(shouldCacheSearch(ok({ provider: "papers", degraded: true })), false);
 });

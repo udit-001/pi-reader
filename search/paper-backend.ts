@@ -80,6 +80,86 @@ export function buildPaperSnippet(meta: PaperSnippetMeta): string {
   return tokens.join(" · ");
 }
 
+// ── Filters + citation traversal (PIWEB-16) ───────────────────────────────
+
+/** Constrain a papers search, or turn it into a citation walk. Shared across
+ *  backends so PIWEB-15's same-shape normalizers stay the only fork point. */
+export interface PaperFilters {
+  /** Exact publication year. */
+  year?: number;
+  /** Inclusive [from, to] publication years. */
+  yearRange?: [number, number];
+  /** Restrict to open-access-readable results. */
+  openAccess?: boolean;
+  /** Turn the search into a graph walk from a seed paper: "cites" (default)
+ *  walks forward — works citing the seed; "citedBy" walks backward — the
+ *  seed's own references. The walk replaces the free-text query. */
+  citationGraph?: PaperCitationGraph;
+}
+
+export interface PaperCitationGraph {
+  seed: string;
+  direction?: "cites" | "citedBy";
+}
+
+export type PaperSeed =
+  | { kind: "doi"; value: string }
+  | { kind: "pmid"; value: string }
+  | { kind: "pmcid"; value: string }
+  | { kind: "openalex"; value: string };
+
+/** The seed a citation walk starts from — whatever the agent already holds
+ *  from a prior papers row or a paper page: bare DOI, PMID, PMCID, or an
+ *  OpenAlex W-id (bare or URL form). Unrecognizable → null; never guessed.
+ *  Pure; exported for tests. */
+export function parsePaperSeed(seed: string): PaperSeed | null {
+  const s = seed.trim();
+  if (s === "") return null;
+  const doi = s.match(/^(?:https?:\/\/doi\.org\/)?(10\.\d{4,}\S+)$/);
+  if (doi) return { kind: "doi", value: doi[1]! };
+  const medUrl = s.match(/^https?:\/\/europepmc\.org\/article\/MED\/(\d+)$/);
+  if (medUrl) return { kind: "pmid", value: medUrl[1]! };
+  const pmcid = s.match(/^(?:https?:\/\/)?(?:europepmc\.org\/article\/)?(?:www\.ncbi\.nlm\.nih\.gov\/pmc\/articles\/)?(PMC\d+)$/i);
+  if (pmcid) return { kind: "pmcid", value: pmcid[1]!.toUpperCase() };
+  const oa = s.match(/^(?:https?:\/\/openalex\.org\/)?(W\d+)$/i);
+  if (oa) return { kind: "openalex", value: oa[1]! };
+  if (/^\d+$/.test(s)) return { kind: "pmid", value: s };
+  return null;
+}
+
+/** Year constraints on citation-walk results: Europe PMC's walk endpoints
+ *  take no filter params (the documented approximation), so the constraint
+ *  applies to the normalized records. A record whose year is unknown can't
+ *  be verified — dropped rather than smuggled past the filter. Pure;
+ *  exported for tests. */
+export function applyYearFilter(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
+  const year = filters?.year;
+  const range = filters?.yearRange;
+  if (year === undefined && range === undefined) return records;
+  return records.filter((r) => {
+    if (r.year === undefined) return false;
+    if (year !== undefined && r.year !== year) return false;
+    if (range && (r.year < range[0] || r.year > range[1])) return false;
+    return true;
+  });
+}
+
+/** Stable serialization for the search-cache key — filters change results, so
+ *  they ride the key; but key order must not. An all-empty filter object
+ *  serializes like no filters at all. Pure; exported for tests. */
+export function filtersCacheKey(f?: PaperFilters): string {
+  if (!f) return "";
+  const parts = [
+    f.year ?? "",
+    f.yearRange?.[0] ?? "",
+    f.yearRange?.[1] ?? "",
+    f.openAccess === true ? "y" : "",
+    f.citationGraph?.seed ?? "",
+    f.citationGraph?.direction ?? "",
+  ];
+  return parts.some((p) => p !== "") ? parts.join("|") : "";
+}
+
 // ── In-band error contract ───────────────────────────────────────────────────
 
 export type PaperBackendStatus = "no-results" | "backend-down" | "malformed";
