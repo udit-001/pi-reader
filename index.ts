@@ -51,25 +51,23 @@ const providerSchema = Type.Optional(
     ],
     {
       description:
-        "Search provider. The verticals (news, images, videos, wikipedia, hn, context7) never run " +
-        "under 'auto' — name one to use it. " +
-        "'auto' tries DDG then Exa; for category: 'news', an Exa failure falls " +
-        "to the free news vertical (dated, keyword) before generic text. " +
-        "'news' for news coverage ('what happened this week about X') — dated, outlet-attributed " +
-        "articles from free keyword news engines; honors query, recency (d/w/m/y), and page; " +
-        "domains is not supported; degrades to text search with a visible notice when unavailable. " +
-        "That is the free path — category: 'news' instead runs Exa semantic news (better relevance, uses Exa quota). " +
-        "'images' for image discovery ('find a photo of X') — hotlinkable image URLs with dimensions and source. " +
-        "Each result's URL is the " +
-        "hotlinkable image itself (not a page about it); dimensions (W×H) and source domain " +
-        "ride in the snippet — embed, download, or vision-check from the rendered line, no second lookup. " +
-        "Honors query, page, and license; recency and domains are not supported. " +
-        "'videos' for video discovery ('find a video about X') — watch URLs with duration, " +
-        "view count, and uploader in the snippet, plus a publication date — pick one and hand " +
-        "the URL to a watcher. " +
-        "Honors query, recency (d/w/m/y), and page; domains is not supported. " +
-        "If videos are unavailable, fall back to text search with domains: ['youtube.com']. " +
-        "'wikipedia' for factual queries, 'hn' to keyword-search HN discussions, 'context7' for library docs.",
+        "Which provider to search. 'auto' (default) runs DuckDuckGo, then Exa on failure; any " +
+        "Exa-shaped param (category, includeContent, includeSummary, domains) starts at Exa. " +
+        "Name a provider when you know the need:\n" +
+        "• 'context7' — API reference for a named library or SDK: exact endpoints, function " +
+        "signatures, and config options, served as versioned plaintext docs. Reach for it when " +
+        "integrating or calling a library and its docs are not already in context; fetch the " +
+        "returned URL for the full reference.\n" +
+        "• 'news' — news coverage ('what happened this week about X'): dated, outlet-attributed " +
+        "articles from free keyword engines; honors query, recency (d/w/m/y), and page; no " +
+        "domains; degrades to text search with a visible notice. category: 'news' instead uses " +
+        "Exa semantic news (better relevance, uses quota).\n" +
+        "• 'wikipedia' — factual 'what is X'. 'hn' — Hacker News discussions.\n" +
+        "• 'images' — image discovery ('find a photo of X'): the result URL is the hotlinkable " +
+        "image itself, with dimensions and source in the snippet; honors query, page, and license.\n" +
+        "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
+        "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
+        "back to text search with domains: ['youtube.com'].",
     },
   ),
 );
@@ -231,17 +229,13 @@ export default function piWeb(pi: ExtensionAPI): void {
     name: "web_search",
     label: "Web Search",
     description:
-      "Search the web. DuckDuckGo by default (free, no key); Exa for semantic search — " +
-      "pass category, includeContent, or domains and auto routes there (domains also works " +
-      "via site: operators on DuckDuckGo). provider: 'news' for news coverage ('what happened " +
-      "this week about X') — dated, outlet-attributed results from free keyword news engines " +
-      "(category: 'news' instead uses Exa semantic, quota'd). 'wikipedia' for factual " +
-      "'what is X' queries; 'hn' for HN discussions (current listings come from web_fetch on " +
-      "news.ycombinator.com); 'context7' for library docs. provider: 'images' for image " +
-      "discovery ('find a photo of X') — hotlinkable image URLs with dimensions and source. " +
-      "Describe the page you want to " +
-      "find, not the fact you want to know.",
-    promptSnippet: "Use for web research questions.",
+      "Search the web. 'auto' (default) runs DuckDuckGo, then Exa; Exa-shaped params " +
+      "(category, includeContent, includeSummary, domains) start at Exa. Name a provider when " +
+      "you know the need — 'context7' for API reference (a named library or SDK's endpoints, " +
+      "signatures, and config), 'wikipedia' for facts, 'hn' for Hacker News discussions, " +
+      "'news' for dated coverage, 'images' and 'videos' for media discovery. " +
+      "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
+    promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures).",
     parameters: webSearchParams,
     async execute(
       _callId: string,
