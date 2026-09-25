@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { searchPapers, OPENALEX_FILTER_OR_CAP, type OpenAlexWork } from "../search/papers.ts";
-import { parsePaperSeed, filtersCacheKey } from "../search/paper-backend.ts";
+import { parsePaperSeed, filtersCacheKey, applySort } from "../search/paper-backend.ts";
 import { paperError, otherIndex, type PaperRecord } from "../search/paper-backend.ts";
 import type { EuropePmcResult, EuropePmcResponse } from "../search/europepmc.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
@@ -156,7 +156,7 @@ test("paperError distinguishes backend-down from no-results from malformed", () 
 test("paperError's retry hint always names the OTHER index with its scope", () => {
   assert.match(paperError("backend-down", "openalex"), /index: "europepmc"/);
   assert.match(paperError("backend-down", "europepmc"), /index: "openalex"/);
-  assert.match(paperError("backend-down", "openalex"), /biomedical full text: PubMed, preprints, patents/);
+  assert.match(paperError("backend-down", "openalex"), /biomedical full text: PubMed, PMC copies, preprints, patents/);
   assert.match(paperError("no-results", "europepmc"), /all disciplines/);
 });
 
@@ -300,6 +300,24 @@ test("filtersCacheKey serializes stably and distinguishes filter combos", () => 
     filtersCacheKey({ citationGraph: { seed: "W1" } }),
     filtersCacheKey({ citationGraph: { seed: "W1", direction: "citedBy" } }),
   );
+  assert.notEqual(
+    filtersCacheKey({}),
+    filtersCacheKey({ sort: "citedBy" }),
+  );
+});
+
+// ── applySort — citedBy ranking, Europe PMC's post-fetch approximation ────────
+
+test("applySort ranks by descending citation count; uncounted records keep position", () => {
+  const records: PaperRecord[] = [
+    { title: "a", url: "u1", snippet: "s", citedBy: 3 },
+    { title: "b", url: "u2", snippet: "s" },
+    { title: "c", url: "u3", snippet: "s", citedBy: 99 },
+  ];
+  const sorted = applySort(records, { sort: "citedBy" });
+  assert.deepEqual(sorted.map((r) => r.title), ["c", "a", "b"]);
+  // No sort requested — identity.
+  assert.equal(applySort(records, undefined), records);
 });
 
 // unused-parameter guards for the fixture imports the tests don't need twice

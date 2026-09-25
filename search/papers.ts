@@ -187,17 +187,20 @@ export function buildOpenAlexBackwardFilter(wids: string[]): string {
  *  seed's references in chunks of this size. */
 export const OPENALEX_FILTER_OR_CAP = 50;
 
-/** Build the OpenAlex works query. per-page sized; `mailto` set only when a
+/** The OpenAlex works query. per-page sized; `mailto` set only when a
  *  contact address exists (never sent empty); `filter` set only when the
- *  caller carries constraints (search or citation walk). `search` is omitted
- *  when the query is empty (a walk has none). Pure; exported for tests. */
-export function buildPaperParams(query: string, numResults: number, mailto: string | null, filter = ""): URLSearchParams {
+ *  caller carries constraints (search or citation walk); `sort` set only
+ *  when filters ask for citation ranking (the API default is relevance).
+ *  `search` is omitted when the query is empty (a walk has none). Pure;
+ *  exported for tests. */
+export function buildPaperParams(query: string, numResults: number, mailto: string | null, filter = "", sort: "citedBy" | undefined = undefined): URLSearchParams {
   const params = new URLSearchParams({
     "per-page": String(numResults),
   });
   if (query) params.set("search", query);
   if (filter) params.set("filter", filter);
   if (mailto) params.set("mailto", mailto);
+  if (sort === "citedBy") params.set("sort", "cited_by_count:desc");
   return params;
 }
 
@@ -371,7 +374,8 @@ async function searchOpenAlex(
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const graph = options.filters?.citationGraph;
   if (graph) return searchOpenAlexWalk(graph, n, options, deps);
-  return fetchOpenAlexWorks(buildPaperParams(query, n, readMailto(), buildOpenAlexFilter(options.filters)), n, options, deps);
+  const params = buildPaperParams(query, n, readMailto(), buildOpenAlexFilter(options.filters), options.filters?.sort);
+  return fetchOpenAlexWorks(params, n, options, deps);
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

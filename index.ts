@@ -73,7 +73,7 @@ const providerSchema = Type.Optional(
         "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
         "is a citeable record — year, venue, citation count, open-access URL, and DOI " +
         "ride on the standard title/url/snippet; honors query, numResults, index, and " +
-        "filters (year/OA/citation walks).",
+        "filters (year/OA/citation walks/citedBy sort).",
     },
   ),
 );
@@ -100,6 +100,9 @@ const paperFiltersSchema = Type.Optional(
       })),
       openAccess: Type.Optional(Type.Boolean({
         description: "Restrict to open-access-readable results.",
+      })),
+      sort: Type.Optional(Type.Union([Type.Literal("citedBy")], {
+        description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
       })),
       citationGraph: Type.Optional(
         Type.Object(
@@ -129,8 +132,9 @@ const paperFiltersSchema = Type.Optional(
     },
     {
       description:
-        "Papers provider only: constrain the search (year window, open access) or walk " +
-        "the citation graph from a seed paper. Other providers ignore it.",
+        "Papers provider only: constrain the search (year window, open access, " +
+        "citation ranking) or walk the citation graph from a seed paper. Other " +
+        "providers ignore it.",
     },
   ),
 );

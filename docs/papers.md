@@ -4,14 +4,14 @@ Reference for `search/papers.ts` (backend dispatch), `search/paper-backend.ts` (
 
 ## Shape
 
-- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, PIWEB-16's filters) never branches on the backend.
+- `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi` flat keys beside the standard `title`/`url`/`snippet`). `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, the filters) never branches on the backend.
 - Failure throws `PaperError`, whose message is built by `paperError()` — the entry passes it verbatim. Three statuses: `no-results`, `backend-down`, `malformed`, each naming the backend, the retry `index`, and a manual-DOI escape hatch. The entry's generic error rewriter never touches these — the retry hint IS the actionability.
 
 ## The record URL: most fetchable copy wins
 
 Each row's `url` is the canonical place the agent acts on — the link a human clicks and the fetch chain resolves. Both backends rank their candidates through `chooseFetchableUrl` in `search/paper-backend.ts` — one URL policy for the vertical, the rank ladder in its comment. The row points at the most fetchable copy the work carries; the bare DOI always rides the `doi` key, so citation seeds and the `DOI:` meta line lose nothing when the URL is a copy, and a closed work with no copy anywhere keeps the doi.org link.
 
-The ordering is the point — verified live in this session: doi.org rate-limits per IP, so 429s bite when an agent walks a result set of DOI links, and the redirect lands on the most bot-walled corner of publishing (Cloudflare challenges, auth transit pages) while the PMC/DOAJ/repo copies fetch keylessly. One wire fact drives the adapters: OpenAlex's own `landing_page_url` is usually the doi.org form, so the OpenAlex adapter reads `locations` for the copies, and Europe PMC ranks its PMC copy over its DOI.
+The ordering is the point — verified live: doi.org rate-limits per IP, so 429s bite when an agent walks a result set of DOI links, and the redirect lands on the most bot-walled corner of publishing (Cloudflare challenges, auth transit pages) while the PMC/DOAJ/repo copies fetch keylessly. One wire fact drives the adapters: OpenAlex's own `landing_page_url` is usually the doi.org form, so the OpenAlex adapter reads `locations` for the copies, and Europe PMC ranks its PMC copy over its DOI.
 
 ## Why in-band failure, not degrade-to-text
 
@@ -30,10 +30,14 @@ A text-search result is not a paper record — no substitutes exist. The news ve
 
 ## The mailto politeness contract
 
-OpenAlex rate-limits by contact address: without one, you share the 10k/day anonymous pool (403s bite early); with `papers.openalexEmail` set, the limit rises to the credited 100k/day. The key is optional-but-recommended in the config file, and the call is absent-tolerant by contract — it must work without it. `readMailto()` in `search/papers.ts` is the single home for the read; tests inject the address via deps, never through the config file.
+OpenAlex rate-limits by contact address: without one, you share the 10k/day anonymous pool (403s bite early); with `papers.openalexEmail` set, the limit rises to the credited 100k/day. The address is optional-but-recommended in the config file, and the call is absent-tolerant by contract — it must work without it. `readMailto()` in `search/papers.ts` is the single home for the read; tests inject the address via deps, never through the config file.
 
 ## Citation-graph approximation
 
 - **OpenAlex is exact:** forward walk = `filter=cites:W…`; backward = the seed record's `referenced_works` hydrated through `filter=openalex_id:W…|…` OR-lists, chunked at the API's 50-value cap. There is no server-side "works this paper cites" filter — `referenced_works:W…` auto-maps onto the forward direction (verified live), so the backward leg must hydrate.
 - **Europe PMC approximates:** its search query has no `CITES` field (verified, hitCount 0), so the walk runs its `/citations` (forward) and `/references` (backward) REST endpoints instead — the documented approximation. DOI seeds resolve through one search lookup first.
 - Year constraints bind post-fetch on Europe PMC walks (`applyYearFilter` — the walk endpoints take no filter params); openAccess is dropped there, because walk entries carry no OA flag to verify. Acceptable: the walk is a discovery aid — the seed paper's own record is exact, and the agent can re-tighten with `index: "openalex"`.
+
+## The citedBy sort
+
+`filters.sort: "citedBy"` answers the "find papers on X which are highly cited" ask — relevance-ranked retrieval surfaces the pool, but the ordering the agent cites must be the citations'. OpenAlex sorts server-side (`sort=cited_by_count:desc`), so the ordering is exact. Europe PMC's search endpoint takes no sort field, so `applySort` ranks the fetched page post-fetch — a top-N of that page, not the index. Acceptable by the same logic as the walk filters.

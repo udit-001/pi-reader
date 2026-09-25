@@ -26,6 +26,7 @@ import type { PaperIndexName, SearchOptions } from "./search.ts";
 import {
   DEFAULT_PAGE_SIZE,
   applyYearFilter,
+  applySort,
   buildPaperSnippet,
   chooseFetchableUrl,
   paperError,
@@ -311,7 +312,7 @@ async function searchEuropePmcWalk(
   const path = planEuropePmcWalk(anchor.src, anchor.id, graph.direction ?? "cites");
   const body = await fetchShaped(() => deps.fetchRoute(path, buildEuropePmcParams("", n), options.signal));
   const raw = body.citationList?.citation ?? body.referenceList?.reference ?? [];
-  const records = applyYearFilter(normalizeEuropePmcResults(raw), options.filters);
+  const records = applySort(applyYearFilter(normalizeEuropePmcResults(raw), options.filters), options.filters);
   if (records.length === 0) {
     throw new PaperError(paperError("no-results", "europepmc"));
   }

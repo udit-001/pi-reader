@@ -136,6 +136,11 @@ export interface PaperFilters {
   yearRange?: number[];
   /** Restrict to open-access-readable results. */
   openAccess?: boolean;
+  /** Sort results by descending citation count instead of relevance
+   *  ("highly cited" asks). OpenAlex sorts server-side; Europe PMC has no
+   *  sort field on its search endpoint, so it sorts post-fetch on the page
+   *  it already fetched — a top-N over one page, not the whole index. */
+  sort?: "citedBy";
   /** Turn the search into a graph walk from a seed paper: "cites" (default)
  *  walks forward — works citing the seed; "citedBy" walks backward — the
  *  seed's own references. The walk replaces the free-text query. */
@@ -172,6 +177,17 @@ export function parsePaperSeed(seed: string): PaperSeed | null {
   return null;
 }
 
+/** Sort results by descending citation count when filters ask (the
+ *  "citedBy" sort). OpenAlex sorts server-side; this post-fetch form is
+ *  Europe PMC's approximation — it has no sort field on its search
+ *  endpoint, so the ordering covers the fetched page, not the index.
+ *  Records without a count keep their order (stable sort) rather than
+ *  being dropped. Pure; exported for tests. */
+export function applySort(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
+  if (filters?.sort !== "citedBy") return records;
+  return records.toSorted((a, b) => (b.citedBy ?? -1) - (a.citedBy ?? -1));
+}
+
 /** Year constraints on citation-walk results: Europe PMC's walk endpoints
  *  take no filter params (the documented approximation), so the constraint
  *  applies to the normalized records. A record whose year is unknown can't
@@ -200,6 +216,7 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.yearRange?.[0] ?? "",
     f.yearRange?.[1] ?? "",
     f.openAccess === true ? "y" : "",
+    f.sort ?? "",
     f.citationGraph?.seed ?? "",
     f.citationGraph?.direction ?? "",
   ];
@@ -215,7 +232,7 @@ export type PaperBackendStatus = "no-results" | "backend-down" | "malformed";
  *  fits its query instead of blind-retrying. */
 const INDEX_SCOPE: Record<PaperIndexName, string> = {
   openalex: `index: "openalex" (open scholarly metadata across all disciplines)`,
-  europepmc: `index: "europepmc" (biomedical full text: PubMed, preprints, patents)`,
+  europepmc: `index: "europepmc" (biomedical full text: PubMed, PMC copies, preprints, patents)`,
 };
 
 /** `otherIndex` — the fallback `index` value the agent is told to try. Pure;

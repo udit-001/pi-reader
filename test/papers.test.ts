@@ -17,7 +17,7 @@ import {
   type OpenAlexWork,
   type OpenAlexDeps,
 } from "../search/papers.ts";
-import { buildPaperSnippet, chooseFetchableUrl, type PaperRecord } from "../search/paper-backend.ts";
+import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, type PaperRecord } from "../search/paper-backend.ts";
 import { isPaperRecord } from "../search/paper-backend.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
 
@@ -277,6 +277,13 @@ test("paper params include the politeness mailto when one is configured", () => 
   const p = buildPaperParams("q", 15, "udit@example.com");
   assert.equal(p.get("mailto"), "udit@example.com");
   assert.equal(p.get("per-page"), "15");
+});
+
+test("paper params carry the citedBy sort server-side; relevance when sort is absent", () => {
+  const sorted = buildPaperParams("lichen", 10, null, "", "citedBy");
+  assert.equal(sorted.get("sort"), "cited_by_count:desc");
+  const unsorted = buildPaperParams("lichen", 10, null);
+  assert.equal(unsorted.get("sort"), null);
 });
 
 // ── buildOpenAlexFilter — the exact filter= grammar (PIWEB-16) ────────────────
