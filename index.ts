@@ -70,10 +70,10 @@ const providerSchema = Type.Optional(
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
-        "• 'papers' — scholarly paper records ('find papers on X'): each hit is a citeable " +
-        "record — year, venue, citation count, open-access URL, and DOI ride on the " +
-        "standard title/url/snippet; honors query and numResults only (`index` picks " +
-        "the backend).",
+        "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
+        "is a citeable record — year, venue, citation count, open-access URL, and DOI " +
+        "ride on the standard title/url/snippet; honors query and numResults only " +
+        "(`index` picks the backend).",
     },
   ),
 );
@@ -190,7 +190,9 @@ const webSearchParams = Type.Object({
         "'people' for LinkedIn/professional profiles, 'news' for recent events — " +
         "Exa semantic news; under auto an Exa failure falls to the free news " +
         "vertical (keyword, dated) before generic text. " +
-        "'publication' for papers/articles, 'github' for code/repos.",
+        "'publication' — publication/article pages on the open web (magazines, working " +
+        "papers, preprint listings); returns generic rows, not citeable records. " +
+        "'github' for code/repos.",
     },
   )),
   includeContent: Type.Optional(Type.Boolean({
