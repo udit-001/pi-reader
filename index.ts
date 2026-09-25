@@ -70,12 +70,10 @@ const providerSchema = Type.Optional(
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
-        "• 'papers' — scholarly paper records ('find papers on X'): citeable records, not " +
-        "prose snippets — year, venue, citation count, open-access URL, and DOI ride on the " +
-        "standard title/url/snippet; sourced from scholarly indexes — OpenAlex by default " +
-        "(all disciplines), `index: 'europepmc'` for biomedical full text with PubMed, " +
-        "preprints, and patents; honors query and numResults only (recency, page, domains, " +
-        "license don't apply).",
+        "• 'papers' — scholarly paper records ('find papers on X'): each hit is a citeable " +
+        "record — year, venue, citation count, open-access URL, and DOI ride on the " +
+        "standard title/url/snippet; honors query and numResults only (`index` picks " +
+        "the backend).",
     },
   ),
 );
@@ -94,15 +92,15 @@ const paperFiltersSchema = Type.Optional(
   Type.Object(
     {
       year: Type.Optional(Type.Integer({
-        description: "Restrict to this publication year. papers provider only.",
+        description: "Restrict to this publication year.",
       })),
       yearRange: Type.Optional(Type.Array(Type.Integer(), {
         minItems: 2,
         maxItems: 2,
-        description: "Inclusive [from, to] publication years — exactly two items. papers provider only.",
+        description: "Inclusive [from, to] publication years.",
       })),
       openAccess: Type.Optional(Type.Boolean({
-        description: "Restrict to open-access-readable results. papers provider only.",
+        description: "Restrict to open-access-readable results.",
       })),
       citationGraph: Type.Optional(
         Type.Object(
@@ -125,7 +123,7 @@ const paperFiltersSchema = Type.Optional(
           {
             description:
               "Turn one paper into a citation-graph walk; replaces the free-text query " +
-              "(query may be empty when this drives the search). papers provider only.",
+              "(query may be empty when this drives the search).",
           },
         ),
       ),
@@ -166,7 +164,7 @@ const domainSchema = Type.Optional(
 
 const webSearchParams = Type.Object({
   query: Type.String({
-    description: "Example: 'category:company AI infrastructure startups San Francisco'.",
+    description: "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
   }),
   provider: providerSchema,
   numResults: Type.Optional(Type.Integer({
