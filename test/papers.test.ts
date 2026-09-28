@@ -9,6 +9,9 @@ import {
   parseDoi,
   chooseRecordUrl,
   chooseOaUrl,
+  capIds,
+  citationTrend,
+  abstractFromInvertedIndex,
   normalizePaperResults,
   buildPaperParams,
   buildOpenAlexFilter,
@@ -305,6 +308,103 @@ test("papers normalizer returns an empty array for empty input", () => {
   assert.deepEqual(normalizePaperResults([]), []);
 });
 
+// ── Deep-research keys: fwci, refs/related, citation trend, abstract ─────
+
+// The RICH_WORK fixture: every deep-research key the API can carry, trimmed
+// from the live capture (W2101234009, scikit-learn) plus capped graphs.
+const RICH_WORK: OpenAlexWork = {
+  id: "https://openalex.org/W2101234009",
+  doi: "https://doi.org/10.48550/arxiv.1201.0490",
+  title: "Scikit-learn: Machine Learning in Python",
+  publication_year: 2012,
+  cited_by_count: 63917,
+  fwci: 54.51,
+  referenced_works: [
+    "https://openalex.org/W1496508106", "https://openalex.org/W1571024744",
+    "https://openalex.org/W2024933578", null as unknown as string,
+  ],
+  related_works: ["https://openalex.org/W2036021480", "https://openalex.org/W2207495067"],
+  counts_by_year: [
+    { year: 2026, cited_by_count: 644 }, { year: 2025, cited_by_count: 3185 },
+    { year: 2024, cited_by_count: 7789 }, { year: 2023, cited_by_count: 8513 },
+  ],
+  topics: [{
+    display_name: "Computational Physics and Python Applications",
+    score: 0.78, field: { display_name: "Computer Science" },
+  }],
+  keywords: [
+    { display_name: "Python (programming language)" },
+    { display_name: "Documentation" },
+    { display_name: "Computer science" },
+    { display_name: "Fourth keyword dropped by the cap" },
+  ],
+  abstract_inverted_index: { "Scikit-learn": [0], is: [1, 5], a: [2], Python: [3], module: [4] },
+};
+
+test("capIds keeps the first N bare ids and tolerates null entries — never invents", () => {
+  assert.deepEqual(
+    capIds(["https://openalex.org/W1", null, "https://openalex.org/W2", "https://openalex.org/W3"], 2),
+    ["W1", "W2"],
+  );
+  assert.equal(capIds(undefined, 40), undefined);
+  assert.equal(capIds([], 40), undefined);
+  assert.equal(capIds([null, ""], 40), undefined);
+});
+
+test("citationTrend labels the trajectory off the last three complete years — never the partial current year", () => {
+  const now = 2026;
+  assert.deepEqual(citationTrend([{ year: 2025, cited_by_count: 3185 }, { year: 2024, cited_by_count: 7789 }, { year: 2023, cited_by_count: 8513 }, { year: 2026, cited_by_count: 644 }], now), { recent: 19487, trend: "fading" });
+  // Rising: newest year outscores (synthetic counts within the window).
+  assert.equal(
+    citationTrend([{ year: 2024, cited_by_count: 900 }, { year: 2025, cited_by_count: 1000 }, { year: 2026, cited_by_count: 5000 }], now)?.trend,
+    "rising",
+  );
+  // Steady: newest underscores by less than half (1000 vs 1100).
+  assert.equal(
+    citationTrend([{ year: 2024, cited_by_count: 1100 }, { year: 2025, cited_by_count: 1000 }], now)?.trend,
+    "steady",
+  );
+  // Fewer than two complete known years → absent, never invented.
+  assert.deepEqual(citationTrend([{ year: 2025, cited_by_count: 100 }], now), { recent: undefined, trend: undefined });
+  assert.deepEqual(citationTrend([], now), { recent: undefined, trend: undefined });
+});
+
+test("abstractFromInvertedIndex rebuilds plaintext by position and truncates at 300; absent stays absent", () => {
+  assert.equal(
+    abstractFromInvertedIndex({ "Scikit-learn": [0], is: [1, 4], a: [2], Python: [3] }),
+    "Scikit-learn is a Python is",
+  );
+  assert.equal(abstractFromInvertedIndex(null), undefined);
+  assert.equal(abstractFromInvertedIndex({}), undefined);
+  const long = Array.from({ length: 400 }, (_, i) => `w${i}`).join(" ");
+  const built = abstractFromInvertedIndex(Object.fromEntries(long.split(" ").map((w, i) => [w, [i]])))!;
+  assert.equal(built.length, 298); // 297 chars + ellipsis
+  assert.equal(built.endsWith("…"), true);
+});
+
+test("papers normalizer maps the deep-research keys: fwci, refs, related, trend, field, keywords, abstract, openalexId", () => {
+  const [r] = normalizePaperResults([RICH_WORK]);
+  assert.equal(r!.fwci, 54.51);
+  assert.deepEqual(r!.refs, ["W1496508106", "W1571024744", "W2024933578"]);
+  assert.deepEqual(r!.related, ["W2036021480", "W2207495067"]);
+  assert.equal(r!.recentCitations, 19487);
+  assert.equal(r!.citationTrend, "fading");
+  assert.equal(r!.field, "Computer Science");
+  // First 3 keyword names, in API order — the 4th is dropped by the cap.
+  assert.deepEqual(r!.keywords, ["Python (programming language)", "Documentation", "Computer science"]);
+  assert.equal(r!.openalexId, "W2101234009");
+  assert.equal(r!.content, "Scikit-learn is a Python module is");
+});
+
+test("papers normalizer omits the deep-research keys when the API lacks them — never invented", () => {
+  const [r] = normalizePaperResults([NATURE_WORK]);
+  for (const key of ["fwci", "refs", "related", "recentCitations", "citationTrend", "field", "keywords", "content"] as const) {
+    assert.equal(key in r!, false, `${key} should be absent`);
+  }
+  const [urlOnly] = normalizePaperResults([{ title: "t", primary_location: { landing_page_url: "https://example.org/paper" } }]);
+  assert.equal("openalexId" in urlOnly!, false);
+});
+
 test("isPaperRecord detects the flat paper keys on generic result rows", () => {
   const [r] = normalizePaperResults([NATURE_WORK]);
   assert.equal(isPaperRecord(r as SearchResult), true);
@@ -323,7 +423,9 @@ test("paper params carry the search query, per-page, the shared select= projecti
   // Lean payloads: every works-list call projects the same field list.
   assert.equal(p.get("select"), OPENALEX_SELECT);
   assert.match(OPENALEX_SELECT, /^id,doi,title,publication_year,cited_by_count,is_retracted,type,/);
-  assert.match(OPENALEX_SELECT, /open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids$/);
+  // The deep-research tail: fwci, reference/related graphs, the citation
+  // trend source, topics/keywords namespaces, and the abstract source.
+  assert.match(OPENALEX_SELECT, /open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids,fwci,referenced_works,related_works,counts_by_year,topics,keywords,abstract_inverted_index$/);
 });
 
 test("paper params carry api_key when a key resolves; mailto never appears", () => {
@@ -396,34 +498,39 @@ test("openalex error detail: non-metering statuses fall through to null", () => 
 // ── buildOpenAlexFilter — the exact filter= grammar (PIWEB-16) ────────────────
 
 test("openalex filter string: exact year, OA flag, and passthrough when empty", () => {
-  assert.equal(buildOpenAlexFilter({ year: 2023 }), "publication_year:2023");
-  assert.equal(buildOpenAlexFilter({ openAccess: true }), "is_oa:true");
-  assert.equal(buildOpenAlexFilter(undefined), "");
-  assert.equal(buildOpenAlexFilter({}), "");
+  // Retracted works are excluded by default (the reading-candidate default),
+  // so every non-walk filter list carries is_retracted:false first.
+  assert.equal(buildOpenAlexFilter({ year: 2023 }), "is_retracted:false,publication_year:2023");
+  assert.equal(buildOpenAlexFilter({ openAccess: true }), "is_retracted:false,is_oa:true");
+  assert.equal(buildOpenAlexFilter(undefined), "is_retracted:false");
+  assert.equal(buildOpenAlexFilter({}), "is_retracted:false");
+  // includeRetracted drops the clause rather than badging.
+  assert.equal(buildOpenAlexFilter({ includeRetracted: true }), "");
+  assert.equal(buildOpenAlexFilter({ includeRetracted: true, year: 2023 }), "publication_year:2023");
 });
 
 test("openalex filter string: year range splits into from/to dates, combos comma-join", () => {
   assert.equal(
     buildOpenAlexFilter({ yearRange: [2019, 2021] }),
-    "from_publication_date:2019-01-01,to_publication_date:2021-12-31",
+    "is_retracted:false,from_publication_date:2019-01-01,to_publication_date:2021-12-31",
   );
   assert.equal(
     buildOpenAlexFilter({ year: 2023, openAccess: true }),
-    "publication_year:2023,is_oa:true",
+    "is_retracted:false,publication_year:2023,is_oa:true",
   );
 });
 
 test("openalex filter string carries the walk legs in the same list — cites:W forward, cited_by:W backward", () => {
   assert.equal(
     buildOpenAlexFilter({ openAccess: true }, "W3161425918"),
-    "is_oa:true,cites:W3161425918",
+    "is_retracted:false,is_oa:true,cites:W3161425918",
   );
   // Backward: the seed's own references, resolved server-side in one call.
   assert.equal(
     buildOpenAlexFilter({ openAccess: true }, "W3161425918", "citedBy"),
-    "is_oa:true,cited_by:W3161425918",
+    "is_retracted:false,is_oa:true,cited_by:W3161425918",
   );
-  assert.equal(buildOpenAlexFilter(undefined, "W1", "citedBy"), "cited_by:W1");
+  assert.equal(buildOpenAlexFilter(undefined, "W1", "citedBy"), "is_retracted:false,cited_by:W1");
 });
 
 test("paper params carry the filter and omit search when the walk leaves it empty", () => {
@@ -456,6 +563,19 @@ test("searchPapers returns normalized paper records on the happy path", async ()
   const results = await searchPapers("CRISPR base editing", {}, depsWith({}));
   assert.equal(results.length, 2);
   assert.equal(results[0]!.doi, "10.1038/s41587-020-0561-9");
+});
+
+test("searchPapers carries the deep-research keys through the dispatch — the agent reads them off a plain search", async () => {
+  const results = await searchPapers("CRISPR base editing", {}, depsWith({
+    fetchWorks: async () => [RICH_WORK],
+  }));
+  const [r] = results;
+  // Every deep-research key survives the dispatch — nothing is lost between
+  // the normalizer and the caller's hands.
+  for (const key of ["fwci", "refs", "related", "recentCitations", "citationTrend", "field", "keywords", "openalexId"] as const) {
+    assert.notEqual(key in (r ?? {}), false, `${key} should ride through`);
+  }
+  assert.equal(r!.content, "Scikit-learn is a Python module is");
 });
 
 test("searchPapers passes the query, numResults, and signal through to the fetch", async () => {

@@ -10,7 +10,7 @@ npm run typecheck   # tsc --noEmit
 npm test            # node --test test/*.test.ts
 ```
 
-Gate for every commit: typecheck and the full suite pass. No build step — TypeScript runs directly via Node's `--test` loader.
+Gate for every commit: typecheck and the full suite pass. No build step — TypeScript runs directly via Node's `--test` loader. Wire-drift check for the papers vertical (real OpenAlex call, skipped by default, metered): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`.
 
 ## Architecture
 
@@ -44,7 +44,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 - [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the full chain, SSRF guard, body caps, timeouts, cache layout. Open before touching the fetch chain, the network guard, or the cache, or when debugging a URL that returns nothing.
 - [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path and warm-up, Exa transport, search cache, key resolution, the wizard. Open before touching a provider, routing, recency/page behavior, or config/key handling.
 - [`docs/github.md`](docs/github.md) — repo checkouts (size gate, runtime cache) and issue/PR rendering (gh-first, REST fallback, one renderer). Open before touching `github-clone.ts` or `github-issue-pr.ts`.
-- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), in-band error contract, record URL policy, the key + metering contract, citation-graph walk. Open before touching the papers vertical, scholarly search, citation traversal, or a paper row's URL choice.
+- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), the deep-research record keys, retracted-by-default, in-band error contract, record URL policy, the key + metering contract, citation-graph walk. Open before touching the papers vertical, scholarly search, citation traversal, or a paper row's URL choice.
 
 ## Conventions
 

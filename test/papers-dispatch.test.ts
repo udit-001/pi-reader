@@ -232,7 +232,7 @@ test("openalex forward walk: DOI seed resolves, then one cites:W works call", as
   }));
   assert.deepEqual(seen.map((s) => s.record ?? s.filter), [
     "doi:10.1038/s41587-020-0561-9",
-    "cites:W3161425918",
+    "is_retracted:false,cites:W3161425918",
   ]);
   assert.equal(worksCalls, 1);
   assert.equal(results.length, 1);
@@ -256,7 +256,7 @@ test("openalex backward walk is one server-side cited_by:W call — no record re
   // OR-cap math, no chunking anywhere.
   assert.equal(recordCalls, 0);
   assert.equal(worksCalls, 1);
-  assert.deepEqual(filters, ["cited_by:W3161425918"]);
+  assert.deepEqual(filters, ["is_retracted:false,cited_by:W3161425918"]);
   assert.equal(results.length, 1);
 });
 
@@ -272,7 +272,7 @@ test("backward walk with a DOI seed: one record fetch resolves the W-id, then on
   }));
   assert.equal(recordCalls, 1);
   assert.equal(worksCalls, 1);
-  assert.equal(filter, "publication_year:2020,is_oa:true,cited_by:W3161425918");
+  assert.equal(filter, "is_retracted:false,publication_year:2020,is_oa:true,cited_by:W3161425918");
 });
 
 test("openalex walk rejects PMID/PMCID seeds naming the concrete identifier and the europepmc retry", async () => {

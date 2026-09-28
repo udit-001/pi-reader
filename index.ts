@@ -33,7 +33,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
-import { isPaperRecord, PaperError } from "./search/paper-backend.ts";
+import { isPaperRecord, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -72,10 +72,14 @@ const providerSchema = Type.Optional(
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
         "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
-        "is a citeable record — year, venue, citation count, open-access URL, and DOI " +
-        "ride on the standard title/url/snippet, with retracted flag, primary topic " +
-        "(discipline), and work type as extra flat keys; honors query, numResults, index, and " +
-        "filters (year/OA, citedBy sort, citation walks, identifier lookup).",
+        "is a citeable record — year, venue, citation count (raw + field-normalized fwci), " +
+        "open-access URL, DOI, truncated abstract, and the paper's reference/related-work " +
+        "W-id lists (overlap across rows to surface shared foundations) ride on the " +
+        "standard title/url/snippet, with retracted flag, topic + field, keywords, work " +
+        "type, and a citation-trend label as extra flat keys; retracted works are " +
+        "excluded by default (filters.includeRetracted to include). Honors query, " +
+        "numResults, index, and filters (year/OA, citedBy sort, citation walks, " +
+        "identifier lookup).",
     },
   ),
 );
@@ -102,6 +106,9 @@ const paperFiltersSchema = Type.Optional(
       })),
       openAccess: Type.Optional(Type.Boolean({
         description: "Restrict to open-access-readable results.",
+      })),
+      includeRetracted: Type.Optional(Type.Boolean({
+        description: "Papers provider only: include retracted works. They are excluded by default on OpenAlex (server-side) — a retraction disqualifies the work as a reading candidate; when included, the retracted key marks them. Europe PMC has no equivalent filter.",
       })),
       sort: Type.Optional(Type.Union([Type.Literal("citedBy")], {
         description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
@@ -350,7 +357,23 @@ export default function piWeb(pi: ExtensionAPI): void {
         });
 
         const pageLabel = params.page && params.page > 1 ? ` · page ${params.page}` : "";
-        const lines = [`Provider: ${response.provider}${pageLabel}`, "", response.answer, "", "Results:"];
+        const lines = [`Provider: ${response.provider}${pageLabel}`];
+        // Papers envelope: in-band field glossary + audit trail. Data-gated —
+        // a note only fires when the resultset actually carries the feature,
+        // so Europe PMC pages don't read a glossary for keys they never have.
+        if (response.provider === "papers") {
+          const rows = response.results as PaperRecord[];
+          if (rows.some((r) => r.fwci !== undefined)) {
+            lines.push(`fwci = citations ÷ field-typical (1.0 = expected for the paper's topic+year+type; raw Cited by = absolute reach, fwci = breakout against its own cohort).`);
+          }
+          if (rows.some((r) => r.refs?.length)) {
+            lines.push(`Refs/Related are bare OpenAlex W-ids (refs capped at 40): overlap two rows' W-id sets locally to surface shared foundations; resolve unknown ids with filters.lookup.`);
+          }
+          if (params.filters?.includeRetracted !== true) {
+            lines.push("Retracted works excluded by default (filters.includeRetracted=true to include them).");
+          }
+        }
+        lines.push("", response.answer, "", "Results:");
         for (let i = 0; i < response.results.length; i++) {
           const r = response.results[i]!;
           const hasContent = typeof r.content === "string" && r.content;
@@ -362,14 +385,21 @@ export default function piWeb(pi: ExtensionAPI): void {
             const meta: string[] = [];
             if (r.year !== undefined) meta.push(`Year: ${r.year}`);
             if (r.venue) meta.push(`Venue: ${r.venue}`);
-            if (r.citedBy !== undefined) meta.push(`Cited by: ${r.citedBy}`);
+            if (r.citedBy !== undefined) meta.push(r.fwci !== undefined ? `Cited by: ${r.citedBy} (fwci ${r.fwci} field-normalized)` : `Cited by: ${r.citedBy}`);
             if (r.doi) meta.push(`DOI: ${r.doi}`);
             if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
             if (r.retracted === true) meta.push("Retracted: yes");
             if (r.type) meta.push(`Type: ${r.type}`);
             if (r.topic) meta.push(`Topic: ${r.topic}`);
+            if (r.field) meta.push(`Field: ${r.field}`);
             if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
             if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
+            if (r.keywords?.length) lines.push(`   Keywords: ${r.keywords.join(", ")}`);
+            if (r.recentCitations !== undefined) lines.push(`   Recent citations (last 3 complete years): ${r.recentCitations}${r.citationTrend ? ` (${r.citationTrend})` : ""}`);
+            // The correlation atom, in-band: bare W-ids the agent can overlap
+            // across rows and resolve via filters.lookup.
+            if (r.refs?.length) lines.push(`   Refs (W-ids): ${r.refs.join(", ")}`);
+            if (r.related?.length) lines.push(`   Related (W-ids): ${r.related.join(", ")}`);
           }
           if (hasContent) lines.push(`   ${r.content!.replace(/\s+/g, " ").trim().slice(0, 400)}`);
         }
@@ -396,6 +426,15 @@ export default function piWeb(pi: ExtensionAPI): void {
                   ...(r.type ? { type: r.type } : {}),
                   ...(r.topic ? { topic: r.topic } : {}),
                   ...(r.authors?.length ? { authors: r.authors } : {}),
+                  ...(r.fwci !== undefined ? { fwci: r.fwci } : {}),
+                  ...(r.refs?.length ? { refs: r.refs } : {}),
+                  ...(r.related?.length ? { related: r.related } : {}),
+                  ...(r.openalexId ? { openalexId: r.openalexId } : {}),
+                  ...(r.field ? { field: r.field } : {}),
+                  ...(r.keywords?.length ? { keywords: r.keywords } : {}),
+                  ...(r.recentCitations !== undefined ? { recentCitations: r.recentCitations } : {}),
+                  ...(r.citationTrend ? { citationTrend: r.citationTrend } : {}),
+                  ...(r.content ? { abstract: r.content } : {}),
                 }
                 : {}),
               ...(typeof r.content === "string" && r.content ? { contentLength: r.content.length } : {}),

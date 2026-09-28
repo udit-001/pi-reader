@@ -41,7 +41,40 @@ export interface PaperRecord extends SearchResult {
   /** Work type — article, book chapter, dataset, preprint, …. Absent when
    *  the API doesn't provide the field; never invented. */
   type?: string;
+  /** Field-weighted citation impact — citations ÷ the median for the
+ *  work's topic, publication year, and type (1.0 = exactly
+ *  field-typical, 2.0 = twice; OpenAlex's definition). Reads beside
+ *  `citedBy`: citedBy is absolute reach, fwci is breakout against the
+ *  work's own cohort — raw counts mislead across fields, fwci doesn't.
+ *  OpenAlex only. */
+  fwci?: number;
+  /** The work's references as bare OpenAlex W-ids, capped at 40 — the
+ *  correlation atom: overlap the sets across two rows and shared
+ *  foundations surface with zero extra calls. OpenAlex only. */
+  refs?: string[];
+  /** Algorithmically related works as bare OpenAlex W-ids, capped at 10 —
+ *  a free expansion pool beyond citations. OpenAlex only. */
+  related?: string[];
+  /** Citations accumulated over the last 3 complete publication years. */
+  recentCitations?: number;
+  /** The citation trajectory over those years — "rising" means the work
+ *  is still being picked up, "fading" that the citation flow has moved
+ *  on. */
+  citationTrend?: "rising" | "steady" | "fading";
+  /** The topic hierarchy's field-level name (26 fields, e.g. "Computer
+ *  Science") — the granularity a resultset cluster check runs at. */
+  field?: string;
+  /** Up to 3 keyword display names — literal topic tokens for
+ *  presenting. */
+  keywords?: string[];
+  /** Bare OpenAlex W-id — the seed vocabulary for citation walks and the
+ *  graph math on refs/related; never surfaced in the snippet. */
+  openalexId?: string;
 }
+// The work's abstract rides the inherited `content` key (truncated to
+// ~300 chars by the OpenAlex normalizer) — the on-topic judgment is the
+// one thing tokens can't carry, and content is already rendered by the
+// entry's body-preview branch.
 
 /** Structural probe: does this result carry the flat paper keys? Used by the
  *  entry to render paper fields on generic SearchResult rows. Pure; exported
@@ -49,6 +82,8 @@ export interface PaperRecord extends SearchResult {
 export function isPaperRecord(r: SearchResult): r is PaperRecord {
   return "year" in r || "venue" in r || "citedBy" in r || "oaUrl" in r || "doi" in r
     || "retracted" in r || "topic" in r || "type" in r
+    || "fwci" in r || "refs" in r || "related" in r || "field" in r
+    || "openalexId" in r || "keywords" in r || "citationTrend" in r
     || Array.isArray((r as PaperRecord).authors);
 }
 
@@ -172,6 +207,12 @@ export interface PaperFilters {
  *  walks forward — works citing the seed; "citedBy" walks backward — the
  *  seed's own references. The walk replaces the free-text query. */
   citationGraph?: PaperCitationGraph;
+  /** Retracted works: excluded by default on OpenAlex (server-side
+ *  `is_retracted:false`), because a retraction disqualifies the work as a
+ *  reading candidate. Set true to include them — the `retracted` key
+ *  marks them in-band when present. Europe PMC carries no equivalent
+ *  filter; its retracted rows come through badged, not excluded. */
+  includeRetracted?: boolean;
 }
 
 export interface PaperCitationGraph {
@@ -244,6 +285,7 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.yearRange?.[1] ?? "",
     f.openAccess === true ? "y" : "",
     f.sort ?? "",
+    f.includeRetracted === true ? "y" : "",
     f.lookup ?? "",
     f.citationGraph?.seed ?? "",
     f.citationGraph?.direction ?? "",

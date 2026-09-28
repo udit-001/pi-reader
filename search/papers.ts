@@ -52,7 +52,7 @@ export const PAPER_INDEXES: readonly PaperIndexName[] = ["openalex", "europepmc"
  *  waste. Verified live: nested keys (open_access, primary_topic, …)
  *  project fine. The DOI-seed record fetch is a free singleton and stays
  *  unprojected. Pure; exported. */
-export const OPENALEX_SELECT = "id,doi,title,publication_year,cited_by_count,is_retracted,type,open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids";
+export const OPENALEX_SELECT = "id,doi,title,publication_year,cited_by_count,is_retracted,type,open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids,fwci,referenced_works,related_works,counts_by_year,topics,keywords,abstract_inverted_index";
 
 export interface OpenAlexWork {
   /** OpenAlex ID, e.g. "https://openalex.org/W3161425918". */
@@ -80,10 +80,81 @@ export interface OpenAlexWork {
  *  the PMC/DOAJ/repo copies are not, and they are what fetches cleanly. */
   locations?: Array<{ landing_page_url?: string | null } | null> | null;
   authorships?: Array<{ author?: { display_name?: string } | null }>;
+  /** Field-weighted citation impact — 1.0 = exactly field-typical for the
+ *  work's topic+year+type cohort. Absent when the index doesn't know. */
+  fwci?: number;
+  /** The work's own bibliography as OpenAlex work URLs ("https://openalex
+ *  .org/W…"). Big papers carry hundreds — the normalizer caps what it
+ *  keeps. */
+  referenced_works?: string[] | null;
+  related_works?: string[] | null;
+  /** Per-year citation counts — the recency label reads the last three
+ *  complete years off it, not all of it. */
+  counts_by_year?: Array<{ year: number; cited_by_count: number }> | null;
+  topics?: Array<{
+    display_name?: string | null;
+    score?: number | null;
+    field?: { display_name?: string | null } | null;
+  }> | null;
+  keywords?: Array<{ display_name?: string | null }> | null;
+  /** Token-position encoding of the abstract — the normalizer rebuilds the
+ *  plaintext and truncates. Absent/null tolerated (works without abstracts
+ *  are common). */
+  abstract_inverted_index?: Record<string, number[]> | null;
   [key: string]: unknown;
 }
 
-// ── Pure seams (OpenAlex): DOI parse, URL choice, OA URL choice ──────────────
+// ── Pure seams (OpenAlex): DOI parse, URL choice, OA URL choice ──────────
+
+/** Keep at most the first `cap` entries of a W-id list, tolerating absent —
+ *  the wire carries URL forms ("https://openalex.org/W…"), the record keeps
+ *  bare ids. Pure; exported for tests. */
+export function capIds(ids: string[] | null | undefined, cap: number): string[] | undefined {
+  if (!Array.isArray(ids)) return undefined;
+  const out: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== "string" || !id) continue;
+    out.push(id.replace(/^https?:\/\/openalex\.org\//, ""));
+    if (out.length >= cap) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** The citation trajectory over the last three complete publication years
+ *  (never the current year — it is always partial and reads as a crash).
+ *  Counts only within the paper's own window. Returns {recent, trend}: rising
+ *  when the newest year outscores the previous, fading when it underscores by
+ *  half or more, steady otherwise. Needs ≥ 2 known years. Pure; exported. */
+export function citationTrend(counts: Array<{ year: number; cited_by_count: number }> | null | undefined, now = new Date().getUTCFullYear()): { recent: number | undefined; trend: "rising" | "steady" | "fading" | undefined } {
+  if (!Array.isArray(counts) || counts.length === 0) return { recent: undefined, trend: undefined };
+  const byYear = new Map(counts.map((c) => [c.year, c.cited_by_count]));
+  const y1 = now - 1, y2 = now - 2, y3 = now - 3;
+  if (!byYear.has(y1) || !byYear.has(y2)) return { recent: undefined, trend: undefined };
+  const a = byYear.get(y1)!, b = byYear.get(y2)!, c = byYear.get(y3);
+  const recent = a + b + (c ?? 0);
+  const trend = a > b ? "rising" : b >= 2 * a ? "fading" : "steady";
+  return { recent, trend };
+}
+
+/** Abstract: rebuild plaintext from OpenAlex's token-position inverted index
+ *  (word → positions), then truncate to 300 chars. Absent/empty → undefined
+ *  — never invented. Pure; exported for tests. */
+export function abstractFromInvertedIndex(idx: Record<string, number[]> | null | undefined): string | undefined {
+  if (idx === null || typeof idx !== "object") return undefined;
+  const slots: Array<string | undefined> = [];
+  for (const [word, positions] of Object.entries(idx)) {
+    if (!Array.isArray(positions)) continue;
+    for (const p of positions) {
+      if (typeof p === "number" && p >= 0 && Number.isInteger(p)) {
+        while (slots.length <= p) slots.push(undefined);
+        slots[p] = word;
+      }
+    }
+  }
+  const text = slots.filter((w): w is string => w !== undefined).join(" ").trim();
+  if (!text) return undefined;
+  return text.length > 300 ? `${text.slice(0, 297)}…` : text;
+}
 
 /** OpenAlex carries the DOI as an https URL ("https://doi.org/10.1038/…");
  *  agents expect the bare identifier ("10.1038/…"). Works without a DOI come
@@ -134,9 +205,14 @@ export function chooseOaUrl(w: OpenAlexWork): string | null {
  *  display names, venue←primary_location.source.display_name,
  *  citedBy←cited_by_count, oaUrl←chooseOaUrl (absent when closed), doi←
  *  parseDoi, url←chooseRecordUrl, retracted←is_retracted, topic←
- *  primary_topic.display_name, type←type — the enrichment keys absent-
- *  tolerant, never invented. Works with no record URL are dropped — no
- *  url, no action. Pure; exported for tests. */
+ *  primary_topic.display_name, type←type — plus the deep-research keys:
+ *  fwci←fwci, refs←referenced_works (capped 40), related←related_works
+ *  (capped 10), openalexId←id, field←topics[0].field, keywords←the first 3
+ *  keyword names, recentCitations/citationTrend←counts_by_year's last three
+ *  complete years, content←abstract rebuilt from the inverted index and
+ *  truncated to ~300 chars. Enrichment keys absent-tolerant, never
+ *  invented. Works with no record URL are dropped — no url, no action.
+ *  Pure; exported for tests. */
 export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
   const records: PaperRecord[] = [];
   for (const w of works) {
@@ -173,6 +249,25 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
     if (typeof w.type === "string" && w.type) rec.type = w.type;
     const topic = w.primary_topic?.display_name;
     if (typeof topic === "string" && topic) rec.topic = topic;
+    if (typeof w.fwci === "number" && Number.isFinite(w.fwci)) rec.fwci = w.fwci;
+    const refs = capIds(w.referenced_works, 40);
+    if (refs) rec.refs = refs;
+    const related = capIds(w.related_works, 10);
+    if (related) rec.related = related;
+    const { recent, trend } = citationTrend(w.counts_by_year);
+    if (recent !== undefined) rec.recentCitations = recent;
+    if (trend !== undefined) rec.citationTrend = trend;
+    const field = w.topics?.[0]?.field?.display_name;
+    if (typeof field === "string" && field) rec.field = field;
+    const keywords = (w.keywords ?? [])
+      .map((k) => k?.display_name)
+      .filter((n): n is string => typeof n === "string")
+      .slice(0, 3);
+    if (keywords.length > 0) rec.keywords = keywords;
+    const wId = bareOpenAlexId(w.id ?? "");
+    if (/^W\d+$/.test(wId)) rec.openalexId = wId;
+    const abstract = abstractFromInvertedIndex(w.abstract_inverted_index);
+    if (abstract) rec.content = abstract;
     records.push(rec);
   }
   return records;
@@ -188,6 +283,9 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
  *  live). Pure; exported. */
 export function buildOpenAlexFilter(filters?: PaperFilters, leg?: string, direction: "cites" | "citedBy" = "cites"): string {
   const parts: string[] = [];
+  // Retracted works default to server-side exclusion (the reading-candidate
+  // default); includeRetracted drops the clause rather than badging.
+  if (filters?.includeRetracted !== true) parts.push("is_retracted:false");
   if (filters?.year !== undefined) parts.push(`publication_year:${filters.year}`);
   if (filters?.yearRange) {
     parts.push(`from_publication_date:${filters.yearRange[0]}-01-01`);
