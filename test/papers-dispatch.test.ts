@@ -129,6 +129,36 @@ test("searchPapers falls back to OpenAlex on an unknown index value — never Eu
   assert.equal(openalexCalled, 1);
 });
 
+// ── the index's own match count on the page (PIWEB-39) ──────────────────────
+// The envelope prints how many rows of how many matches it is showing, so the
+// count has to survive both adapters' wire shapes.
+
+test("the works adapter carries OpenAlex's own match count onto the page", async () => {
+  const page = await searchPapers("CRISPR", {}, depsWith({
+    openalex: { fetchWorks: async () => ({ works: [OPENALEX_WORK], total: 2148 }) },
+  }));
+  assert.equal(page.total, 2148);
+  assert.equal(page.results.length, 1);
+});
+
+test("the biomedical adapter carries hitCount from its search onto the page", async () => {
+  const search = await searchPapers("malaria", { index: "europepmc" }, depsWith({
+    europepmc: {
+      fetchResults: async () => ({ hitCount: 291321, resultList: { result: [EPMC_RESULT] } }) as EuropePmcResponse,
+    },
+  }));
+  assert.equal(search.total, 291321);
+});
+
+test("the biomedical adapter carries hitCount from a citation walk onto the page", async () => {
+  const walk = await searchPapers("", { index: "europepmc", numResults: 2, filters: { citationGraph: { seed: "32581362" } } }, depsWith({
+    europepmc: {
+      fetchRoute: async () => ({ hitCount: 59, referenceList: { reference: [REF(1), REF(2)] } }),
+    },
+  }));
+  assert.equal(walk.total, 59);
+});
+
 // ── Europe PMC enumeration (PIWEB-33): offset walks, cursor search ───────────
 // The two surfaces are declared honestly rather than unified: the walk
 // endpoints are true offset paging, the search endpoint is cursor-only and

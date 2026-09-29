@@ -76,6 +76,20 @@ test("live: a genuinely rejected expression surfaces the API's own complaint", {
   );
 });
 
+test("live: each backend reports the match count behind its page", { skip: !live }, async () => {
+  // The envelope prints "showing N of M" off this number, so a renamed wire
+  // field (OpenAlex `meta.count`, Europe PMC `hitCount`) would silently drop it
+  // everywhere at once. A broad query is the guard: the index matches far more
+  // than one page carries.
+  const oa = await searchPapers("malaria", { numResults: 3 });
+  assert.equal(typeof oa.total, "number", "OpenAlex meta.count stopped arriving");
+  assert.ok(oa.total! > oa.results.length, `expected a count above one page, got ${oa.total} for ${oa.results.length} rows`);
+
+  const epmc = await searchPapers("malaria", { index: "europepmc", numResults: 3 });
+  assert.equal(typeof epmc.total, "number", "Europe PMC hitCount stopped arriving");
+  assert.ok(epmc.total! > epmc.results.length, `expected a count above one page, got ${epmc.total} for ${epmc.results.length} rows`);
+});
+
 test("live: a paper already identified comes back as a clause on each adapter", { skip: !live }, async () => {
   // The retired `filters.lookup` mode; its replacement is the identifier
   // constraint, so this is the wire guard for both spellings. The DOI is the
@@ -84,6 +98,13 @@ test("live: a paper already identified comes back as a clause on each adapter", 
   const oa = await searchPapers("", { numResults: 5, filters: { expression: "doi:10.1038/nature12373" } });
   assert.equal(oa.results.length, 1, "the identifier clause did not anchor exactly one work");
   assert.equal(oa.results[0]!.doi, "10.1038/nature12373", "the anchored work's DOI drifted");
+
+  // The other clause form the description names — `doi:` and `ids.pmid:` are
+  // the two identifier spellings OpenAlex accepts (it has no `ids.pmcid:`: a
+  // PMCID filter matches nothing, which is why the description does not name it).
+  const pmid = await searchPapers("", { numResults: 5, filters: { expression: "ids.pmid:22955618" } });
+  assert.equal(pmid.results.length, 1, "the ids.pmid: clause did not anchor exactly one work");
+  assert.equal(pmid.results[0]!.doi, "10.1038/nature11212", "the PMID anchored the wrong work");
 
   const epmc = await searchPapers('DOI:"10.1038/nature12373"', { index: "europepmc", numResults: 5 });
   assert.equal(epmc.results.length, 1, "Europe PMC's identifier query did not anchor exactly one record");

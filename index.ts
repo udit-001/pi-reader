@@ -35,8 +35,15 @@ import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { isPaperRecord, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
-import { EXPRESSION_PARAM_DESCRIPTION } from "./search/papers.ts";
+import { EXPRESSION_PARAM_DESCRIPTION, OPENALEX_CITATION_EDGES } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
+
+/** The citation-edge vocabulary as agent-facing prose, composed from the one
+ *  list that holds it so the description and the in-band note cannot drift from
+ *  the tokens the adapter forwards (PIWEB-31). */
+const CITATION_EDGE_PROSE = OPENALEX_CITATION_EDGES
+  .map((e) => `'${e.token}:W…' (${e.meaning})`)
+  .join(" / ");
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -73,18 +80,17 @@ const providerSchema = Type.Optional(
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
-        "• 'papers' — scholarly literature ('find papers on X'): citeable records. On " +
-        "the works adapter every work carries its authority signals — author " +
-        "institutions (type, country, ROR id), venue type, reference count — beside " +
-        "year, venue, citation count (raw and field-normalized fwci), open-access URL, " +
-        "DOI, truncated abstract, and the work's reference/related W-id lists to " +
-        "overlap across rows. Reach for filters.expression when a constraint has no " +
-        "named filter, or when one paper is already identified — doi:10.… or " +
-        "ids.pmid:…, which needs none of the traversal machinery; " +
-        "filters.citationGraph when the top hits miss the topic or the " +
-        "years, or you want the foundations under a hit; filters.sort: 'citedBy' when " +
-        "the ordering that matters is citations rather than relevance; and " +
-        "filters.cursor to enumerate a large set past page one.",
+        "• 'papers' — scholarly literature: citeable records for a literature pass. " +
+        "Find on a topic: the free-text query, and the default. Walk citations from a " +
+        "paper you already hold: filters.citationGraph, or filters.expression " +
+        `${CITATION_EDGE_PROSE} on the ` +
+        "works adapter — for when the top hits missed the topic or the years, or you " +
+        "want the foundations under a hit. Look up one known paper: the identifier as " +
+        "a constraint (filters.expression 'doi:…' / 'ids.pmid:…', or inside query on " +
+        "Europe PMC), which needs none of the traversal machinery. Enumerate a " +
+        "reference or citation list to its end: filters.cursor on a search, page on a " +
+        "Europe PMC walk. Rank a topic by citations rather than relevance: " +
+        "filters.sort: 'citedBy'.",
     },
   ),
 );
@@ -369,7 +375,15 @@ export default function piWeb(pi: ExtensionAPI): void {
         });
 
         const pageLabel = params.page && params.page > 1 ? ` · page ${params.page}` : "";
-        const lines = [`Provider: ${response.provider}${pageLabel}`];
+        // The index's own count, printed only when it exceeds the rows: a page
+        // that is the whole set needs no count (the rows are it), while a short
+        // one is legible as a page rather than as the whole literature. The
+        // number is the index's, post-filter — a server-side exclusion never
+        // shows up here as a gap.
+        const totalLabel = response.total !== undefined && response.total > response.results.length
+          ? ` · showing ${response.results.length} of ${response.total.toLocaleString("en-US")}`
+          : "";
+        const lines = [`Provider: ${response.provider}${pageLabel}${totalLabel}`];
         // Papers envelope: in-band field glossary + audit trail. Data-gated —
         // a note only fires when the resultset actually carries the feature,
         // so Europe PMC pages don't read a glossary for keys they never have.
@@ -379,7 +393,7 @@ export default function piWeb(pi: ExtensionAPI): void {
             lines.push(`fwci = citations ÷ field-typical (1.0 = expected for the paper's topic+year+type; raw Cited by = absolute reach, fwci = breakout against its own cohort).`);
           }
           if (rows.some((r) => r.refs?.length)) {
-            lines.push(`Refs/Related are bare OpenAlex W-ids (refs capped at 40): overlap two rows' W-id sets locally to surface shared foundations; resolve unknown ids by identifier in filters.expression (doi:10.… or ids.pmid:…).`);
+            lines.push(`Refs/Related are bare OpenAlex W-ids (refs capped at 40); any of them seeds a citation query — filters.expression: ${CITATION_EDGE_PROSE}.`);
           }
           if (params.filters?.includeRetracted !== true) {
             lines.push("Retracted works excluded by default (filters.includeRetracted=true to include them).");
@@ -422,8 +436,8 @@ export default function piWeb(pi: ExtensionAPI): void {
             }
             if (r.keywords?.length) lines.push(`   Keywords: ${r.keywords.join(", ")}`);
             if (r.recentCitations !== undefined) lines.push(`   Recent citations (last 3 complete years): ${r.recentCitations}${r.citationTrend ? ` (${r.citationTrend})` : ""}`);
-            // The correlation atom, in-band: bare W-ids the agent can overlap
-            // across rows and resolve by identifier in filters.expression.
+            // The correlation atom, in-band: bare W-ids, each a seed for a
+            // citation query in filters.expression.
             if (r.refs?.length) lines.push(`   Refs (W-ids): ${r.refs.join(", ")}`);
             if (r.related?.length) lines.push(`   Related (W-ids): ${r.related.join(", ")}`);
           }

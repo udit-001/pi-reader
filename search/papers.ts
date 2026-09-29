@@ -707,7 +707,8 @@ function openAlexBackendDown(err: unknown, keyed: boolean): PaperError {
 /** Injectable seams so the adapter is testable without network. */
 export interface OpenAlexDeps {
   /** Fetch the works endpoint with these params; return its results array
-   *  together with the pagination cursor the response carried. */
+   *  together with the pagination cursor and match count the response
+   *  carried. */
   fetchWorks: (params: URLSearchParams, signal?: AbortSignal) => Promise<OpenAlexWorksPage>;
   /** Fetch a single work record by lookup ("doi:10.…" or "W…"); null when
    *  the record is absent. Used by the citation walk's seed resolution and
@@ -719,12 +720,16 @@ export interface OpenAlexDeps {
 }
 
 /** A works-list response: the page's records plus `meta.next_cursor` when the
- *  index has more rows to hand out. Exported so test stubs speak the same
- *  shape the default deps produce. */
+ *  index has more rows to hand out, and `meta.count` — the index's own match
+ *  count for the query. Exported so test stubs speak the same shape the
+ *  default deps produce. */
 export interface OpenAlexWorksPage {
   works: OpenAlexWork[];
   /** null/absent when the result set is exhausted. */
   nextCursor?: string | null;
+  /** The index's match count, post-filter. Absent when the wire carried no
+   *  usable number. */
+  total?: number;
 }
 
 async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
@@ -769,10 +774,12 @@ export const defaultOpenAlexDeps: OpenAlexDeps = {
     if (!Array.isArray(results)) {
       throw new Error("OpenAlex response has no results array");
     }
-    const next = (body as { meta?: { next_cursor?: unknown } }).meta?.next_cursor;
+    const meta = (body as { meta?: { next_cursor?: unknown; count?: unknown } }).meta;
+    const next = meta?.next_cursor;
     return {
       works: results as OpenAlexWork[],
       nextCursor: typeof next === "string" && next !== "" ? next : undefined,
+      total: typeof meta?.count === "number" ? meta.count : undefined,
     };
   },
 };
@@ -844,17 +851,19 @@ async function fetchOpenAlexWorks(
 ): Promise<PaperPage> {
   let results: PaperRecord[];
   let nextCursor: string | undefined;
+  let total: number | undefined;
   try {
     const page = await deps.fetchWorks(params, options.signal);
     results = normalizePaperResults(page.works);
     nextCursor = page.nextCursor ?? undefined;
+    total = page.total;
   } catch (err) {
     throw openAlexBackendDown(err, keyed);
   }
   if (results.length === 0) {
     throw new PaperError(paperError("no-results", "openalex"));
   }
-  return paperPage(results, n, nextCursor);
+  return paperPage(results, n, { nextCursor, total });
 }
 
 /** The OpenAlex backend call: params → one page of records plus the cursor for

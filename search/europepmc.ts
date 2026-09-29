@@ -387,7 +387,7 @@ async function searchEuropePmcWalk(
   if (records.length === 0) {
     throw new PaperError(paperError("no-results", "europepmc"));
   }
-  return paperPage(records, n);
+  return paperPage(records, n, { total: body.hitCount });
 }
 
 /** Europe PMC search failure classification, shared by the search and lookup
@@ -463,7 +463,10 @@ export async function searchEuropePmc(
   // request opened or continued an enumeration. Attaching it always would
   // print a Next cursor line on every ordinary search and, because a
   // cursor-bearing response is never cached, quietly cost the search cache.
-  return paperPage(results, n, options.filters?.cursor !== undefined ? body.nextCursorMark : undefined);
+  return paperPage(results, n, {
+    nextCursor: options.filters?.cursor !== undefined ? body.nextCursorMark : undefined,
+    total: body.hitCount,
+  });
 }
 
 /** The index name this adapter serves — attached to the adapter's export so

@@ -75,6 +75,11 @@ export interface SearchResponse {
    *  OpenAlex). Present only when the backend has more rows; the agent passes
    *  it back to fetch the next page — the interface never follows it itself. */
   nextCursor?: string;
+  /** How many results the provider reported for this request, when it reports
+   *  one (papers). Absent everywhere else — the web engines return a page and
+   *  no count. The entry prints it beside the rows so a short page is legible
+   *  as a page rather than as the whole set. */
+  total?: number;
 }
 
 // ── SearchProvider seam ──────────────────────────────────────────────────────
@@ -136,6 +141,7 @@ const papersProvider: SearchProvider = {
       results: page.results,
       provider: "papers",
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      ...(page.total !== undefined ? { total: page.total } : {}),
     };
   },
 };
@@ -212,6 +218,10 @@ interface CachedSearch {
   query: string;
   provider: string;
   results: SearchResult[];
+  /** The index's own match count, when the provider reported one. Cached with
+   *  the rows because a hit that dropped it would render the same page without
+   *  its "showing N of M" — two identical calls must answer identically. */
+  total?: number;
   timestamp: number;
 }
 
@@ -295,7 +305,12 @@ export async function webSearch(
     const cacheKey = searchCacheKey(query, options);
     const cached = readSearchCache(cacheKey);
     if (cached) {
-      return { answer: buildAnswer(cached.results), results: cached.results, provider: cached.provider as SearchProviderName };
+      return {
+        answer: buildAnswer(cached.results),
+        results: cached.results,
+        provider: cached.provider as SearchProviderName,
+        ...(cached.total !== undefined ? { total: cached.total } : {}),
+      };
     }
   }
 
@@ -336,6 +351,7 @@ export async function webSearch(
       query,
       provider: response.provider,
       results: response.results,
+      total: response.total,
       timestamp: Date.now(),
     });
   }

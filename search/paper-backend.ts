@@ -125,26 +125,44 @@ export const DEFAULT_PAGE_SIZE = 10;
 
 // ── PaperPage — the papers module's return contract ──────────────────────────
 
-/** One page of a papers call: the records plus the cursor for the next page
- *  when the adapter serves one. Returned instead of a bare array so the page
- *  boundary is part of the interface — the entry renders the cursor so the
- *  agent can pass it back, and no adapter has to smuggle it out of band. */
+/** One page of a papers call: the records, the cursor for the next page
+ *  when the adapter serves one, and the index's own match count when it
+ *  reported one. Returned instead of a bare array so the page boundary and
+ *  the size of the set behind it are part of the interface — the entry
+ *  renders both, and no adapter has to smuggle either out of band. */
 export interface PaperPage {
   results: PaperRecord[];
   /** Opaque cursor for the next page; absent when the result set is
    *  exhausted or the adapter has no cursor. */
   nextCursor?: string;
+  /** How many works the adapter reported matching this request. It is the
+   *  adapter's own number rather than a recount of what the caller's filters
+   *  left: a server-side filter (the retraction default) is already applied to
+   *  it, while one an adapter binds post-fetch — the Europe PMC walk's year
+   *  window — is not. Absent when the adapter reported none. */
+  total?: number;
+}
+
+/** Everything the shared page assembler needs beyond the rows themselves:
+ *  the next-page handle and the index's count, either of which a given
+ *  adapter may not have to give. */
+export interface PaperPageMeta {
+  nextCursor?: string | null;
+  total?: number;
 }
 
 /** One page of results: the records sliced to the caller's page size, plus
- *  the adapter's own handle for the next page when it served one. Both
- *  backends return their page through this, so the page boundary is part of
- *  the module's contract rather than a per-adapter detail. An empty or absent
- *  handle leaves `nextCursor` off the page — never an empty string. Pure;
- *  exported for tests. */
-export function paperPage(results: PaperRecord[], limit: number, nextCursor?: string | null): PaperPage {
+ *  the adapter's own handle for the next page and match count when it served
+ *  them. Both backends return their page through this, so the page boundary
+ *  and the set size are part of the module's contract rather than a
+ *  per-adapter detail. An empty or absent handle leaves `nextCursor` off the
+ *  page — never an empty string; a count that is not a finite number leaves
+ *  `total` off — never a NaN. Pure; exported for tests. */
+export function paperPage(results: PaperRecord[], limit: number, meta: PaperPageMeta = {}): PaperPage {
   const page: PaperPage = { results: results.slice(0, limit) };
+  const { nextCursor, total } = meta;
   if (typeof nextCursor === "string" && nextCursor !== "") page.nextCursor = nextCursor;
+  if (typeof total === "number" && Number.isFinite(total)) page.total = total;
   return page;
 }
 
@@ -247,9 +265,11 @@ export interface PaperFilters {
   /** Restrict to open-access-readable results. */
   openAccess?: boolean;
   /** Sort results by descending citation count instead of relevance
-   *  ("highly cited" asks). OpenAlex sorts server-side; Europe PMC has no
-   *  sort field on its search endpoint, so it sorts post-fetch on the page
-   *  it already fetched — a top-N over one page, not the whole index. */
+   *  ("highly cited" asks). OpenAlex sorts server-side; Europe PMC's search
+   *  endpoint sorts its whole index on request too, which the adapter does not
+   *  ask for yet, so it sorts post-fetch on the page it already fetched — a
+   *  top-N over one page, not the whole index (server-side sorting is
+   *  PIWEB-38). */
   sort?: "citedBy";
   /** Opaque cursor for the OpenAlex works endpoint — the `meta.next_cursor`
    *  one call hands back, passed unmodified to the next to enumerate a
@@ -317,11 +337,12 @@ export function parsePaperSeed(seed: string): PaperSeed | null {
 }
 
 /** Sort results by descending citation count when filters ask (the
- *  "citedBy" sort). OpenAlex sorts server-side; this post-fetch form is
- *  Europe PMC's approximation — it has no sort field on its search
- *  endpoint, so the ordering covers the fetched page, not the index.
- *  Records without a count keep their order (stable sort) rather than
- *  being dropped. Pure; exported for tests. */
+ *  "citedBy" sort). OpenAlex sorts server-side; Europe PMC's search endpoint
+ *  sorts its whole index on request too, which the adapter does not ask for
+ *  yet, so this post-fetch form covers the fetched page, not the index — a
+ *  top-N of one page (server-side sorting is PIWEB-38). Records without a
+ *  count keep their order (stable sort) rather than being dropped. Pure;
+ *  exported for tests. */
 export function applySort(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
   if (filters?.sort !== "citedBy") return records;
   return records.toSorted((a, b) => (b.citedBy ?? -1) - (a.citedBy ?? -1));

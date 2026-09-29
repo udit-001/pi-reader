@@ -313,11 +313,23 @@ test("paperPage slices to the page size and rides the handle only when it is a n
   ];
   assert.deepEqual(paperPage(rows, 2).results.map((r) => r.title), ["a", "b"]);
   assert.equal("nextCursor" in paperPage(rows, 2), false);
-  assert.equal(paperPage(rows, 2, "CURSOR-2").nextCursor, "CURSOR-2");
+  assert.equal(paperPage(rows, 2, { nextCursor: "CURSOR-2" }).nextCursor, "CURSOR-2");
   // An exhausted or absent handle never becomes an empty-string cursor the
   // agent would pass back.
-  assert.equal("nextCursor" in paperPage(rows, 2, null), false);
-  assert.equal("nextCursor" in paperPage(rows, 2, ""), false);
+  assert.equal("nextCursor" in paperPage(rows, 2, { nextCursor: null }), false);
+  assert.equal("nextCursor" in paperPage(rows, 2, { nextCursor: "" }), false);
+});
+
+// The index's own match count — the number the envelope compares the rows
+// against, and which the entry prints so the agent can see the shortfall.
+test("paperPage carries the index's match count when the adapter reported one, and never invents it", () => {
+  const rows = [{ title: "a", url: "u", snippet: "" }];
+  assert.equal(paperPage(rows, 10, { total: 2148 }).total, 2148);
+  assert.equal("total" in paperPage(rows, 10, {}), false);
+  assert.equal("total" in paperPage(rows, 10), false);
+  // A count is a number the wire sent or it is absent — a non-number is not
+  // a count, and rendering it would print "NaN of undefined".
+  assert.equal("total" in paperPage(rows, 10, { total: Number.NaN }), false);
 });
 
 // The shared builder directly (same module Europe PMC renders through):
