@@ -76,6 +76,20 @@ test("live: a genuinely rejected expression surfaces the API's own complaint", {
   );
 });
 
+test("live: a paper already identified comes back as a clause on each adapter", { skip: !live }, async () => {
+  // The retired `filters.lookup` mode; its replacement is the identifier
+  // constraint, so this is the wire guard for both spellings. The DOI is the
+  // anchor: a work whose identifier form the API stops accepting returns an
+  // empty page here instead of failing anywhere else.
+  const oa = await searchPapers("", { numResults: 5, filters: { expression: "doi:10.1038/nature12373" } });
+  assert.equal(oa.results.length, 1, "the identifier clause did not anchor exactly one work");
+  assert.equal(oa.results[0]!.doi, "10.1038/nature12373", "the anchored work's DOI drifted");
+
+  const epmc = await searchPapers('DOI:"10.1038/nature12373"', { index: "europepmc", numResults: 5 });
+  assert.equal(epmc.results.length, 1, "Europe PMC's identifier query did not anchor exactly one record");
+  assert.equal(epmc.results[0]!.doi, "10.1038/nature12373", "Europe PMC's anchored record drifted");
+});
+
 test("live: a multi-seed expression returns rows in one request", { skip: !live }, async () => {
   // The pipe is the API's own or-operator, so expanding two seeds is one
   // request rather than a loop the interface runs (verified live 2026-09-30:

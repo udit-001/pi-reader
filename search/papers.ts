@@ -35,7 +35,7 @@ import {
   type PaperPage,
   type PaperRecord,
 } from "./paper-backend.ts";
-import { searchEuropePmc, searchEuropePmcLookup, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
+import { searchEuropePmc, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
 import { loadConfig } from "../config.ts";
 
 const TIMEOUT_MS = 25_000;
@@ -428,9 +428,10 @@ export const EXPRESSION_PARAM_DESCRIPTION =
   "Citation edges: " +
   OPENALEX_CITATION_EDGES.map((e) => `${e.token}:W… (${e.meaning})`).join(" and ") +
   ", and a pipe or-lists them across papers in one request (cites:W1|W2). " +
+  "One work from an identifier you already hold is a clause as well — doi:10.1038/… or ids.pmid:22955618 — and needs none of the traversal machinery. " +
   "Fold year, openAccess and citationGraph into the expression. " +
   "A field beyond these families still rides through — the API lists every field it accepts in the error it returns for an unknown one (https://api.openalex.org/works?filter=unknown:1). " +
-  "Works adapter only; Europe PMC declines the syntax in band and names what it serves instead.";
+  "Works adapter only; Europe PMC declines the syntax in band, naming the identifier form its own query accepts (DOI:\"…\", EXT_ID:…, PMCID:…).";
 
 /** Split a filter expression on its own clause separator (a comma, except
  *  inside a quoted value). Null when the text is not a filter expression:
@@ -885,60 +886,18 @@ async function searchOpenAlex(
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
-/** The identifier lookup: resolve ONE paper from a parsePaperSeed form (DOI
- *  or doi.org link, PMID, PMCID, Europe PMC/NCBI article URL, OpenAlex W-id)
- *  into a single citeable record. The identifier picks the backend — DOI
- *  and W-ids are OpenAlex's vocabulary, PMID/PMCID are Europe PMC's — so
- *  `index` is ignored here, and the other filters don't apply (a lookup
- *  retrieves, it doesn't constrain). One OpenAlex wire form: /works/{doi}
- *  and /works/{W-id} are the same record endpoint (verified live), the
- *  same call the backward walk's DOI seed already makes. */
-export async function searchPaperLookup(
-  seed: string,
-  options: SearchOptions = {},
-  deps: { openalex?: OpenAlexDeps; europepmc?: EuropePmcDeps } = {},
-): Promise<PaperPage> {
-  const parsed = parsePaperSeed(seed);
-  if (parsed === null) {
-    throw new PaperError(paperError("malformed", "openalex",
-      `not a paper identifier: "${seed}" — use a DOI, PMID, PMCID, Europe PMC/NCBI article URL, or OpenAlex W-id`));
-  }
-  if (parsed.kind === "pmid" || parsed.kind === "pmcid") {
-    return { results: await searchEuropePmcLookup(parsed, options, deps.europepmc ?? defaultEuropePmcDeps) };
-  }
-  const lookup = parsed.kind === "openalex" ? bareOpenAlexId(parsed.value) : `doi:${parsed.value}`;
-  const oaDeps = deps.openalex ?? defaultOpenAlexDeps;
-  const key = (oaDeps.resolveKey ?? readOpenAlexKey)();
-  let rec: OpenAlexWork | null;
-  try {
-    rec = await oaDeps.fetchRecord(lookup, options.signal, key);
-  } catch (err) {
-    throw openAlexBackendDown(err, key !== null);
-  }
-  if (rec === null) {
-    throw new PaperError(paperError("no-results", "openalex", `"${seed}" matched no OpenAlex record`));
-  }
-  return { results: normalizePaperResults([rec]) };
-}
-
 /** Search the papers vertical. `index` selects the backend ("openalex"
  *  default, "europepmc" for biomedical full text). Throws PaperError whose
  *  message IS the in-band error text — named backend, retry hint, status
- *  distinction — so the entry passes it through verbatim. */
+ *  distinction — so the entry passes it through verbatim. One shape for every
+ *  call: a free-text query, constrained by `filters.expression` where the
+ *  adapter accepts it, or turned into a citation traversal by
+ *  `filters.citationGraph`. */
 export async function searchPapers(
   query: string,
   options: SearchOptions = {},
   deps: { openalex?: OpenAlexDeps; europepmc?: EuropePmcDeps } = {},
 ): Promise<PaperPage> {
-  // Lookup rides the same seam as search — one filters bag, three modes
-  // (search / walk / lookup), dispatched here at the one fork point.
-  if (options.filters?.lookup !== undefined) {
-    if (options.filters.citationGraph !== undefined) {
-      throw new PaperError(paperError("malformed", "openalex",
-        "filters.lookup and filters.citationGraph are mutually exclusive — one intent per call"));
-    }
-    return searchPaperLookup(options.filters.lookup, options, deps);
-  }
   const requested = (options.index ?? "openalex") as PaperIndexName;
   const index = PAPER_INDEXES.includes(requested)
     ? requested

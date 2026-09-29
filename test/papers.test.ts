@@ -901,6 +901,9 @@ test("selecting Europe PMC with an expression declines in band, naming the adapt
       const m = (err as Error).message;
       assert.match(m, /Europe PMC rejected the query as malformed/);
       assert.match(m, /write the constraint into the query/);
+      // The retired lookup's destination on this adapter is named too.
+      assert.match(m, /DOI:"10\.…"/);
+      assert.match(m, /EXT_ID:22955618/);
       assert.match(m, /index: "openalex"/);
       return true;
     },

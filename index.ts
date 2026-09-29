@@ -79,9 +79,10 @@ const providerSchema = Type.Optional(
         "year, venue, citation count (raw and field-normalized fwci), open-access URL, " +
         "DOI, truncated abstract, and the work's reference/related W-id lists to " +
         "overlap across rows. Reach for filters.expression when a constraint has no " +
-        "named filter; filters.citationGraph when the top hits miss the topic or the " +
-        "years, or you want the foundations under a hit; filters.lookup when you " +
-        "already hold a DOI, PMID, PMCID or OpenAlex W-id; filters.sort: 'citedBy' when " +
+        "named filter, or when one paper is already identified — doi:10.… or " +
+        "ids.pmid:…, which needs none of the traversal machinery; " +
+        "filters.citationGraph when the top hits miss the topic or the " +
+        "years, or you want the foundations under a hit; filters.sort: 'citedBy' when " +
         "the ordering that matters is citations rather than relevance; and " +
         "filters.cursor to enumerate a large set past page one.",
     },
@@ -122,9 +123,6 @@ const paperFiltersSchema = Type.Optional(
       })),
       expression: Type.Optional(Type.String({
         description: EXPRESSION_PARAM_DESCRIPTION,
-      })),
-      lookup: Type.Optional(Type.String({
-        description: "Look up ONE paper by identifier instead of searching — a DOI (10.… or doi.org link), PMID, PMCID, an NLM/Europe PMC article URL, or an OpenAlex W-id; anything a papers row or a user-pasted link provides. Returns that paper's citeable record and needs none of the search or traversal machinery: the identifier picks the backend (index is ignored, no query needed, other filters don't apply). Mutually exclusive with citationGraph.",
       })),
       citationGraph: Type.Optional(
         Type.Object(
@@ -381,7 +379,7 @@ export default function piWeb(pi: ExtensionAPI): void {
             lines.push(`fwci = citations ÷ field-typical (1.0 = expected for the paper's topic+year+type; raw Cited by = absolute reach, fwci = breakout against its own cohort).`);
           }
           if (rows.some((r) => r.refs?.length)) {
-            lines.push(`Refs/Related are bare OpenAlex W-ids (refs capped at 40): overlap two rows' W-id sets locally to surface shared foundations; resolve unknown ids with filters.lookup.`);
+            lines.push(`Refs/Related are bare OpenAlex W-ids (refs capped at 40): overlap two rows' W-id sets locally to surface shared foundations; resolve unknown ids by identifier in filters.expression (doi:10.… or ids.pmid:…).`);
           }
           if (params.filters?.includeRetracted !== true) {
             lines.push("Retracted works excluded by default (filters.includeRetracted=true to include them).");
@@ -425,7 +423,7 @@ export default function piWeb(pi: ExtensionAPI): void {
             if (r.keywords?.length) lines.push(`   Keywords: ${r.keywords.join(", ")}`);
             if (r.recentCitations !== undefined) lines.push(`   Recent citations (last 3 complete years): ${r.recentCitations}${r.citationTrend ? ` (${r.citationTrend})` : ""}`);
             // The correlation atom, in-band: bare W-ids the agent can overlap
-            // across rows and resolve via filters.lookup.
+            // across rows and resolve by identifier in filters.expression.
             if (r.refs?.length) lines.push(`   Refs (W-ids): ${r.refs.join(", ")}`);
             if (r.related?.length) lines.push(`   Related (W-ids): ${r.related.join(", ")}`);
           }

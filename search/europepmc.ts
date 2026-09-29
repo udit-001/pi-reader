@@ -404,38 +404,6 @@ export function classifyEuropePmcFailure(err: unknown): PaperBackendStatus {
     : "backend-down";
 }
 
-/** The lookup query for a Europe PMC identifier: PMID rides EXT_ID + SRC,
- *  PMCID has a dedicated field, DOI is quoted (verified live: all three
- *  return exactly the anchored record). Pure; exported for tests. */
-export function buildEuropePmcLookupQuery(seed: PaperSeed): string {
-  if (seed.kind === "pmid") return `EXT_ID:${seed.value} AND SRC:MED`;
-  if (seed.kind === "pmcid") return `PMCID:${seed.value}`;
-  return `DOI:"${seed.value}"`;
-}
-
-/** Look up ONE paper by a Europe PMC-vocabulary identifier (PMID, PMCID, DOI)
- *  — one search call, first hit normalized into the citeable record. Throws
- *  PaperError shaped by paperError(), passed through verbatim. */
-export async function searchEuropePmcLookup(
-  seed: PaperSeed,
-  options: SearchOptions = {},
-  deps: EuropePmcDeps = defaultEuropePmcDeps,
-): Promise<PaperRecord[]> {
-  const params = buildEuropePmcParams(buildEuropePmcLookupQuery(seed), 1);
-  let body: EuropePmcResponse;
-  try {
-    body = await deps.fetchResults(params, options.signal);
-  } catch (err) {
-    if (err instanceof PaperError) throw err;
-    throw new PaperError(paperError(classifyEuropePmcFailure(err), "europepmc", err instanceof Error ? err.message : String(err)));
-  }
-  const records = normalizeEuropePmcResults(body.resultList?.result ?? []);
-  if (records.length === 0) {
-    throw new PaperError(paperError("no-results", "europepmc", `identifier matched no Europe PMC record`));
-  }
-  return records.slice(0, 1);
-}
-
 /** Search the papers vertical's Europe PMC backend. Throws PaperError whose
  *  message IS the in-band error text — named backend, retry hint, status
  *  distinction — so the entry passes it through verbatim. Returns a page:
@@ -446,14 +414,14 @@ export async function searchEuropePmc(
   options: SearchOptions = {},
   deps: EuropePmcDeps = defaultEuropePmcDeps,
 ): Promise<PaperPage> {
-  // The expression door is OpenAlex's filter language — this adapter cannot
-  // read it. Ignoring it would drop the agent's constraints silently, so the
-  // adapter declines and names where the constraint goes instead: the retry
-  // `index` below is the door, and Europe PMC's own query language is the
-  // in-query form.
+  // The expression door is the works adapter's filter language — this adapter
+  // cannot read it. Ignoring it would drop the agent's constraints silently,
+  // so the adapter declines and names where each constraint goes instead:
+  // Europe PMC's own query language, with the identifier form spelled out
+  // because that is where a single-record lookup retires to here.
   if (options.filters?.expression !== undefined) {
     throw new PaperError(paperError("malformed", "europepmc",
-      "filters.expression is OpenAlex's filter list — write the constraint into the query instead, e.g. PUB_YEAR:\"2020\", OPEN_ACCESS:y, SRC:MED"));
+      "filters.expression is OpenAlex's filter list — write the constraint into the query instead, e.g. PUB_YEAR:\"2020\", OPEN_ACCESS:y, SRC:MED; an identifier goes there too, e.g. DOI:\"10.…\", EXT_ID:22955618, PMCID:PMC…"));
   }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const graph = options.filters?.citationGraph;

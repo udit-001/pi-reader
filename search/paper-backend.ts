@@ -260,24 +260,22 @@ export interface PaperFilters {
   /** The agent's own OpenAlex filter list, in the API's grammar — the
    *  `filters.expression` schema description in index.ts is the operator and
    *  family reference. This is the way to any constraint the dedicated filters
-   *  do not carry, and to a citation query across several papers in one request
-   *  (`cites:W1|W2|W3`). It IS the filter list, so
+   *  do not carry, to a citation query across several papers in one request
+   *  (`cites:W1|W2|W3`), and to a single work by identifier (`doi:10.…`,
+   *  `ids.pmid:…`). It IS the filter list, so
    *  `year`/`yearRange`/`openAccess`/`citationGraph` passed beside it are
    *  refused in band with the destination named — never appended into a silent
    *  intersect. The retraction clause is the one clause the plugin adds itself.
    *  OpenAlex only — Europe PMC's query language is different and it declines
-   *  this in band. */
+   *  this in band, naming the identifier form its own query accepts. */
   expression?: string;
-  /** Look up ONE paper by identifier instead of searching — a parsePaperSeed
-   *  form: DOI (10.… or a doi.org link), PMID, PMCID, a Europe PMC/NCBI
-   *  article URL, or an OpenAlex W-id. The identifier picks the backend,
-   *  so `index` is ignored, and the other filters don't apply (a lookup
-   *  retrieves, it doesn't constrain). Mutually exclusive with
-   *  citationGraph — one intent per call. */
-  lookup?: string;
-  /** Turn the search into a graph walk from a seed paper: "cites" (default)
- *  walks forward — works citing the seed; "citedBy" walks backward — the
- *  seed's own references. The walk replaces the free-text query. */
+  /** Citation traversal: "cites" (default) — works that cite the paper;
+   *  "citedBy" — the paper's own references. It replaces the free-text query.
+   *  Each adapter serves it its own way: the works adapter composes
+   *  `cites:`/`cited_by:` into the filter expression it sends, the biomedical
+   *  adapter through its /citations and /references endpoints, because the
+   *  expression is declined there and its query language has no citation
+   *  operator to offer instead. */
   citationGraph?: PaperCitationGraph;
   /** Retracted works: excluded by default on both backends through each
    *  adapter's own server-side filter — OpenAlex's `is_retracted:false`,
@@ -361,7 +359,6 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.cursor ?? "",
     f.expression ?? "",
     f.includeRetracted === true ? "y" : "",
-    f.lookup ?? "",
     f.citationGraph?.seed ?? "",
     f.citationGraph?.direction ?? "",
   ];

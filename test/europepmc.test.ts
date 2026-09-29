@@ -15,18 +15,16 @@ import {
   normalizeEuropePmcResults,
   buildEuropePmcParams,
   buildEuropePmcFilterQuery,
-  buildEuropePmcLookupQuery,
   isRetractedPubType,
   mergeRetractionClause,
   RETRACTION_EXCLUSION_CLAUSE,
   EUROPEPMC_PAGE_SIZE_MAX,
-  searchEuropePmcLookup,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
   type EuropePmcResponse,
 } from "../search/europepmc.ts";
-import { PaperError, parsePaperSeed } from "../search/paper-backend.ts";
+import { PaperError } from "../search/paper-backend.ts";
 
 // ── Fixtures — trimmed live capture (2026-09-25) ─────────────────────────────
 
@@ -242,34 +240,30 @@ test("parsePubYear reads both entry shapes, invents nothing", () => {
 
 // ── buildEuropePmcFilterQuery — filters ride inside the query string ──────────
 
-// Lookup query plan: one identifier, one record (verified live forms).
-test("europepmc lookup query per identifier kind: PMID, PMCID, DOI", () => {
-  assert.equal(buildEuropePmcLookupQuery(parsePaperSeed("23812562")!), "EXT_ID:23812562 AND SRC:MED");
-  assert.equal(buildEuropePmcLookupQuery(parsePaperSeed("PMC4544277")!), "PMCID:PMC4544277");
-  assert.equal(
-    buildEuropePmcLookupQuery(parsePaperSeed("10.1007/s10286-013-0206-x")!),
-    'DOI:"10.1007/s10286-013-0206-x"',
-  );
-});
-
-test("searchEuropePmcLookup normalizes the anchored record; empty result is the no-results error", async () => {
+// The retired lookup's replacement on this adapter: an identifier is a clause
+// in Europe PMC's own query language, reached through the free-text query —
+// verified live on all three forms (2026-09-30): DOI:"10.1038/nature12373" and
+// EXT_ID:22955618 each return exactly the anchored record, PMCID:PMC4544277 too.
+test("an identifier constraint rides the query language of this adapter — one call, the anchored record", async () => {
   const fetched: string[] = [];
-  const results = await searchEuropePmcLookup(parsePaperSeed("PMC4544277")!, {}, {
+  const deps = depsWith({
     fetchResults: async (params) => {
       fetched.push(params.get("query") ?? "");
       return { hitCount: 1, resultList: { result: [PUBMED_REC] } } as EuropePmcResponse;
     },
-    fetchRoute: async () => { throw new Error("must not be called"); },
   });
-  assert.deepEqual(fetched, ["PMCID:PMC4544277"]);
+  const { results } = await searchEuropePmc("EXT_ID:23812562 AND SRC:MED", {}, deps);
+  assert.deepEqual(fetched, [`EXT_ID:23812562 AND SRC:MED AND ${RETRACTION_EXCLUSION_CLAUSE}`]);
   assert.equal(results.length, 1);
+  assert.equal(results[0]!.doi, "10.1038/s41551-026-01747-y");
+});
 
+test("an identifier matching nothing is the no-results error, not a malformed one", async () => {
   await assert.rejects(
-    searchEuropePmcLookup(parsePaperSeed("10.9999/nope")!, {}, {
+    searchEuropePmc('DOI:"10.9999/nope"', {}, depsWith({
       fetchResults: async () => ({ hitCount: 0, resultList: { result: [] } } as EuropePmcResponse),
-      fetchRoute: async () => { throw new Error("must not be called"); },
-    }),
-    (err: PaperError) => /matched no Europe PMC record/.test(err.message),
+    })),
+    (err: PaperError) => /returned no results/.test(err.message),
   );
 });
 
