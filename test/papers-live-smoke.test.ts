@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { searchPapers } from "../search/papers.ts";
+import { searchPapers, OPENALEX_FILTER_FAMILIES, OPENALEX_CITATION_EDGES, OPENALEX_FILTER_PROBE } from "../search/papers.ts";
 
 const live = process.env.PIWEB_LIVE_SMOKE === "1";
 
@@ -90,6 +90,33 @@ test("live: a multi-seed expression returns rows in one request", { skip: !live 
       assert.notEqual(row[key], undefined, `expression result missing ${key}`);
     }
   }
+});
+
+test("live: every filter field the description names is one the API still accepts", { skip: !live }, async () => {
+  // The description names a family per field; the API's own catalogue is the
+  // source of truth for all 214 it accepts, and the description points at that
+  // catalogue rather than copying it. A renamed field would silently narrow
+  // what the agent can ask for — this is where that drift fails.
+  const res = await fetch("https://api.openalex.org/works?filter=unknown:1&per-page=1");
+  const body = (await res.json()) as { message?: string };
+  const tail = (body.message ?? "").split("versions of: ")[1] ?? "";
+  const catalogue = new Set(tail.split(", ").map((f) => f.trim()));
+  assert.ok(catalogue.size > 100, `the API's catalogue did not arrive — got ${catalogue.size} fields`);
+  for (const { family, field } of OPENALEX_FILTER_FAMILIES) {
+    assert.ok(catalogue.has(field), `family ${family} names ${field}, which the API no longer accepts`);
+  }
+  for (const { token } of OPENALEX_CITATION_EDGES) {
+    assert.ok(catalogue.has(token), `citation edge ${token} is no longer a filter field`);
+  }
+});
+
+test("live: every filter operator the grammar names is one the API still accepts", { skip: !live }, async () => {
+  // The probe exercises every operator in OPENALEX_FILTER_GRAMMAR; a dropped
+  // operator or a renamed field makes the API 400 here instead of silently
+  // narrowing what the agent can write. The unit test pins the probe against
+  // the grammar; this pins it against the wire.
+  const { results } = await searchPapers("", { numResults: 3, filters: { expression: OPENALEX_FILTER_PROBE } });
+  assert.ok(results.length > 0, "the operator probe returned nothing — an operator or field drifted");
 });
 
 test("live: a cursor enumerates a result set past one page with no duplicates", { skip: !live }, async () => {

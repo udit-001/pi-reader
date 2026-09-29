@@ -49,7 +49,7 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 ## Conventions
 
 - **Imports:** `.ts` extensions everywhere (`import { x } from "./foo.ts"`). NodeNext resolution.
-- **Schemas:** Typebox (`Type.Object`, `Type.Union`, `Type.Literal`) — tool params are Typebox, not zod. Schema descriptions in `index.ts` are the single param reference (the README carries none) — change a param's behavior and its description in the same commit.
+- **Schemas:** Typebox (`Type.Object`, `Type.Union`, `Type.Literal`) — tool params are Typebox, not zod. Schema descriptions in `index.ts` are the single param reference (the README carries none) — change a param's behavior and its description in the same commit. The papers filter-expression description is composed from `EXPRESSION_PARAM_DESCRIPTION` in `search/papers.ts`, beside the merge rule it describes, so the operator and family vocabulary the description names is the same list the tests assert the adapter forwards.
 - **Errors:** tool `execute()` returns errors in band: try/catch → `{ content: [{ type: "text", text: <actionable hint> }] }`, so the agent always gets a recovery path instead of a throw.
 - **Exa issues:** adapters call `noteExaIssue()` on rate-limit or missing-key; the entry calls `consumeExaIssue()` once in `finally` — the hint fires once per tool call, not per provider attempt.
 - **Tests:** `node:test` + `node:assert/strict`, one `test()` per behavior, fixtures in-line. Test the parse seam, not the HTTP layer.

@@ -366,6 +366,72 @@ export function buildOpenAlexFilter(filters?: PaperFilters, leg?: string, direct
  *  clause, merged into the agent's expression by default. */
 export const OPENALEX_RETRACTION_CLAUSE = "is_retracted:false";
 
+/** The filter grammar, operator by operator — one entry per operator the
+ *  works API accepts, each reading as `<token> <meaning>`. The description
+ *  below and the decline message are both built from this list, so the
+ *  operator vocabulary the agent reads in the schema and again on failure is
+ *  one list (PIWEB-31). */
+export const OPENALEX_FILTER_GRAMMAR: ReadonlyArray<{ token: string; meaning: string }> = [
+  { token: ":", meaning: "binds any field to a value" },
+  { token: ",", meaning: "joins clauses as AND" },
+  { token: "|", meaning: "or-lists values within one clause" },
+  { token: "!", meaning: "negates one value" },
+  { token: ">", meaning: "compares a numeric or date field" },
+  { token: "<", meaning: "compares a numeric or date field" },
+  { token: ".search", meaning: "stems a text field" },
+  { token: ".search.exact", meaning: "matches a text field literally, where * and ? wildcard" },
+];
+
+/** An expression that exercises every operator in the grammar above — the unit
+ *  test pins that it names each token, and the live check pins that the API
+ *  still accepts the lot, so a renamed or dropped operator fails there rather
+ *  than silently narrowing what the agent can write. */
+export const OPENALEX_FILTER_PROBE =
+  "publication_year:>2019,publication_year:<2100,type:article|preprint,type:!book,title.search:crispr,title.search.exact:crispr*";
+
+/** The field families the description names, each with one field the works API
+ *  accepts today. The live smoke check asserts every field is still in the
+ *  API's own catalogue, so a renamed field fails there instead of silently
+ *  narrowing what the agent can ask for. */
+export const OPENALEX_FILTER_FAMILIES: ReadonlyArray<{ family: string; field: string }> = [
+  { family: "impact", field: "fwci" },
+  { family: "author", field: "raw_author_name.search" },
+  { family: "institution", field: "authorships.institutions.type" },
+  { family: "venue", field: "primary_location.source.id" },
+  { family: "type", field: "type" },
+  { family: "topic", field: "primary_topic.id" },
+  { family: "language", field: "language" },
+  { family: "funder", field: "awards.funder_id" },
+];
+
+/** The citation edges in the API's own spelling — the vocabulary the
+ *  description names, so the interface's invented "seed"/"walk" terms do not
+ *  reach the agent. */
+export const OPENALEX_CITATION_EDGES: ReadonlyArray<{ token: string; meaning: string }> = [
+  { token: "cites", meaning: "works that cite W" },
+  { token: "cited_by", meaning: "W's own references" },
+];
+
+/** The `filters.expression` schema description, built from the grammar above —
+ *  the one always-loaded place the agent learns the filter vocabulary. The
+ *  exhaustive field catalogue is deliberately absent: the API names every
+ *  accepted field in the complaint it returns for an unknown one, and the
+ *  families here cover the constraints research actually reaches for. It lives
+ *  beside the merge rule it describes; the entry imports it. */
+export const EXPRESSION_PARAM_DESCRIPTION =
+  "Papers provider only: OpenAlex's own filter grammar, for constraints the named filters cannot say. " +
+  "A clause is field:value. Operators: " +
+  OPENALEX_FILTER_GRAMMAR.map((g) => `${g.token} ${g.meaning}`).join("; ") + ". " +
+  "For example type:article|preprint, fwci:>10, publication_year:<2000, title.search:crispr, type:!article. " +
+  "The families, each with an accepted field: " +
+  OPENALEX_FILTER_FAMILIES.map((f) => `${f.family} (${f.field})`).join(", ") + ". " +
+  "Citation edges: " +
+  OPENALEX_CITATION_EDGES.map((e) => `${e.token}:W… (${e.meaning})`).join(" and ") +
+  ", and a pipe or-lists them across papers in one request (cites:W1|W2). " +
+  "Fold year, openAccess and citationGraph into the expression. " +
+  "A field beyond these families still rides through — the API lists every field it accepts in the error it returns for an unknown one (https://api.openalex.org/works?filter=unknown:1). " +
+  "Works adapter only; Europe PMC declines the syntax in band and names what it serves instead.";
+
 /** Split a filter expression on its own clause separator (a comma, except
  *  inside a quoted value). Null when the text is not a filter expression:
  *  every clause must read `field:value`, with a field name that carries no
@@ -436,7 +502,7 @@ function expressionDecline(expression: string): string {
   const grouping = /\bgroup\s+by\b/i.test(expression)
     ? " This tool returns works, not counts by group."
     : "";
-  return `${diagnosis}. Commas are AND, a pipe is OR within one field, ! negates, > and < compare. Only the filter form excludes retracted works by default.${grouping}`;
+  return `${diagnosis}. Operators: ${OPENALEX_FILTER_GRAMMAR.map((g) => `${g.token} ${g.meaning}`).join("; ")}. Only the filter form excludes retracted works by default.${grouping}`;
 }
 
 /** Resolve the agent's expression into the wire `filter=` value. The

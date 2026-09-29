@@ -15,7 +15,11 @@ import {
   normalizePaperResults,
   buildPaperParams,
   buildOpenAlexFilter,
+  buildOpenAlexExpressionFilter,
   mergeRetractionClause,
+  OPENALEX_FILTER_GRAMMAR,
+  OPENALEX_FILTER_FAMILIES,
+  OPENALEX_FILTER_PROBE,
   OPENALEX_SELECT,
   resolveOpenAlexKey,
   openAlexErrorDetail,
@@ -678,6 +682,36 @@ test("a quoted value may carry the clause separator without splitting the clause
     mergeRetractionClause('title.search:"cancer, and its causes"'),
     'title.search:"cancer, and its causes",is_retracted:false',
   );
+});
+
+// ── The named set and the accepted set (PIWEB-31) ────────────────────────────
+// The grammar lists are what the description is built from, and the probe
+// exercises every operator in them. These tests pin that the adapter forwards
+// that whole vocabulary unchanged; papers-live-smoke pins that the API accepts
+// it. The field catalogue is deliberately absent from the description — the
+// API's own catalogue is the source of truth there.
+
+test("the operator probe exercises every operator the grammar declares, and the adapter forwards it", () => {
+  for (const { token } of OPENALEX_FILTER_GRAMMAR) {
+    assert.ok(
+      OPENALEX_FILTER_PROBE.includes(token),
+      `the probe does not exercise ${token} — a new operator could ride in unnamed`,
+    );
+  }
+  assert.equal(
+    buildOpenAlexExpressionFilter({ expression: OPENALEX_FILTER_PROBE }),
+    `${OPENALEX_FILTER_PROBE},is_retracted:false`,
+  );
+});
+
+test("every family field the description names is forwarded, not rewritten or rejected", () => {
+  for (const { family, field } of OPENALEX_FILTER_FAMILIES) {
+    assert.equal(
+      buildOpenAlexExpressionFilter({ expression: `${field}:x` }),
+      `${field}:x,is_retracted:false`,
+      `${family} (${field}) was rewritten or rejected`,
+    );
+  }
 });
 
 // ── searchPapers — deps flow, slicing, error shaping ──────────────────────────

@@ -35,6 +35,7 @@ import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { isPaperRecord, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
+import { EXPRESSION_PARAM_DESCRIPTION } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -72,16 +73,17 @@ const providerSchema = Type.Optional(
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
-        "• 'papers' — scholarly literature ('find papers on X', citation walks): each hit " +
-        "is a citeable record — year, venue, citation count (raw + field-normalized fwci), " +
-        "open-access URL, DOI, truncated abstract, and the paper's reference/related-work " +
-        "W-id lists (overlap across rows to surface shared foundations) ride on the " +
-        "standard title/url/snippet, with retracted flag, topic + field, keywords, work " +
-        "type, author institutions (type, country, ROR id), venue type, reference " +
-        "count, and a citation-trend label as extra flat keys; retracted works are " +
-        "excluded by default (filters.includeRetracted to include). Honors query, " +
-        "numResults, index, and filters (year/OA, citedBy sort, citation walks, " +
-        "identifier lookup, cursor enumeration, your own filter expression).",
+        "• 'papers' — scholarly literature ('find papers on X'): citeable records. On " +
+        "the works adapter every work carries its authority signals — author " +
+        "institutions (type, country, ROR id), venue type, reference count — beside " +
+        "year, venue, citation count (raw and field-normalized fwci), open-access URL, " +
+        "DOI, truncated abstract, and the work's reference/related W-id lists to " +
+        "overlap across rows. Reach for filters.expression when a constraint has no " +
+        "named filter; filters.citationGraph when the top hits miss the topic or the " +
+        "years, or you want the foundations under a hit; filters.lookup when you " +
+        "already hold a DOI, PMID, PMCID or OpenAlex W-id; filters.sort: 'citedBy' when " +
+        "the ordering that matters is citations rather than relevance; and " +
+        "filters.cursor to enumerate a large set past page one.",
     },
   ),
 );
@@ -116,46 +118,45 @@ const paperFiltersSchema = Type.Optional(
         description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
       })),
       cursor: Type.Optional(Type.String({
-        description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; a Europe PMC citation walk is offset-paged instead, so pass `page` there. One call fetches one page: the cursor is never followed automatically.",
+        description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; Europe PMC's /references and /citations lists are offset-paged instead, so pass `page` there. One call fetches one page: the cursor is never followed automatically.",
       })),
       expression: Type.Optional(Type.String({
-        description: "Papers provider only: OpenAlex's own filter list, written by you — 'publication_year:2020,is_oa:true,type:article'; commas are AND, a pipe is OR within one field, ! negates, > and < compare. Reach for it for any constraint the named filters lack — impact (fwci:>10), author, institution, venue, type, topic, language — and for multi-seed expansion in one request (cites:W1|W2). It replaces the filter list: write year, openAccess and the walk leg into it rather than passing them separately. OpenAlex only; Europe PMC declines it in band.",
+        description: EXPRESSION_PARAM_DESCRIPTION,
       })),
       lookup: Type.Optional(Type.String({
-        description: "Look up ONE paper by identifier instead of searching — a DOI (10.… or doi.org link), PMID, PMCID, an NLM/Europe PMC article URL, or an OpenAlex W-id; anything a papers row or a user-pasted link provides. Returns that paper's citeable record; the identifier picks the backend (index is ignored, no query needed, other filters don't apply). Mutually exclusive with citationGraph.",
+        description: "Look up ONE paper by identifier instead of searching — a DOI (10.… or doi.org link), PMID, PMCID, an NLM/Europe PMC article URL, or an OpenAlex W-id; anything a papers row or a user-pasted link provides. Returns that paper's citeable record and needs none of the search or traversal machinery: the identifier picks the backend (index is ignored, no query needed, other filters don't apply). Mutually exclusive with citationGraph.",
       })),
       citationGraph: Type.Optional(
         Type.Object(
           {
             seed: Type.String({
-              description: "The paper the walk starts from — a DOI (10.…), PMID, PMCID, or OpenAlex W-id; anything a prior papers row handed you.",
+              description: "The paper the citation edges start from — a DOI (10.…), PMID, PMCID, or OpenAlex W-id; anything a prior papers row handed you.",
             }),
             direction: Type.Optional(Type.Union(
               [Type.Literal("cites"), Type.Literal("citedBy")],
               {
                 description:
-                  "'cites' (default) — forward walk: works citing the seed. 'citedBy' — " +
-                  "backward walk: the seed's references. openalex combines year/openAccess " +
-                  "filters server-side; europepmc walks them through its /citations and " +
-                  "/references endpoints (its approximation — year binds there, openAccess " +
-                  "is dropped on walks).",
+                  "'cites' (default) — `cites:W…`: works that cite this paper. 'citedBy' — " +
+                  "`cited_by:W…`: this paper's own references. The works adapter composes " +
+                  "year/openAccess server-side; Europe PMC serves the same edges through its " +
+                  "/citations and /references endpoints, where year binds post-fetch and " +
+                  "openAccess is dropped.",
               },
             )),
           },
           {
             description:
-              "Turn one paper into a citation-graph walk; replaces the free-text query " +
-              "(query may be empty when this drives the search).",
+              "Traverse from one paper — `cites:` for the works citing it, `cited_by:` " +
+              "for its references; replaces the free-text query (query may be empty when " +
+              "this drives the search).",
           },
         ),
       ),
     },
     {
       description:
-        "Papers provider only: constrain the search (year window, open access, " +
-        "citation ranking), walk the citation graph from a seed paper, look " +
-        "up one paper by identifier, or enumerate a result set with a cursor. " +
-        "Other providers ignore it.",
+        "Papers provider only: extra controls on a papers search. Other providers " +
+        "ignore it — each field is read only by the adapter that can serve it.",
     },
   ),
 );
@@ -203,7 +204,7 @@ const webSearchParams = Type.Object({
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and the Europe PMC citation walk, whose entries are offset-paged. Every other provider ignores it: papers enumeration pages by cursor instead (filters.cursor), and Europe PMC's search declines `page` in band because its own paging ignores it too.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and Europe PMC's /references and /citations lists, whose entries are offset-paged. Every other provider ignores it: papers enumeration pages by cursor instead (filters.cursor), and Europe PMC's search declines `page` in band because its own paging ignores it too.",
   })),
   recency: recencySchema,
   license: licenseSchema,

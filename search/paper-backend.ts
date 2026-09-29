@@ -257,16 +257,14 @@ export interface PaperFilters {
    *  adapters decline it in band). One call is one request: the interface
    *  never follows the cursor itself. */
   cursor?: string;
-  /** The agent's own OpenAlex filter list, in the API's grammar
-   *  (`attribute:value,attribute2:value2`; a comma is AND, a pipe is OR
-   *  within one field, `!` negates, `>`/`<` compare). This is the way to any
-   *  constraint the dedicated filters do not carry — impact, author,
-   *  institution, venue, type, topic, language — and to a citation walk
-   *  across several seeds in one request (`cites:W1|W2|W3`). It IS the filter
-   *  list, so `year`/`yearRange`/`openAccess`/`citationGraph` passed beside it
-   *  are refused in band with the destination named — never appended into a
-   *  silent intersect. The retraction clause is the one clause the plugin
-   *  adds itself.
+  /** The agent's own OpenAlex filter list, in the API's grammar — the
+   *  `filters.expression` schema description in index.ts is the operator and
+   *  family reference. This is the way to any constraint the dedicated filters
+   *  do not carry, and to a citation query across several papers in one request
+   *  (`cites:W1|W2|W3`). It IS the filter list, so
+   *  `year`/`yearRange`/`openAccess`/`citationGraph` passed beside it are
+   *  refused in band with the destination named — never appended into a silent
+   *  intersect. The retraction clause is the one clause the plugin adds itself.
    *  OpenAlex only — Europe PMC's query language is different and it declines
    *  this in band. */
   expression?: string;
