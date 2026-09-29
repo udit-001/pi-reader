@@ -30,7 +30,7 @@ What a citation-aware research pass needs **without extra calls**. All OpenAlex-
 
 The projection (`OPENALEX_SELECT`) carries the sources for all of this (`fwci`, `referenced_works`, `related_works`, `counts_by_year`, `topics`, `keywords`, `abstract_inverted_index`). It is one shared list, but no longer lean: the abstract's inverted index alone is ~15 KB per row on the wire. Accepted because OpenAlex meters per request, not per byte — the budget doesn't move, and the truncation keeps the agent-facing tokens flat. If bandwidth ever matters, `abstract_inverted_index` is the single name to pull back out.
 
-Retracted works are **excluded by default through each adapter's own server-side filter** (`is_retracted:false` in `buildOpenAlexFilter`; `NOT PUB_TYPE:"Retracted Publication"` folded into Europe PMC's query by `mergeRetractionClause`) — a retraction disqualifies the work as a reading candidate, so badging is not enough. `filters.includeRetracted` drops the clause; when included, the `retracted` key marks rows (OpenAlex's `is_retracted`, Europe PMC's `pubType` marker). The exclusion clause rides the cache key (`filtersCacheKey`) like every other filter.
+Retracted works are **excluded by default through each adapter's own server-side filter** (`is_retracted:false` in `buildOpenAlexFilter`; `NOT PUB_TYPE:"Retracted Publication"` folded into Europe PMC's query by `mergeRetractionClause`) — a retraction disqualifies the work as a reading candidate, so badging is not enough. `filters.includeRetracted` drops the clause; when included, the `retracted` key marks rows (OpenAlex's `is_retracted`, Europe PMC's `pubType` marker). The exclusion clause rides the cache key (`filtersCacheKey`) like every other filter. The rule's agent-facing home is that parameter's own description: the exclusion runs server-side, so every count the interface sees already has retracted works subtracted, and a short page is paging's doing.
 
 ## Authority: who and where
 
@@ -75,9 +75,9 @@ A text-search result is not a paper record — no substitutes exist. The news ve
 
 ## The identifier constraint
 
-A paper the agent can already name — a user-pasted link, or an identifier off a prior row — is a constraint rather than a mode, so each adapter takes it in the constraint language it already reads: the works adapter as `filters.expression` clauses (`doi:10.1038/…`, `ids.pmid:22955618`), the biomedical adapter as its own query fields (`DOI:"…"`, `EXT_ID:…`, `PMCID:…`). Both forms verified live, each returning exactly the anchored record. Nothing forks for the caller — one `query`+`filters` shape, and whichever adapter cannot read the syntax declines in band naming the form that works there.
+A paper the agent can already name — a user-pasted link, or an identifier off a prior row — is a constraint rather than a mode, so each adapter takes it in the constraint language it already reads: the works adapter as `filters.expression` clauses (`doi:10.1038/…`, `ids.pmid:22955618`), the biomedical adapter as its own query fields (`DOI:"…"`, `EXT_ID:…`, `PMCID:…`). Both forms verified live, each returning exactly the anchored record. Callers keep one shape, `query` plus `filters`: an adapter that cannot read a syntax declines in band and names the form that works there.
 
-The retired `filters.lookup` did the same job as a mode of its own, and its one wire advantage was a free singleton fetch. That went with it: a mode duplicating a constraint is surface the caller learns twice, and the constraint already returns a page of one. The singleton fetch survives only where nothing else can serve it — the DOI-seeded walk, which needs the W-id before it can build its filter.
+The retired `filters.lookup` did the same job as a mode of its own, and its one wire advantage was a free singleton fetch. That went with it: the constraint already returns a page of one, and a mode repeating it is a second thing to learn. The singleton fetch survives on the DOI-seeded walk alone, which needs the W-id before it can build its filter.
 
 ## The key + metering contract
 

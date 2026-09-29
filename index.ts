@@ -81,7 +81,7 @@ const providerSchema = Type.Optional(
         "uploader, and date; honors query, recency (d/w/m/y), and page. When unavailable, fall " +
         "back to text search with domains: ['youtube.com'].\n" +
         "• 'papers' — scholarly literature: citeable records for a literature pass. " +
-        "Find on a topic: the free-text query, and the default. Walk citations from a " +
+        "Find on a topic: the free-text query (the default). Walk citations from a " +
         "paper you already hold: filters.citationGraph, or filters.expression " +
         `${CITATION_EDGE_PROSE} on the ` +
         "works adapter — for when the top hits missed the topic or the years, or you " +
@@ -394,9 +394,6 @@ export default function piWeb(pi: ExtensionAPI): void {
           }
           if (rows.some((r) => r.refs?.length)) {
             lines.push(`Refs/Related are bare OpenAlex W-ids (refs capped at 40); any of them seeds a citation query — filters.expression: ${CITATION_EDGE_PROSE}.`);
-          }
-          if (params.filters?.includeRetracted !== true) {
-            lines.push("Retracted works excluded by default (filters.includeRetracted=true to include them).");
           }
         }
         lines.push("", response.answer, "", "Results:");
