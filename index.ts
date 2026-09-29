@@ -76,10 +76,11 @@ const providerSchema = Type.Optional(
         "open-access URL, DOI, truncated abstract, and the paper's reference/related-work " +
         "W-id lists (overlap across rows to surface shared foundations) ride on the " +
         "standard title/url/snippet, with retracted flag, topic + field, keywords, work " +
-        "type, and a citation-trend label as extra flat keys; retracted works are " +
+        "type, author institutions (type, country, ROR id), venue type, reference " +
+        "count, and a citation-trend label as extra flat keys; retracted works are " +
         "excluded by default (filters.includeRetracted to include). Honors query, " +
         "numResults, index, and filters (year/OA, citedBy sort, citation walks, " +
-        "identifier lookup).",
+        "identifier lookup, cursor enumeration, your own filter expression).",
     },
   ),
 );
@@ -108,10 +109,16 @@ const paperFiltersSchema = Type.Optional(
         description: "Restrict to open-access-readable results.",
       })),
       includeRetracted: Type.Optional(Type.Boolean({
-        description: "Papers provider only: include retracted works. They are excluded by default on OpenAlex (server-side) — a retraction disqualifies the work as a reading candidate; when included, the retracted key marks them. Europe PMC has no equivalent filter.",
+        description: "Papers provider only: include retracted works. They are excluded by default — a retraction disqualifies the work as a reading candidate; when included, the retracted key marks them.",
       })),
       sort: Type.Optional(Type.Union([Type.Literal("citedBy")], {
         description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
+      })),
+      cursor: Type.Optional(Type.String({
+        description: "Papers provider only: enumerate a result set page by page with OpenAlex's works cursor — pass '*' to start, then the 'Next cursor' each response returns, unmodified, until it stops coming (e.g. a long reference list). One call fetches one page; the cursor is never followed automatically.",
+      })),
+      expression: Type.Optional(Type.String({
+        description: "Papers provider only: OpenAlex's own filter list, written by you — 'publication_year:2020,is_oa:true,type:article'; commas are AND, a pipe is OR within one field, ! negates, > and < compare. Reach for it for any constraint the named filters lack — impact (fwci:>10), author, institution, venue, type, topic, language — and for multi-seed expansion in one request (cites:W1|W2). It replaces the filter list: write year, openAccess and the walk leg into it rather than passing them separately. OpenAlex only; Europe PMC declines it in band.",
       })),
       lookup: Type.Optional(Type.String({
         description: "Look up ONE paper by identifier instead of searching — a DOI (10.… or doi.org link), PMID, PMCID, an NLM/Europe PMC article URL, or an OpenAlex W-id; anything a papers row or a user-pasted link provides. Returns that paper's citeable record; the identifier picks the backend (index is ignored, no query needed, other filters don't apply). Mutually exclusive with citationGraph.",
@@ -145,8 +152,9 @@ const paperFiltersSchema = Type.Optional(
     {
       description:
         "Papers provider only: constrain the search (year window, open access, " +
-        "citation ranking), walk the citation graph from a seed paper, or look " +
-        "up one paper by identifier. Other providers ignore it.",
+        "citation ranking), walk the citation graph from a seed paper, look " +
+        "up one paper by identifier, or enumerate a result set with a cursor. " +
+        "Other providers ignore it.",
     },
   ),
 );
@@ -385,7 +393,9 @@ export default function piWeb(pi: ExtensionAPI): void {
             const meta: string[] = [];
             if (r.year !== undefined) meta.push(`Year: ${r.year}`);
             if (r.venue) meta.push(`Venue: ${r.venue}`);
+            if (r.venueType) meta.push(`Venue type: ${r.venueType}`);
             if (r.citedBy !== undefined) meta.push(r.fwci !== undefined ? `Cited by: ${r.citedBy} (fwci ${r.fwci} field-normalized)` : `Cited by: ${r.citedBy}`);
+            if (r.refCount !== undefined) meta.push(`References: ${r.refCount}`);
             if (r.doi) meta.push(`DOI: ${r.doi}`);
             if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
             if (r.retracted === true) meta.push("Retracted: yes");
@@ -394,6 +404,18 @@ export default function piWeb(pi: ExtensionAPI): void {
             if (r.field) meta.push(`Field: ${r.field}`);
             if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
             if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
+            // The provenance set: institution type tells industry from
+            // academia, country and ROR disambiguate institutions of the
+            // same name. Absent parts are simply not printed.
+            if (r.institutions?.length) {
+              lines.push(`   Institutions: ${r.institutions.map((i) => {
+                // Brackets, not parens: OpenAlex's own names carry parens
+                // ("Microsoft (United States)"), and nested parens read as one
+                // ambiguous token.
+                const detail = [i.type, i.country, i.ror ? `ror:${i.ror}` : undefined].filter(Boolean).join(", ");
+                return detail ? `${i.name} [${detail}]` : i.name;
+              }).join(" · ")}`);
+            }
             if (r.keywords?.length) lines.push(`   Keywords: ${r.keywords.join(", ")}`);
             if (r.recentCitations !== undefined) lines.push(`   Recent citations (last 3 complete years): ${r.recentCitations}${r.citationTrend ? ` (${r.citationTrend})` : ""}`);
             // The correlation atom, in-band: bare W-ids the agent can overlap
@@ -403,12 +425,16 @@ export default function piWeb(pi: ExtensionAPI): void {
           }
           if (hasContent) lines.push(`   ${r.content!.replace(/\s+/g, " ").trim().slice(0, 400)}`);
         }
+        if (response.nextCursor) {
+          lines.push("", `Next cursor: ${response.nextCursor} — pass as filters.cursor for the next page.`);
+        }
 
         return {
           content: [{ type: "text", text: lines.join("\n") }],
           details: {
             provider: response.provider,
             resultCount: response.results.length,
+            ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
             results: response.results.map((r) => ({
               title: r.title,
               url: r.url,
@@ -426,6 +452,9 @@ export default function piWeb(pi: ExtensionAPI): void {
                   ...(r.type ? { type: r.type } : {}),
                   ...(r.topic ? { topic: r.topic } : {}),
                   ...(r.authors?.length ? { authors: r.authors } : {}),
+                  ...(r.institutions?.length ? { institutions: r.institutions } : {}),
+                  ...(r.venueType ? { venueType: r.venueType } : {}),
+                  ...(r.refCount !== undefined ? { refCount: r.refCount } : {}),
                   ...(r.fwci !== undefined ? { fwci: r.fwci } : {}),
                   ...(r.refs?.length ? { refs: r.refs } : {}),
                   ...(r.related?.length ? { related: r.related } : {}),

@@ -52,16 +52,28 @@ const EPMC_RESULT: EuropePmcResult = {
 type PapersDeps = NonNullable<Parameters<typeof searchPapers>[2]>;
 
 function depsWith(overrides: PapersDeps): PapersDeps {
+  // The OpenAlex adapter now returns a page ({works, nextCursor}); stubs below
+  // still speak in record arrays, so the harness lifts an array into a
+  // cursor-less page and passes a real page through untouched.
+  const openalex = overrides.openalex;
+  const fetchWorks = openalex?.fetchWorks;
   return {
     openalex: {
-      fetchWorks: async () => [],
-      fetchRecord: async () => { throw new Error("OpenAlex record fetch must not run outside walk tests"); },
+      fetchWorks: fetchWorks
+        ? async (params, signal) => {
+          const out = await fetchWorks(params, signal);
+          return Array.isArray(out) ? { works: out } : out;
+        }
+        : async () => ({ works: [] }),
+      fetchRecord: openalex?.fetchRecord
+        ?? (async () => { throw new Error("OpenAlex record fetch must not run outside walk tests"); }),
+      ...(openalex?.resolveKey ? { resolveKey: openalex.resolveKey } : {}),
     },
     europepmc: {
       fetchResults: async () => { throw new Error("Europe PMC must not be called outside walk tests"); },
       fetchRoute: async () => { throw new Error("Europe PMC walk must not be called outside walk tests"); },
+      ...overrides.europepmc,
     },
-    ...overrides,
   };
 }
 
@@ -70,7 +82,7 @@ function depsWith(overrides: PapersDeps): PapersDeps {
 test("searchPapers defaults to the OpenAlex backend when index is absent", async () => {
   let openalexCalled = 0;
   let europepmcCalled = 0;
-  const results = await searchPapers("CRISPR base editing", {}, depsWith({
+  const { results } = await searchPapers("CRISPR base editing", {}, depsWith({
     openalex: {
       fetchWorks: async () => { openalexCalled++; return [OPENALEX_WORK]; },
     },
@@ -85,7 +97,7 @@ test("searchPapers defaults to the OpenAlex backend when index is absent", async
 
 test("searchPapers routes a biomedical query to Europe PMC with index: 'europepmc'", async () => {
   let europepmcCalled = 0;
-  const results = await searchPapers("CRISPR base editing", { index: "europepmc" }, depsWith({
+  const { results } = await searchPapers("CRISPR base editing", { index: "europepmc" }, depsWith({
     europepmc: {
       fetchResults: async () => {
         europepmcCalled++;
@@ -120,10 +132,10 @@ test("searchPapers falls back to OpenAlex on an unknown index value — never Eu
 // ── The same-shape guarantee — no per-backend forking downstream ──────────────
 
 test("both backends emit PaperRecords with the same flat keys on a shared record", async () => {
-  const fromOpenAlex = await searchPapers("q", {}, depsWith({
+  const { results: fromOpenAlex } = await searchPapers("q", {}, depsWith({
     openalex: { fetchWorks: async () => [OPENALEX_WORK] },
   }));
-  const fromEpmc = await searchPapers("q", { index: "europepmc" }, depsWith({
+  const { results: fromEpmc } = await searchPapers("q", { index: "europepmc" }, depsWith({
     europepmc: {
       fetchResults: async () => ({ hitCount: 1, resultList: { result: [EPMC_RESULT] } }),
     },
@@ -147,10 +159,11 @@ test("paperError distinguishes backend-down from no-results from malformed", () 
   assert.match(down, /OpenAlex was unreachable/);
   assert.match(none, /OpenAlex returned no results/);
   assert.match(malformed, /Europe PMC rejected the query as malformed/);
-  // Down/no-results offer a manual escape hatch; malformed is query-shaping.
+  // Down/no-results offer a manual escape hatch; malformed points at the
+  // complaint instead, because the fix is in the query the agent wrote.
   assert.match(down, /DOI or URL/);
   assert.match(none, /DOI or URL/);
-  assert.match(malformed, /Drop quotes|drop quotes/i);
+  assert.match(malformed, /fix what the complaint names/i);
 });
 
 test("paperError's retry hint always names the OTHER index with its scope", () => {
@@ -199,10 +212,10 @@ test("papers no-results is distinguished from backend-down at runtime", async ()
 // ── Sanity: the isPaperRecord probe sees both backends' records ───────────────
 
 test("isPaperRecord (shared probe) recognizes records from both backends", async () => {
-  const fromOpenAlex = await searchPapers("q", {}, depsWith({
+  const { results: fromOpenAlex } = await searchPapers("q", {}, depsWith({
     openalex: { fetchWorks: async () => [OPENALEX_WORK] },
   }));
-  const fromEpmc = await searchPapers("q", { index: "europepmc" }, depsWith({
+  const { results: fromEpmc } = await searchPapers("q", { index: "europepmc" }, depsWith({
     europepmc: {
       fetchResults: async () => ({ hitCount: 1, resultList: { result: [EPMC_RESULT] } }),
     },
@@ -217,7 +230,7 @@ test("isPaperRecord (shared probe) recognizes records from both backends", async
 test("openalex forward walk: DOI seed resolves, then one cites:W works call", async () => {
   const seen: Array<{ record?: string; filter?: string | null }> = [];
   let worksCalls = 0;
-  const results = await searchPapers("", { filters: { citationGraph: { seed: "10.1038/s41587-020-0561-9" } } }, depsWith({
+  const { results } = await searchPapers("", { filters: { citationGraph: { seed: "10.1038/s41587-020-0561-9" } } }, depsWith({
     openalex: {
       fetchRecord: async (lookup) => {
         seen.push({ record: lookup });
@@ -242,7 +255,7 @@ test("openalex backward walk is one server-side cited_by:W call — no record re
   let recordCalls = 0;
   let worksCalls = 0;
   const filters: (string | null)[] = [];
-  const results = await searchPapers("", { filters: { citationGraph: { seed: "W3161425918", direction: "citedBy" } }, numResults: 5 }, depsWith({
+  const { results } = await searchPapers("", { filters: { citationGraph: { seed: "W3161425918", direction: "citedBy" } }, numResults: 5 }, depsWith({
     openalex: {
       fetchRecord: async () => { recordCalls++; return OPENALEX_WORK; },
       fetchWorks: async (params) => {
@@ -324,6 +337,13 @@ test("filtersCacheKey serializes stably and distinguishes filter combos", () => 
     filtersCacheKey({}),
     filtersCacheKey({ sort: "citedBy" }),
   );
+  // The cursor is part of the call identity: two pages must never share a
+  // cache key, or page 2 would replay page 1.
+  assert.notEqual(
+    filtersCacheKey({ cursor: "CURSOR-1" }),
+    filtersCacheKey({ cursor: "CURSOR-2" }),
+  );
+  assert.notEqual(filtersCacheKey({}), filtersCacheKey({ cursor: "CURSOR-1" }));
 });
 
 // ── applySort — citedBy ranking, Europe PMC's post-fetch approximation ────────
@@ -345,7 +365,7 @@ test("applySort ranks by descending citation count; uncounted records keep posit
 test("searchPapers dispatches a DOI lookup to the OpenAlex record endpoint — one record out, no search", async () => {
   let recordLookup = "";
   let worksCalled = 0;
-  const results = await searchPapers("", { filters: { lookup: "10.1038/s41587-020-0561-9" } }, depsWith({
+  const { results } = await searchPapers("", { filters: { lookup: "10.1038/s41587-020-0561-9" } }, depsWith({
     openalex: {
       fetchWorks: async () => { worksCalled++; return []; },
       fetchRecord: async (lookup) => { recordLookup = lookup; return OPENALEX_WORK; },
@@ -359,7 +379,7 @@ test("searchPapers dispatches a DOI lookup to the OpenAlex record endpoint — o
 
 test("searchPapers routes a PMID lookup to Europe PMC by identifier kind — index is ignored", async () => {
   let query = "";
-  const results = await searchPapers("", { index: "openalex", filters: { lookup: "23812562" } }, depsWith({
+  const { results } = await searchPapers("", { index: "openalex", filters: { lookup: "23812562" } }, depsWith({
     openalex: {
       fetchRecord: async () => { throw new Error("PMID must not hit OpenAlex"); },
       fetchWorks: async () => { throw new Error("must not be called"); },

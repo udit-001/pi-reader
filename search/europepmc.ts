@@ -57,6 +57,9 @@ export interface EuropePmcResult {
   title?: string;
   /** Comma-separated bibliographic author string ("Surname I, Surname J, ..."). */
   authorString?: string;
+  /** ";"-separated publication-type list ("retracted publication; editorial").
+   *  The retraction marker rides here on the compact (lite) form. */
+  pubType?: string;
   journalTitle?: string;
   journalInfo?: { journal?: { title?: string } | null };
   /** Citation/reference walk entries carry the abbreviated journal instead. */
@@ -96,6 +99,39 @@ export function parsePubYear(pubYear: string | number | undefined): number | und
 /** y/n string flag → boolean, tolerating absent. Pure; exported for tests. */
 export function isFlagY(v: string | undefined): boolean {
   return v === "Y" || v === "y";
+}
+
+/** The publication type Europe PMC stamps on a withdrawn work — the one
+ *  source the marker check and the exclusion clause share. */
+const RETRACTED_PUB_TYPE = "Retracted Publication";
+
+/** The backend's own retraction-exclusion clause — a query-language condition
+ *  Europe PMC evaluates server-side, so the reported count already reflects
+ *  it (no post-fetch removal). Pure; exported for tests. */
+export const RETRACTION_EXCLUSION_CLAUSE = `NOT PUB_TYPE:"${RETRACTED_PUB_TYPE}"`;
+
+/** Does this record's publication-type list mark it retracted? pubType is a
+ *  ";"-separated list ("retracted publication; editorial"); absent means the
+ *  API didn't say, which is not a retraction. Pure; exported for tests. */
+export function isRetractedPubType(pubType: string | undefined): boolean {
+  if (typeof pubType !== "string" || pubType === "") return false;
+  return pubType
+    .split(";")
+    .some((t) => t.trim().toLowerCase() === RETRACTED_PUB_TYPE.toLowerCase());
+}
+
+/** Fold the plugin's retraction-exclusion clause into the agent's query — the
+ *  same merge rule the OpenAlex adapter uses: append only when the clause is
+ *  not already present, never rewrite, reorder, or drop the agent's own
+ *  clauses. A query that already carries any `PUB_TYPE:"Retracted
+ *  Publication"` condition (either polarity — an agent that asked FOR
+ *  retracted works must not be contradicted) is left untouched. Opt in with
+ *  `includeRetracted: true`. Pure; exported for tests. */
+export function mergeRetractionClause(query: string, includeRetracted?: boolean): string {
+  if (includeRetracted === true) return query;
+  if (/PUB_TYPE\s*:\s*["']?retracted publication["']?/i.test(query)) return query;
+  const trimmed = query.trim();
+  return trimmed === "" ? RETRACTION_EXCLUSION_CLAUSE : `${trimmed} AND ${RETRACTION_EXCLUSION_CLAUSE}`;
 }
 
 /** `url` — the most fetchable copy, through the shared policy
@@ -141,6 +177,7 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
   for (const r of results) {
     const url = chooseRecordUrl(r);
     if (url === null) continue;
+    const retracted = isRetractedPubType(r.pubType);
     const rec: PaperRecord = {
       title: r.title ?? "",
       url,
@@ -149,6 +186,7 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
         year: parsePubYear(r.pubYear),
         citedBy: r.citedByCount,
         authors: parseAuthors(r.authorString),
+        retracted: retracted ? true : undefined,
         oaToken: isFlagY(r.isOpenAccess) ? "open" : "closed",
       }),
     };
@@ -162,6 +200,7 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
     const oaUrl = chooseOaUrl(r);
     if (oaUrl) rec.oaUrl = oaUrl;
     if (r.doi) rec.doi = r.doi;
+    if (retracted) rec.retracted = true;
     records.push(rec);
   }
   return records;
@@ -184,15 +223,18 @@ export function buildEuropePmcParams(query: string, numResults: number): URLSear
 
 /** Europe PMC filters ride INSIDE the query string (field syntax), unlike
  *  OpenAlex's separate filter param. Year exact: PUB_YEAR:"2023"; range:
- *  (PUB_YEAR:[2019 TO 2021]); OA: OPEN_ACCESS:y — all verified live. Pure;
+ *  (PUB_YEAR:[2019 TO 2021]); OA: OPEN_ACCESS:y; retracted work is excluded by
+ *  default through the backend's own PUB_TYPE clause (PIWEB-35), folded into
+ *  the agent's query rather than replacing it — all verified live. Pure;
  *  exported for tests. */
 export function buildEuropePmcFilterQuery(query: string, filters?: PaperFilters): string {
+  const base = mergeRetractionClause(query, filters?.includeRetracted);
   const conds: string[] = [];
   if (filters?.year !== undefined) conds.push(`PUB_YEAR:"${filters.year}"`);
   if (filters?.yearRange) conds.push(`(PUB_YEAR:[${filters.yearRange[0]} TO ${filters.yearRange[1]}])`);
   if (filters?.openAccess === true) conds.push("OPEN_ACCESS:y");
-  if (conds.length === 0) return query;
-  return query ? `${query} AND ${conds.join(" AND ")}` : conds.join(" AND ");
+  if (conds.length === 0) return base;
+  return base ? `${base} AND ${conds.join(" AND ")}` : conds.join(" AND ");
 }
 
 /** The Europe PMC citation walk is endpoint-based — the search query has no
@@ -374,6 +416,15 @@ export async function searchEuropePmc(
   options: SearchOptions = {},
   deps: EuropePmcDeps = defaultEuropePmcDeps,
 ): Promise<PaperRecord[]> {
+  // The expression door is OpenAlex's filter language — this adapter cannot
+  // read it. Ignoring it would drop the agent's constraints silently, so the
+  // adapter declines and names where the constraint goes instead: the retry
+  // `index` below is the door, and Europe PMC's own query language is the
+  // in-query form.
+  if (options.filters?.expression !== undefined) {
+    throw new PaperError(paperError("malformed", "europepmc",
+      "filters.expression is OpenAlex's filter list — write the constraint into the query instead, e.g. PUB_YEAR:\"2020\", OPEN_ACCESS:y, SRC:MED"));
+  }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const graph = options.filters?.citationGraph;
   if (graph) return searchEuropePmcWalk(graph, n, options, deps);

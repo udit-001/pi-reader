@@ -20,7 +20,27 @@ What a citation-aware research pass needs **without extra calls**. All OpenAlex-
 
 The projection (`OPENALEX_SELECT`) carries the sources for all of this (`fwci`, `referenced_works`, `related_works`, `counts_by_year`, `topics`, `keywords`, `abstract_inverted_index`). It is one shared list, but no longer lean: the abstract's inverted index alone is ~15 KB per row on the wire. Accepted because OpenAlex meters per request, not per byte — the budget doesn't move, and the truncation keeps the agent-facing tokens flat. If bandwidth ever matters, `abstract_inverted_index` is the single name to pull back out.
 
-Retracted works are **excluded by default server-side** (`is_retracted:false` in `buildOpenAlexFilter`, every non-opt-in filter list carries it) — a retraction disqualifies the work as a reading candidate, so badging is not enough. `filters.includeRetracted` drops the clause; when included, the `retracted` key marks rows. Europe PMC has no equivalent filter — its retracted rows come through badged, not excluded (documented backend asymmetry, pinned in tests). The exclusion clause rides the cache key (`filtersCacheKey`) like every other filter.
+Retracted works are **excluded by default through each adapter's own server-side filter** (`is_retracted:false` in `buildOpenAlexFilter`; `NOT PUB_TYPE:"Retracted Publication"` folded into Europe PMC's query by `mergeRetractionClause`) — a retraction disqualifies the work as a reading candidate, so badging is not enough. `filters.includeRetracted` drops the clause; when included, the `retracted` key marks rows (OpenAlex's `is_retracted`, Europe PMC's `pubType` marker). The exclusion clause rides the cache key (`filtersCacheKey`) like every other filter.
+
+## Authority: who and where
+
+Three signals the projection already carried and normalization discarded. All OpenAlex-only and absent-tolerant, like the deep-research keys and for the same reason.
+
+- `institutions` — every institution the authorships claim, deduped to one entry per institution in authorship order, so a dual-affiliated author and a co-author at the same lab collapse to one. Each entry carries `type` (`education`/`company`/`government`/`healthcare`/`nonprofit`/`facility`/`archive`/`other`), the institution's `country`, and `ror` normalized to the bare identifier the way `doi` is. The deduped set is the deliberate shape: the question the agent actually asks — is this industry work? — reads off the set, while a per-author nesting would spend tokens mapping authors that question never needs. Absent when no authorship lists an institution.
+- `venueType` — the venue's kind beside its name: `journal` is peer-reviewed, `repository` a preprint server or archive, plus `conference`/`ebook platform`/`book series`. `venue` alone cannot tell a bioRxiv row from a Nature one, which is the difference between an unreviewed claim and an established one.
+- `refCount` — the length of the wire's `referenced_works`, which arrives whole while `refs` caps at 40, so the count never follows the cap: a 451-reference work reads as a bibliography where a five-reference one reads as a footnote. Verified live: the length matches the API's own `referenced_works_count` on every sampled work, so the second field is never requested.
+
+## The expression door
+
+`filters.expression` hands the filter list to the agent in the API's own grammar: every constraint the named filters never anticipated — impact, author, institution, venue, type, topic, language — arrives without new code, and a citation walk across several seeds becomes the API's own pipe rather than a loop the plugin runs (`cites:W1|W2|W3`, one request). What is left for the plugin is merging one clause into text it did not write, which is why the merge rule is this door's only new logic and why it is pure.
+
+- **Validate structurally before editing.** A filter expression is a comma-separated list of `field:value` clauses (a comma inside a quoted value does not split). Text that fails the test — OQL's `works where year is (2020)`, prose — is declined in band rather than guessed at, and the decline states what the free-text form does not get: the retraction clause merges into the filter form only.
+- **Append, never rewrite.** `is_retracted:false` goes on the end, and only when the expression carries no `is_retracted` condition at all — either polarity, so an agent asking *for* retracted works is not contradicted. The agent's clause order, spelling and operators survive byte-for-byte. The expression rides `filtersCacheKey` like every other filter; without that, a re-issued expression would replay a cached page.
+- **Refuse what the plugin still composes.** The expression IS the filter list, so `year`/`yearRange`/`openAccess`/`citationGraph` alongside it are refused in band with the destination named — never appended into a silent intersect, never dropped. `sort`, `cursor`, `numResults` and `includeRetracted` stay orthogonal. Retiring the composed filters belongs to PIWEB-32, not this door.
+
+The door is OpenAlex's capability on the shared interface. Europe PMC cannot read the syntax and declines in band naming the alternative — the pattern the citation walk already uses when it refuses the other backend's identifier vocabulary — so callers keep one shape instead of forking.
+
+OQL — the API root's `?oql=`, a sentence language that names its own entity — stays a decline rather than a second door, for three reasons. Two doors that both mean "filter these works" make the agent pick a path per call, when the condition separating them (rich boolean nesting, proximity) is narrow. The syntax would ride the always-loaded schema on every papers call, while a decline is paid on the one path that reaches it. And the merge rule cannot reach OQL, so serving it would stamp a retraction exemption on every row — the vertical's one safety guarantee, reprinted as a caveat. The decline recognizes OQL and answers with the translation (`works where year is (2020)` → `publication_year:2020`): the useful half of a second door without its cost. A `group by` query is told its shape is out of scope, because this tool returns works rather than counts.
 
 ## The record URL: most fetchable copy wins
 
@@ -62,6 +82,12 @@ Setup is `/openalex-setup` — a thin instance of the shared key-setup wizard (`
 - **OpenAlex is exact, both directions, one request each:** forward walk = `filter=cites:W…` (works citing the seed); backward = `filter=cited_by:W…` — the seed's own references, resolved server-side (verified live: 133 refs returned in one request where the forward filter on the same seed returned 8,092). The former chunked `referenced_works` hydration is gone — no OR-cap math survives. DOI seeds resolve through one free singleton record fetch first to get the W-id; W-id seeds go straight to the filter.
 - **Europe PMC approximates:** its search query has no `CITES` field (verified, hitCount 0), so the walk runs its `/citations` (forward) and `/references` (backward) REST endpoints instead — the documented approximation. DOI seeds resolve through one search lookup first.
 - Year constraints bind post-fetch on Europe PMC walks (`applyYearFilter` — the walk endpoints take no filter params); openAccess is dropped there, because walk entries carry no OA flag to verify. Acceptable: the walk is a discovery aid — the seed paper's own record is exact, and the agent can re-tighten with `index: "openalex"`.
+
+## Enumerating a result set
+
+OpenAlex emits `meta.next_cursor` only in cursor mode; an offset-paged search hands back no handle. The works adapter passes the agent's cursor through untouched and never follows it, so one call stays one request.
+
+The cursor rides `filtersCacheKey` — two pages must never share a key, or page 2 replays page 1 — and a cursor-bearing response is not cached: an enumeration step is not an answer, and a cached cursor can outlive its page. A rejected cursor reaches the agent as `malformed` carrying OpenAlex's own complaint (`Invalid cursor value`), so the fix is local rather than a retry of a working service.
 
 ## The citedBy sort
 

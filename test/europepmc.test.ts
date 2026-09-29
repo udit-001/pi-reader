@@ -16,6 +16,9 @@ import {
   buildEuropePmcParams,
   buildEuropePmcFilterQuery,
   buildEuropePmcLookupQuery,
+  isRetractedPubType,
+  mergeRetractionClause,
+  RETRACTION_EXCLUSION_CLAUSE,
   searchEuropePmcLookup,
   planEuropePmcWalk,
   searchEuropePmc,
@@ -251,35 +254,82 @@ test("searchEuropePmcLookup normalizes the anchored record; empty result is the 
 
 // ── buildEuropePmcFilterQuery — filters ride inside the query string ──────────
 
-test("europepmc filter query adds PUB_YEAR/OPEN_ACCESS field conditions", () => {
+// PIWEB-35 — the retraction clause folds into the agent's query, and the
+// default exclusion is on unless explicitly opted out.
+test("isRetractedPubType reads the marker from Europe PMC's ;-separated list", () => {
+  assert.equal(isRetractedPubType("retracted publication; editorial"), true);
+  assert.equal(isRetractedPubType("letter; retracted publication"), true);
+  assert.equal(isRetractedPubType("Retracted Publication"), true);
+  assert.equal(isRetractedPubType("journal article"), false);
+  assert.equal(isRetractedPubType(undefined), false);
+});
+
+test("mergeRetractionClause appends the backend's own clause by default", () => {
+  assert.equal(
+    mergeRetractionClause("CRISPR base editing"),
+    `CRISPR base editing AND ${RETRACTION_EXCLUSION_CLAUSE}`,
+  );
+  // A filters-only search (empty free text) still excludes server-side.
+  assert.equal(mergeRetractionClause(""), RETRACTION_EXCLUSION_CLAUSE);
+});
+
+test("mergeRetractionClause never duplicates a clause the agent already wrote", () => {
+  const authored = 'CRISPR AND NOT PUB_TYPE:"Retracted Publication"';
+  assert.equal(mergeRetractionClause(authored), authored);
+  assert.equal(mergeRetractionClause('NOT pub_type:retracted publication'), 'NOT pub_type:retracted publication');
+  // An agent that asked FOR the type is not contradicted.
+  assert.equal(mergeRetractionClause('PUB_TYPE:"Retracted Publication"'), 'PUB_TYPE:"Retracted Publication"');
+});
+
+test("mergeRetractionClause leaves the agent's clauses untouched and honours the opt-in", () => {
+  assert.equal(mergeRetractionClause("A AND B", true), "A AND B");
+  const authored = 'A AND (B OR C) AND PUB_YEAR:"2023"';
+  assert.equal(
+    mergeRetractionClause(authored),
+    `${authored} AND ${RETRACTION_EXCLUSION_CLAUSE}`,
+  );
+});
+
+test("europepmc filter query adds the retraction clause plus PUB_YEAR/OPEN_ACCESS conditions", () => {
   assert.equal(
     buildEuropePmcFilterQuery("CRISPR base editing", { year: 2023 }),
-    'CRISPR base editing AND PUB_YEAR:"2023"',
+    `CRISPR base editing AND ${RETRACTION_EXCLUSION_CLAUSE} AND PUB_YEAR:"2023"`,
   );
   assert.equal(
     buildEuropePmcFilterQuery("CRISPR base editing", { openAccess: true }),
-    "CRISPR base editing AND OPEN_ACCESS:y",
+    `CRISPR base editing AND ${RETRACTION_EXCLUSION_CLAUSE} AND OPEN_ACCESS:y`,
   );
 });
 
 test("europepmc filter query renders the inclusive year range and joins with AND", () => {
   assert.equal(
     buildEuropePmcFilterQuery("q", { yearRange: [2019, 2021] }),
-    "q AND (PUB_YEAR:[2019 TO 2021])",
+    `q AND ${RETRACTION_EXCLUSION_CLAUSE} AND (PUB_YEAR:[2019 TO 2021])`,
   );
   assert.equal(
     buildEuropePmcFilterQuery("q", { year: 2023, openAccess: true }),
-    'q AND PUB_YEAR:"2023" AND OPEN_ACCESS:y',
+    `q AND ${RETRACTION_EXCLUSION_CLAUSE} AND PUB_YEAR:"2023" AND OPEN_ACCESS:y`,
   );
 });
 
-test("europepmc filter query passes an unfiltered query through unchanged", () => {
-  assert.equal(buildEuropePmcFilterQuery("q"), "q");
-  assert.equal(buildEuropePmcFilterQuery("q", {}), "q");
+test("europepmc filter query excludes retracted work on an unconstrained search", () => {
+  assert.equal(buildEuropePmcFilterQuery("q"), `q AND ${RETRACTION_EXCLUSION_CLAUSE}`);
+  assert.equal(buildEuropePmcFilterQuery("q", {}), `q AND ${RETRACTION_EXCLUSION_CLAUSE}`);
 });
 
-test("europepmc filter query stands alone when the walk leaves the query empty", () => {
-  assert.equal(buildEuropePmcFilterQuery("", { year: 2023 }), 'PUB_YEAR:"2023"');
+test("europepmc filter query drops the exclusion on the explicit opt-in", () => {
+  assert.equal(buildEuropePmcFilterQuery("q", { includeRetracted: true }), "q");
+  assert.equal(
+    buildEuropePmcFilterQuery("q", { includeRetracted: true, year: 2023 }),
+    'q AND PUB_YEAR:"2023"',
+  );
+});
+
+test("europepmc filter query stands alone when the query is empty", () => {
+  assert.equal(
+    buildEuropePmcFilterQuery("", { year: 2023 }),
+    `${RETRACTION_EXCLUSION_CLAUSE} AND PUB_YEAR:"2023"`,
+  );
 });
 
 // ── planEuropePmcWalk — the documented approximation: REST routes, not query ──
@@ -307,10 +357,35 @@ test("searchEuropePmc returns normalized records on the happy path", async () =>
   assert.equal(results[1]!.oaUrl, "https://europepmc.org/article/PMC13434336");
 });
 
+test("searchEuropePmc excludes retracted work server-side by default, and honours the opt-in", async () => {
+  const queries: string[] = [];
+  const capture = depsWith({
+    fetchResults: async (params) => {
+      queries.push(params.get("query") ?? "");
+      return { hitCount: 1, resultList: { result: [PMC_REC] } } as EuropePmcResponse;
+    },
+  });
+  await searchEuropePmc("malaria", {}, capture);
+  assert.equal(queries[0], `malaria AND ${RETRACTION_EXCLUSION_CLAUSE}`);
+  await searchEuropePmc("malaria", { filters: { includeRetracted: true } }, capture);
+  assert.equal(queries[1], "malaria");
+});
+
+test("searchEuropePmc marks a retracted row when the opt-in returns one", async () => {
+  const results = await searchEuropePmc("malaria", { filters: { includeRetracted: true } }, depsWith({
+    fetchResults: async () => ({
+      hitCount: 1,
+      resultList: { result: [{ ...PUBMED_REC, pubType: "retracted publication; editorial" }] },
+    }),
+  }));
+  assert.equal(results[0]!.retracted, true);
+  assert.match(results[0]!.snippet, /retracted/);
+});
+
 test("searchEuropePmc passes the query, pageSize, and signal through to the fetch", async () => {
   const seen: Array<{ params: URLSearchParams; signal?: AbortSignal }> = [];
   const signal = new AbortController().signal;
-  await searchEuropePmc("prime editing", { numResults: 7, signal }, depsWith({
+  await searchEuropePmc("prime editing", { numResults: 7, signal, filters: { includeRetracted: true } }, depsWith({
     fetchResults: async (params, sig) => {
       seen.push({ params, signal: sig });
       return { hitCount: 1, resultList: { result: [PMC_REC] } };

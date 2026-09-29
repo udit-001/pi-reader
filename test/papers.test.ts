@@ -15,6 +15,7 @@ import {
   normalizePaperResults,
   buildPaperParams,
   buildOpenAlexFilter,
+  mergeRetractionClause,
   OPENALEX_SELECT,
   resolveOpenAlexKey,
   openAlexErrorDetail,
@@ -224,6 +225,78 @@ test("papers normalizer omits the enrichment keys when the API lacks them — ne
   assert.equal("retracted" in unknown!, false);
   assert.equal("topic" in unknown!, false);
   assert.equal("type" in unknown!, false);
+});
+
+// ── Authority (PIWEB-27): affiliations, venue type, reference count ─────────
+
+// A company-lab paper: a dual-affiliated first author, a second author
+// sharing one institution and adding an industry lab, an author with none,
+// a repository venue, and a 133-entry bibliography.
+const AUTHORITY_WORK: OpenAlexWork = {
+  ...NATURE_WORK,
+  primary_location: {
+    landing_page_url: "https://doi.org/10.1038/s41587-020-0561-9",
+    source: { display_name: "bioRxiv", type: "repository" },
+  },
+  authorships: [
+    {
+      author: { display_name: "Andrew V. Anzalone" },
+      institutions: [
+        { id: "https://openalex.org/I107606265", display_name: "Broad Institute", ror: "https://ror.org/05a0ya142", country_code: "US", type: "nonprofit" },
+        { id: "https://openalex.org/I136199984", display_name: "Harvard University", ror: "https://ror.org/03vek6s52", country_code: "US", type: "education" },
+      ],
+    },
+    {
+      author: { display_name: "Luke W. Koblan" },
+      // Harvard repeats — the list is deduped; Microsoft is the industry lab.
+      institutions: [
+        { id: "https://openalex.org/I136199984", display_name: "Harvard University", ror: "https://ror.org/03vek6s52", country_code: "US", type: "education" },
+        { id: "https://openalex.org/I4210090666", display_name: "Microsoft (United States)", ror: "https://ror.org/00d0nc645", country_code: "US", type: "company" },
+      ],
+    },
+    { author: { display_name: "Unaffiliated Author" }, institutions: [] },
+  ],
+  referenced_works: Array.from({ length: 133 }, (_, i) => `https://openalex.org/W${1000000000 + i}`),
+};
+
+test("papers normalizer surfaces every institution once with its type, country and stable id — a dual-affiliated author shows both", () => {
+  const [r] = normalizePaperResults([AUTHORITY_WORK]);
+  assert.deepEqual(r!.institutions, [
+    { name: "Broad Institute", type: "nonprofit", country: "US", ror: "05a0ya142" },
+    { name: "Harvard University", type: "education", country: "US", ror: "03vek6s52" },
+    { name: "Microsoft (United States)", type: "company", country: "US", ror: "00d0nc645" },
+  ]);
+});
+
+test("papers normalizer omits authority keys the API did not supply — never invented", () => {
+  const [r] = normalizePaperResults([NATURE_WORK]);
+  assert.equal("institutions" in r!, false);
+  assert.equal("venueType" in r!, false);
+  assert.equal("refCount" in r!, false);
+});
+
+test("an institution the API left bare keeps only its name — no type, country or ROR invented", () => {
+  const [r] = normalizePaperResults([
+    { ...BARE_WORK, authorships: [{ author: { display_name: "A" }, institutions: [{ display_name: "Somewhere" }] }] },
+  ]);
+  assert.deepEqual(r!.institutions, [{ name: "Somewhere" }]);
+});
+
+test("a work whose author list is institution-free leaves the key absent, not empty", () => {
+  const [r] = normalizePaperResults([
+    { ...BARE_WORK, authorships: [{ author: { display_name: "A" }, institutions: [] }] },
+  ]);
+  assert.equal("institutions" in r!, false);
+});
+
+test("an empty bibliography reports zero references rather than dropping the count", () => {
+  const [r] = normalizePaperResults([{ ...BARE_WORK, referenced_works: [] }]);
+  assert.equal(r!.refCount, 0);
+});
+
+test("isPaperRecord recognises a row carrying only an authority key", () => {
+  assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", venueType: "repository" }), true);
+  assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", refCount: 2 }), true);
 });
 
 // The shared builder directly (same module Europe PMC renders through):
@@ -443,6 +516,13 @@ test("paper params carry the citedBy sort server-side; relevance when sort is ab
   assert.equal(unsorted.get("sort"), null);
 });
 
+test("paper params carry the cursor verbatim; an absent cursor stays off the wire", () => {
+  const p = buildPaperParams("q", 10, null, "", undefined, "IlsxNzQ4");
+  assert.equal(p.get("cursor"), "IlsxNzQ4");
+  // Today's behaviour: no cursor, no param — the first page is unfiltered.
+  assert.equal(buildPaperParams("q", 10, null).get("cursor"), null);
+});
+
 // ── resolveOpenAlexKey — config wins, env fallback, keyless tolerated ─────────
 
 test("openalex key resolution: config wins over env; env alone works; neither → keyless", () => {
@@ -540,17 +620,67 @@ test("paper params carry the filter and omit search when the walk leaves it empt
   assert.equal(p.get("per-page"), "10");
 });
 
+// ── Expression door (PIWEB-26): the retraction merge rule, pure ─────────────
+// The agent's own filter list is foreign text. The merge appends the plugin's
+// clause only when absent, never rewrites a clause, and declines text the
+// filter grammar cannot read rather than corrupting it.
+
+test("the retraction clause is appended to the agent's expression, whose own clauses are untouched", () => {
+  assert.equal(mergeRetractionClause("publication_year:2020"), "publication_year:2020,is_retracted:false");
+  assert.equal(
+    mergeRetractionClause("type:article,is_oa:true"),
+    "type:article,is_oa:true,is_retracted:false",
+  );
+});
+
+test("an expression that already carries an is_retracted clause is not given a second copy — either polarity", () => {
+  assert.equal(mergeRetractionClause("is_retracted:false"), "is_retracted:false");
+  assert.equal(mergeRetractionClause("is_retracted:true"), "is_retracted:true");
+  assert.equal(mergeRetractionClause("type:article,is_retracted:true"), "type:article,is_retracted:true");
+});
+
+test("includeRetracted leaves the agent's expression alone", () => {
+  assert.equal(mergeRetractionClause("type:article", true), "type:article");
+});
+
+test("text that is not a filter expression is declined rather than corrupted", () => {
+  for (const notAnExpression of [
+    "works where year is (2020)",   // OQL — a different syntax, and a different endpoint
+    "",
+    "   ",
+    "publication_year",             // no clause operator
+    "publication_year:",            // empty value
+    "just some words",
+  ]) {
+    assert.equal(mergeRetractionClause(notAnExpression), null, `"${notAnExpression}" should decline`);
+  }
+});
+
+test("a quoted value may carry the clause separator without splitting the clause", () => {
+  assert.equal(
+    mergeRetractionClause('title.search:"cancer, and its causes"'),
+    'title.search:"cancer, and its causes",is_retracted:false',
+  );
+});
+
 // ── searchPapers — deps flow, slicing, error shaping ──────────────────────────
 // The dispatch's third arg now carries per-backend deps; Europe PMC gets a
 // tripwire here — these tests pin the OpenAlex path, so any silent misroute
 // fails loudly.
 
 function depsWith(overrides: Partial<OpenAlexDeps>): Parameters<typeof searchPapers>[2] {
+  // The adapter now returns a page ({works, nextCursor}); stubs below still
+  // speak in record arrays, so the harness lifts an array into a cursor-less
+  // page and passes a real page through untouched.
+  const fetchWorks = overrides.fetchWorks ?? (async () => [NATURE_WORK, OA_WORK]);
   return {
     openalex: {
-      fetchWorks: async () => [NATURE_WORK, OA_WORK],
       fetchRecord: async () => { throw new Error("OpenAlex record fetch must not run outside walk tests"); },
       ...overrides,
+      fetchWorks: async (params, signal) => {
+        const out = await fetchWorks(params, signal);
+        return Array.isArray(out) ? { works: out } : out;
+      },
     },
     europepmc: {
       fetchResults: async () => { throw new Error("Europe PMC must not be called for index: 'openalex' tests"); },
@@ -560,13 +690,13 @@ function depsWith(overrides: Partial<OpenAlexDeps>): Parameters<typeof searchPap
 }
 
 test("searchPapers returns normalized paper records on the happy path", async () => {
-  const results = await searchPapers("CRISPR base editing", {}, depsWith({}));
+  const { results } = await searchPapers("CRISPR base editing", {}, depsWith({}));
   assert.equal(results.length, 2);
   assert.equal(results[0]!.doi, "10.1038/s41587-020-0561-9");
 });
 
 test("searchPapers carries the deep-research keys through the dispatch — the agent reads them off a plain search", async () => {
-  const results = await searchPapers("CRISPR base editing", {}, depsWith({
+  const { results } = await searchPapers("CRISPR base editing", {}, depsWith({
     fetchWorks: async () => [RICH_WORK],
   }));
   const [r] = results;
@@ -576,6 +706,17 @@ test("searchPapers carries the deep-research keys through the dispatch — the a
     assert.notEqual(key in (r ?? {}), false, `${key} should ride through`);
   }
   assert.equal(r!.content, "Scikit-learn is a Python module is");
+});
+
+test("searchPapers carries institutions, venue type and reference count through the dispatch", async () => {
+  const { results } = await searchPapers("q", {}, depsWith({ fetchWorks: async () => [AUTHORITY_WORK] }));
+  const [r] = results;
+  assert.equal(r!.venueType, "repository");
+  assert.equal(r!.refCount, 133);
+  assert.deepEqual(
+    r!.institutions?.map((i) => i.name),
+    ["Broad Institute", "Harvard University", "Microsoft (United States)"],
+  );
 });
 
 test("searchPapers passes the query, numResults, and signal through to the fetch", async () => {
@@ -594,8 +735,147 @@ test("searchPapers passes the query, numResults, and signal through to the fetch
 });
 
 test("searchPapers slices results to numResults", async () => {
-  const results = await searchPapers("q", { numResults: 1 }, depsWith({}));
+  const { results } = await searchPapers("q", { numResults: 1 }, depsWith({}));
   assert.equal(results.length, 1);
+});
+
+test("searchPapers passes filters.cursor to the API and returns the response's next cursor unmodified", async () => {
+  const seen: URLSearchParams[] = [];
+  const page = await searchPapers("q", { filters: { cursor: "CURSOR-1" } }, depsWith({
+    fetchWorks: async (params) => {
+      seen.push(params);
+      return { works: [NATURE_WORK], nextCursor: "CURSOR-2" };
+    },
+  }));
+  assert.equal(seen[0]!.get("cursor"), "CURSOR-1");
+  // The cursor comes back byte-for-byte — the agent passes it on untouched.
+  assert.equal(page.nextCursor, "CURSOR-2");
+  assert.equal(page.results.length, 1);
+});
+
+test("searchPapers omits nextCursor when the result set is exhausted", async () => {
+  const page = await searchPapers("q", {}, depsWith({}));
+  assert.equal("nextCursor" in page, false);
+});
+
+test("searchPapers sends filters.expression as written and merges only the retraction clause", async () => {
+  const seen: URLSearchParams[] = [];
+  const { results } = await searchPapers("", {
+    filters: { expression: "cites:W1|W2|W3,type:article" },
+  }, depsWith({
+    fetchWorks: async (params) => { seen.push(params); return [NATURE_WORK]; },
+  }));
+  assert.equal(seen.length, 1, "one call is one request — no fan-out behind the door");
+  // The multi-seed or-list rides one request, untouched, with the plugin's
+  // clause appended — never rewritten, reordered or dropped.
+  assert.equal(seen[0]!.get("filter"), "cites:W1|W2|W3,type:article,is_retracted:false");
+  assert.equal(seen[0]!.get("search"), null);
+  assert.equal(results.length, 1);
+});
+
+test("the expression composes with cursor and sort — the plugin merges no other clause into it", async () => {
+  const seen: URLSearchParams[] = [];
+  await searchPapers("q", {
+    filters: { expression: "type:article", cursor: "C1", sort: "citedBy" },
+  }, depsWith({
+    fetchWorks: async (params) => { seen.push(params); return { works: [NATURE_WORK], nextCursor: "C2" }; },
+  }));
+  assert.equal(seen[0]!.get("filter"), "type:article,is_retracted:false");
+  assert.equal(seen[0]!.get("cursor"), "C1");
+  assert.equal(seen[0]!.get("sort"), "cited_by_count:desc");
+});
+
+test("an OQL query is declined as OQL, with the filter form it maps to — not as anonymous junk", async () => {
+  await assert.rejects(
+    searchPapers("q", { filters: { expression: "works where year is (2020)" } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /is OQL, the API root's query language/);
+      // A worked translation beats a rule: the agent gets the classic form
+      // for the query it actually wrote.
+      assert.match(m, /e\.g\. "works where year is \(2020\)" becomes publication_year:2020/);
+      // The one place the retraction rule's limit is stated.
+      assert.match(m, /Only the filter form excludes retracted works by default/);
+      // Rerouting an OpenAlex-only syntax to the other adapter would send the
+      // agent in a circle — the decline names no index.
+      assert.doesNotMatch(m, /index: "europepmc"/);
+      return true;
+    },
+  );
+});
+
+test("an OQL query that groups is told the shape is out of scope, not only the syntax", async () => {
+  await assert.rejects(
+    searchPapers("q", { filters: { expression: "works where year is (2020) group by type" } }, depsWith({})),
+    (err: unknown) => /returns works, not counts by group/.test((err as Error).message),
+  );
+});
+
+test("text that is neither OQL nor a filter expression is declined generically", async () => {
+  await assert.rejects(
+    searchPapers("q", { filters: { expression: "some words" } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /is not a filter expression/);
+      assert.match(m, /publication_year:2020,is_oa:true,type:article/);
+      assert.doesNotMatch(m, /is OQL/);
+      return true;
+    },
+  );
+});
+
+test("a constraint the plugin composes cannot ride with the expression — declined, not silently dropped", async () => {
+  await assert.rejects(
+    searchPapers("q", { filters: { expression: "type:article", year: 2020 } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /year into it/);
+      assert.match(m, /publication_year:2020/);
+      return true;
+    },
+  );
+});
+
+test("an expression riding with a citation walk is refused rather than half-applied", async () => {
+  await assert.rejects(
+    searchPapers("", { filters: { expression: "cites:W1", citationGraph: { seed: "W1" } } }, depsWith({})),
+    (err: unknown) => /citationGraph into it/.test((err as Error).message),
+  );
+});
+
+test("selecting Europe PMC with an expression declines in band, naming the adapter that serves it", async () => {
+  await assert.rejects(
+    searchPapers("malaria", { index: "europepmc", filters: { expression: "type:article" } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /Europe PMC rejected the query as malformed/);
+      assert.match(m, /write the constraint into the query/);
+      assert.match(m, /index: "openalex"/);
+      return true;
+    },
+  );
+});
+
+test("the expression rides the search-cache key — two expressions are two keys", () => {
+  assert.notEqual(
+    filtersCacheKey({ expression: "type:article" }),
+    filtersCacheKey({ expression: "type:preprint" }),
+  );
+  assert.notEqual(filtersCacheKey({ expression: "type:article" }), filtersCacheKey({}));
+});
+
+test("searchPapers surfaces a rejected cursor as malformed with the API's own complaint", async () => {
+  await assert.rejects(
+    searchPapers("q", { filters: { cursor: "stale" } }, depsWith({
+      fetchWorks: async () => { throw new OpenAlexHttpError(400, null, null, null, "Invalid cursor value"); },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /rejected the query as malformed \(Invalid cursor value\)/);
+      assert.doesNotMatch(m, /unreachable/);
+      return true;
+    },
+  );
 });
 
 test("searchPapers wraps fetch failures as the in-band contract — backend named, retry index offered", async () => {

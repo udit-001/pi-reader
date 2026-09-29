@@ -141,3 +141,9 @@ test("shouldCacheSearch: a degraded papers response is refused — never cached 
   // the guard is one decision, not a provider table.
   assert.equal(shouldCacheSearch(ok({ provider: "papers", degraded: true })), false);
 });
+
+test("shouldCacheSearch: a cursor-bearing page is refused — an enumeration step is not a cached answer", () => {
+  // A cached cursor can outlive the page it points at; the agent re-fetches
+  // each page of an enumeration.
+  assert.equal(shouldCacheSearch(ok({ provider: "papers", nextCursor: "CURSOR-2" })), false);
+});

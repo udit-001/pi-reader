@@ -19,7 +19,7 @@ import { searchPapers } from "../search/papers.ts";
 const live = process.env.PIWEB_LIVE_SMOKE === "1";
 
 test("live: searchPapers returns the deep-research keys the agent reads off a plain search", { skip: !live }, async () => {
-  const results = await searchPapers("scikit-learn machine learning", { numResults: 5 });
+  const { results } = await searchPapers("scikit-learn machine learning", { numResults: 5 });
   assert.ok(results.length > 0, "no results — check connectivity or the backend's status");
   const r = results[0]!;
 
@@ -39,4 +39,18 @@ test("live: searchPapers returns the deep-research keys the agent reads off a pl
   // Abstracts are genuinely absent for many works in the REST index — the
   // contract is absent-tolerant, so absence here is correct, not drift.
   if (r.content) assert.ok(r.content.length > 0);
+});
+
+test("live: a cursor enumerates a result set past one page with no duplicates", { skip: !live }, async () => {
+  const first = await searchPapers("scikit-learn machine learning", { numResults: 3, filters: { cursor: "*" } });
+  assert.ok(first.nextCursor, "no meta.next_cursor returned — OpenAlex pagination drifted");
+  const second = await searchPapers("scikit-learn machine learning", {
+    numResults: 3,
+    filters: { cursor: first.nextCursor },
+  });
+  assert.ok(second.results.length > 0, "the second page came back empty — cursor lost or stale");
+  const firstIds = new Set(first.results.map((x) => x.openalexId));
+  for (const r2 of second.results) {
+    assert.equal(firstIds.has(r2.openalexId), false, `row ${r2.openalexId} repeated across pages`);
+  }
 });

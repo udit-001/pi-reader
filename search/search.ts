@@ -71,6 +71,10 @@ export interface SearchResponse {
    *  text): the results are NOT what was asked for. The cache guard reads this
    *  flag so a degraded answer is never cached under the requested key. */
   degraded?: boolean;
+  /** Opaque cursor for the next page of a cursor-paged provider (papers /
+   *  OpenAlex). Present only when the backend has more rows; the agent passes
+   *  it back to fetch the next page — the interface never follows it itself. */
+  nextCursor?: string;
 }
 
 // ── SearchProvider seam ──────────────────────────────────────────────────────
@@ -126,8 +130,13 @@ const autoProviders: Record<AutoProviderName, SearchProvider> = {
 // (PIWEB-14).
 const papersProvider: SearchProvider = {
   async search(query, options) {
-    const results = await searchPapers(query, options);
-    return { answer: buildAnswer(results), results, provider: "papers" };
+    const page = await searchPapers(query, options);
+    return {
+      answer: buildAnswer(page.results),
+      results: page.results,
+      provider: "papers",
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    };
   },
 };
 
@@ -260,9 +269,14 @@ function writeSearchCache(key: string, data: CachedSearch): void {
  *  (costs quota) and any degraded response — caching text under a news key
  *  would pin the degrade for the TTL instead of letting the path recover.
  *  The degrade travels as a flag on the response, so no caller has to
- *  re-derive which provider names mean "degraded". Exported for tests. */
+ *  re-derive which provider names mean "degraded". A cursor-bearing page is
+ *  never cached either: it is one step of an enumeration, and a cached cursor
+ *  can outlive the page it points at. Exported for tests. */
 export function shouldCacheSearch(response: SearchResponse): boolean {
-  return response.results.length > 0 && response.provider !== "exa" && response.degraded !== true;
+  return response.results.length > 0
+    && response.provider !== "exa"
+    && response.degraded !== true
+    && response.nextCursor === undefined;
 }
 
 export async function webSearch(

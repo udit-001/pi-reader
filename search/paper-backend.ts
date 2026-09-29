@@ -70,6 +70,34 @@ export interface PaperRecord extends SearchResult {
   /** Bare OpenAlex W-id — the seed vocabulary for citation walks and the
  *  graph math on refs/related; never surfaced in the snippet. */
   openalexId?: string;
+  /** The work's institutions, one entry per institution in authorship order
+   *  (a dual-affiliated author and a co-author at the same lab collapse to
+   *  one) — the provenance signal: a company lab reads differently from a
+   *  university. OpenAlex only. */
+  institutions?: PaperInstitution[];
+  /** The hosting venue's kind — "journal" for a peer-reviewed venue,
+   *  "repository" for a preprint server or archive, also "conference",
+   *  "ebook platform", "book series". Reads beside `venue`, which carries
+   *  only the name. OpenAlex only. */
+  venueType?: string;
+  /** How many references the work lists — a bibliography of hundreds reads
+   *  differently from a footnote of five, and `refs` is capped at 40.
+   *  OpenAlex only. */
+  refCount?: number;
+}
+
+/** One institution a work's authors claim. Every key but the name is
+ *  absent-tolerant — the API leaves type, country, and ROR off some records,
+ *  and an absent field is never invented. */
+export interface PaperInstitution {
+  name: string;
+  /** education | company | government | healthcare | nonprofit | facility |
+   *  archive | other (OpenAlex's institution vocabulary). */
+  type?: string;
+  /** ISO 3166-1 alpha-2 country code of the institution, not the author. */
+  country?: string;
+  /** Bare ROR identifier ("05a0ya142"), not the ror.org URL form. */
+  ror?: string;
 }
 // The work's abstract rides the inherited `content` key (truncated to
 // ~300 chars by the OpenAlex normalizer) — the on-topic judgment is the
@@ -84,6 +112,7 @@ export function isPaperRecord(r: SearchResult): r is PaperRecord {
     || "retracted" in r || "topic" in r || "type" in r
     || "fwci" in r || "refs" in r || "related" in r || "field" in r
     || "openalexId" in r || "keywords" in r || "citationTrend" in r
+    || "institutions" in r || "venueType" in r || "refCount" in r
     || Array.isArray((r as PaperRecord).authors);
 }
 
@@ -92,6 +121,19 @@ export function isPaperRecord(r: SearchResult): r is PaperRecord {
 export const DEFAULT_PAGE_SIZE = 10;
 
 // ── Pure seam: snippet ────────────────────────────────────────────────────────
+
+// ── PaperPage — the papers module's return contract ──────────────────────────
+
+/** One page of a papers call: the records plus the cursor for the next page
+ *  when the adapter serves one. Returned instead of a bare array so the page
+ *  boundary is part of the interface — the entry renders the cursor so the
+ *  agent can pass it back, and no adapter has to smuggle it out of band. */
+export interface PaperPage {
+  results: PaperRecord[];
+  /** Opaque cursor for the next page; absent when the result set is
+   *  exhausted or the adapter has no cursor. */
+  nextCursor?: string;
+}
 
 /** The per-record snippet inputs, whatever backend produced them. Each field
  *  absent tolerated — the builder never invents a token. */
@@ -196,6 +238,25 @@ export interface PaperFilters {
    *  sort field on its search endpoint, so it sorts post-fetch on the page
    *  it already fetched — a top-N over one page, not the whole index. */
   sort?: "citedBy";
+  /** Opaque cursor for the OpenAlex works endpoint — the `meta.next_cursor`
+   *  one call hands back, passed unmodified to the next to enumerate a
+   *  result set to its end (the works adapter's own capability; other
+   *  adapters decline it in band). One call is one request: the interface
+   *  never follows the cursor itself. */
+  cursor?: string;
+  /** The agent's own OpenAlex filter list, in the API's grammar
+   *  (`attribute:value,attribute2:value2`; a comma is AND, a pipe is OR
+   *  within one field, `!` negates, `>`/`<` compare). This is the way to any
+   *  constraint the dedicated filters do not carry — impact, author,
+   *  institution, venue, type, topic, language — and to a citation walk
+   *  across several seeds in one request (`cites:W1|W2|W3`). It IS the filter
+   *  list, so `year`/`yearRange`/`openAccess`/`citationGraph` passed beside it
+   *  are refused in band with the destination named — never appended into a
+   *  silent intersect. The retraction clause is the one clause the plugin
+   *  adds itself.
+   *  OpenAlex only — Europe PMC's query language is different and it declines
+   *  this in band. */
+  expression?: string;
   /** Look up ONE paper by identifier instead of searching — a parsePaperSeed
    *  form: DOI (10.… or a doi.org link), PMID, PMCID, a Europe PMC/NCBI
    *  article URL, or an OpenAlex W-id. The identifier picks the backend,
@@ -207,11 +268,12 @@ export interface PaperFilters {
  *  walks forward — works citing the seed; "citedBy" walks backward — the
  *  seed's own references. The walk replaces the free-text query. */
   citationGraph?: PaperCitationGraph;
-  /** Retracted works: excluded by default on OpenAlex (server-side
- *  `is_retracted:false`), because a retraction disqualifies the work as a
- *  reading candidate. Set true to include them — the `retracted` key
- *  marks them in-band when present. Europe PMC carries no equivalent
- *  filter; its retracted rows come through badged, not excluded. */
+  /** Retracted works: excluded by default on both backends through each
+   *  adapter's own server-side filter — OpenAlex's `is_retracted:false`,
+   *  Europe PMC's `NOT PUB_TYPE:"Retracted Publication"` clause folded into
+   *  the query — because a retraction disqualifies the work as a reading
+   *  candidate. Set true to include them; the `retracted` key marks them
+   *  in-band when the backend reports the marker. */
   includeRetracted?: boolean;
 }
 
@@ -285,6 +347,8 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.yearRange?.[1] ?? "",
     f.openAccess === true ? "y" : "",
     f.sort ?? "",
+    f.cursor ?? "",
+    f.expression ?? "",
     f.includeRetracted === true ? "y" : "",
     f.lookup ?? "",
     f.citationGraph?.seed ?? "",
@@ -320,20 +384,34 @@ export function paperError(
   status: PaperBackendStatus,
   failedIndex: PaperIndexName,
   detail = "",
+  /** The index to name as the retry — the other backend by default. `null`
+   *  when rerouting cannot help (an OpenAlex-only expression the agent has to
+   *  fix, not resend to an adapter that would refuse it too): the retry
+   *  sentence is then dropped rather than sending the agent in a circle. */
+  retryIndex: PaperIndexName | null = otherIndex(failedIndex),
 ): string {
   const backend = failedIndex === "openalex" ? "OpenAlex" : "Europe PMC";
   const cause = detail ? ` (${detail})` : "";
-  const retry = INDEX_SCOPE[otherIndex(failedIndex)];
+  // INDEX_SCOPE carries the other index's coverage so the agent can judge
+  // whether the retry fits its query instead of blind-retrying.
+  const retry = retryIndex === null ? null : INDEX_SCOPE[retryIndex];
   switch (status) {
     case "malformed":
-      return `${backend} rejected the query as malformed${cause}. ` +
-        `Retry with ${retry}; simplify the query — drop quotes, brackets, and boolean operators the backend's query parser may not accept.`;
+      // The detail carries the specific complaint — the backend's own words,
+      // or the interface's reason for refusing. The tail stays cause-agnostic:
+      // a filter expression is made of quotes and operators, so naming syntax
+      // to drop would make a working query worse.
+      return `${backend} rejected the query as malformed${cause}. ` + (retry === null
+        ? `Fix what the complaint names and retry.`
+        : `Retry with ${retry}, or fix what the complaint names.`);
     case "backend-down":
-      return `${backend} was unreachable${cause}. ` +
-        `Retry with ${retry}, or fetch a specific paper directly if you already hold its DOI or URL.`;
+      return `${backend} was unreachable${cause}. ` + (retry === null
+        ? `Fetch a specific paper directly if you already hold its DOI or URL.`
+        : `Retry with ${retry}, or fetch a specific paper directly if you already hold its DOI or URL.`);
     case "no-results":
-      return `${backend} returned no results for this query${cause}. ` +
-        `Retry with ${retry}, rephrase the query, or fetch a specific paper directly if you already hold its DOI or URL.`;
+      return `${backend} returned no results for this query${cause}. ` + (retry === null
+        ? `Rephrase the query, or fetch a specific paper directly if you already hold its DOI or URL.`
+        : `Retry with ${retry}, rephrase the query, or fetch a specific paper directly if you already hold its DOI or URL.`);
   }
 }
 
