@@ -27,6 +27,7 @@ import {
   paperError,
   buildPaperSnippet,
   chooseFetchableUrl,
+  paperPage,
   parsePaperSeed,
   type PaperCitationGraph,
   type PaperFilters,
@@ -770,9 +771,7 @@ async function fetchOpenAlexWorks(
   if (results.length === 0) {
     throw new PaperError(paperError("no-results", "openalex"));
   }
-  const out: PaperPage = { results: results.slice(0, n) };
-  if (nextCursor) out.nextCursor = nextCursor;
-  return out;
+  return paperPage(results, n, nextCursor);
 }
 
 /** The OpenAlex backend call: params → one page of records plus the cursor for
@@ -863,6 +862,6 @@ export async function searchPapers(
     ? requested
     : "openalex";
   return index === "europepmc"
-    ? { results: await searchEuropePmc(query, options, deps.europepmc ?? defaultEuropePmcDeps) }
+    ? searchEuropePmc(query, options, deps.europepmc ?? defaultEuropePmcDeps)
     : searchOpenAlex(query, options, deps.openalex ?? defaultOpenAlexDeps);
 }

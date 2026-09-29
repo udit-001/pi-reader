@@ -34,6 +34,7 @@ import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { isPaperRecord, PaperError, type PaperRecord } from "./search/paper-backend.ts";
+import { EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ const paperFiltersSchema = Type.Optional(
         description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
       })),
       cursor: Type.Optional(Type.String({
-        description: "Papers provider only: enumerate a result set page by page with OpenAlex's works cursor — pass '*' to start, then the 'Next cursor' each response returns, unmodified, until it stops coming (e.g. a long reference list). One call fetches one page; the cursor is never followed automatically.",
+        description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; a Europe PMC citation walk is offset-paged instead, so pass `page` there. One call fetches one page: the cursor is never followed automatically.",
       })),
       expression: Type.Optional(Type.String({
         description: "Papers provider only: OpenAlex's own filter list, written by you — 'publication_year:2020,is_oa:true,type:article'; commas are AND, a pipe is OR within one field, ! negates, > and < compare. Reach for it for any constraint the named filters lack — impact (fwci:>10), author, institution, venue, type, topic, language — and for multi-seed expansion in one request (cites:W1|W2). It replaces the filter list: write year, openAccess and the walk leg into it rather than passing them separately. OpenAlex only; Europe PMC declines it in band.",
@@ -192,13 +193,17 @@ const webSearchParams = Type.Object({
   provider: providerSchema,
   numResults: Type.Optional(Type.Integer({
     minimum: 1,
-    maximum: 25,
-    description: "Results per page. Default: 10 with category, 15 without.",
+    // Europe PMC's own per-page ceiling, and the strictest one that answers a
+    // silent empty above it (HTTP 200, zero rows, no hitCount). Holding the
+    // tool's ceiling to it means that case cannot be sent at all. OpenAlex's
+    // nearer 200 is the API's own 400, which names the cap.
+    maximum: EUROPEPMC_PAGE_SIZE_MAX,
+    description: "Results per page. Default: 10 with category, 15 without. A papers enumeration can ask for many — OpenAlex serves up to 200 rows per page and Europe PMC up to 1000; the web engines return what they have.",
   })),
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, and videos; other providers ignore it.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and the Europe PMC citation walk, whose entries are offset-paged. Every other provider ignores it: papers enumeration pages by cursor instead (filters.cursor), and Europe PMC's search declines `page` in band because its own paging ignores it too.",
   })),
   recency: recencySchema,
   license: licenseSchema,

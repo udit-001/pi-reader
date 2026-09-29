@@ -30,17 +30,26 @@ import {
   buildPaperSnippet,
   chooseFetchableUrl,
   paperError,
+  paperPage,
   parsePaperSeed,
   PaperError,
   type PaperBackendStatus,
   type PaperCitationGraph,
   type PaperFilters,
+  type PaperPage,
   type PaperRecord,
   type PaperSeed,
 } from "./paper-backend.ts";
 
 const TIMEOUT_MS = 25_000;
 const EPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest";
+
+/** Europe PMC's per-page ceiling, on every endpoint — verified live 2026-09-30:
+ *  pageSize=1000 serves on /search, /references and /citations, while 1001
+ *  answers HTTP 200 with zero rows and no hitCount. The tool's own page-size
+ *  ceiling is set to this value, which is what makes that silent empty
+ *  unsendable rather than a case to guard against. */
+export const EUROPEPMC_PAGE_SIZE_MAX = 1000;
 
 // ── Raw shape (Europe PMC result — trimmed live capture 2026-09-25) ──────────
 // resultType=lite (the default). Only the fields normalization reads are
@@ -82,6 +91,9 @@ export interface EuropePmcResponse {
   /** The citation-walk endpoints return these instead of resultList. */
   citationList?: { citation?: EuropePmcResult[] } | null;
   referenceList?: { reference?: EuropePmcResult[] } | null;
+  /** The search endpoint's paging handle — present only when the request sent
+   *  `cursorMark`, and absent on the last page. */
+  nextCursorMark?: string;
 }
 
 /** Walk entries ship pubYear as a number, search entries as a string.
@@ -208,14 +220,24 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
 
 // ── Pure seam: request params ────────────────────────────────────────────────
 
-/** Build the Europe PMC search query: query + format + pageSize. Pure;
- *  exported for tests. */
-export function buildEuropePmcParams(query: string, numResults: number): URLSearchParams {
+/** Build the Europe PMC request params: query + format + pageSize, plus the
+ *  paging mechanism the endpoint actually serves. `paging.page` is the walk
+ *  endpoints' own offset (1-based, verified live: offset = (page-1)*pageSize,
+ *  and pageSize=1000 serves while 1001 answers 200 with zero rows);
+ *  `paging.cursor` is the search endpoint's `cursorMark`, where `*` opens the
+ *  enumeration. Pure; exported for tests. */
+export function buildEuropePmcParams(
+  query: string,
+  numResults: number,
+  paging: { page?: number; cursor?: string } = {},
+): URLSearchParams {
   const params = new URLSearchParams({
     format: "json",
     pageSize: String(numResults),
   });
   if (query) params.set("query", query);
+  if (paging.page !== undefined) params.set("page", String(paging.page));
+  if (paging.cursor !== undefined) params.set("cursorMark", paging.cursor);
   return params;
 }
 
@@ -337,7 +359,7 @@ async function searchEuropePmcWalk(
   n: number,
   options: SearchOptions,
   deps: EuropePmcDeps,
-): Promise<PaperRecord[]> {
+): Promise<PaperPage> {
   const seed = parsePaperSeed(graph.seed);
   if (seed === null) {
     throw new PaperError(paperError("malformed", "europepmc", `unreadable seed "${graph.seed}" — pass a DOI, PMID, PMCID, or OpenAlex W-id`));
@@ -353,13 +375,19 @@ async function searchEuropePmcWalk(
     throw new PaperError(paperError("backend-down", "europepmc", err instanceof Error ? err.message : String(err)));
   }
   const path = planEuropePmcWalk(anchor.src, anchor.id, graph.direction ?? "cites");
-  const body = await fetchShaped(() => deps.fetchRoute(path, buildEuropePmcParams("", n), options.signal));
+  // The walk endpoints are true offset paging: the shared `page` is theirs,
+  // and `numResults` rides as their pageSize.
+  const body = await fetchShaped(() => deps.fetchRoute(
+    path,
+    buildEuropePmcParams("", n, { page: options.page }),
+    options.signal,
+  ));
   const raw = body.citationList?.citation ?? body.referenceList?.reference ?? [];
   const records = applySort(applyYearFilter(normalizeEuropePmcResults(raw), options.filters), options.filters);
   if (records.length === 0) {
     throw new PaperError(paperError("no-results", "europepmc"));
   }
-  return records.slice(0, n);
+  return paperPage(records, n);
 }
 
 /** Europe PMC search failure classification, shared by the search and lookup
@@ -410,12 +438,14 @@ export async function searchEuropePmcLookup(
 
 /** Search the papers vertical's Europe PMC backend. Throws PaperError whose
  *  message IS the in-band error text — named backend, retry hint, status
- *  distinction — so the entry passes it through verbatim. */
+ *  distinction — so the entry passes it through verbatim. Returns a page:
+ *  the records plus the search endpoint's `nextCursorMark` when it serves
+ *  one, so an enumeration continues from one call's handle. */
 export async function searchEuropePmc(
   query: string,
   options: SearchOptions = {},
   deps: EuropePmcDeps = defaultEuropePmcDeps,
-): Promise<PaperRecord[]> {
+): Promise<PaperPage> {
   // The expression door is OpenAlex's filter language — this adapter cannot
   // read it. Ignoring it would drop the agent's constraints silently, so the
   // adapter declines and names where the constraint goes instead: the retry
@@ -427,8 +457,27 @@ export async function searchEuropePmc(
   }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const graph = options.filters?.citationGraph;
-  if (graph) return searchEuropePmcWalk(graph, n, options, deps);
-  const params = buildEuropePmcParams(buildEuropePmcFilterQuery(query, options.filters), n);
+  if (graph) {
+    // The two enumeration surfaces are declared honestly rather than unified:
+    // a walk is offset-paged, so a cursor is not its mechanism.
+    if (options.filters?.cursor !== undefined) {
+      throw new PaperError(paperError("malformed", "europepmc",
+        "a Europe PMC citation walk is offset-paged — pass `page` for the page number and numResults for the page size; filters.cursor serves the search endpoint",
+        null));
+    }
+    return searchEuropePmcWalk(graph, n, options, deps);
+  }
+  // The search endpoint pages by cursor and ignores `page` outright — verified
+  // live: page=2 returns page 1's ids with no error. Those ids would be a
+  // silent duplicate page, so the request is declined and the mechanism named.
+  if (options.page !== undefined) {
+    throw new PaperError(paperError("malformed", "europepmc",
+      "Europe PMC's search endpoint pages by cursor, not page number — pass filters.cursor: \"*\" to open the enumeration, then each response's Next cursor to continue it",
+      null));
+  }
+  const params = buildEuropePmcParams(buildEuropePmcFilterQuery(query, options.filters), n, {
+    cursor: options.filters?.cursor,
+  });
   let body: EuropePmcResponse;
   try {
     body = await deps.fetchResults(params, options.signal);
@@ -441,7 +490,12 @@ export async function searchEuropePmc(
   if (results.length === 0) {
     throw new PaperError(paperError("no-results", "europepmc"));
   }
-  return results.slice(0, n);
+  // Europe PMC ships `nextCursorMark` on every search response, cursor mode or
+  // not (verified live 2026-09-30) — so the handle is attached only when the
+  // request opened or continued an enumeration. Attaching it always would
+  // print a Next cursor line on every ordinary search and, because a
+  // cursor-bearing response is never cached, quietly cost the search cache.
+  return paperPage(results, n, options.filters?.cursor !== undefined ? body.nextCursorMark : undefined);
 }
 
 /** The index name this adapter serves — attached to the adapter's export so

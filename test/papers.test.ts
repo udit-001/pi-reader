@@ -24,7 +24,7 @@ import {
   type OpenAlexWork,
   type OpenAlexDeps,
 } from "../search/papers.ts";
-import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, type PaperRecord } from "../search/paper-backend.ts";
+import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, paperPage, type PaperRecord } from "../search/paper-backend.ts";
 import { isPaperRecord } from "../search/paper-backend.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
 
@@ -297,6 +297,23 @@ test("an empty bibliography reports zero references rather than dropping the cou
 test("isPaperRecord recognises a row carrying only an authority key", () => {
   assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", venueType: "repository" }), true);
   assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", refCount: 2 }), true);
+});
+
+// The shared page assembly both backends return through — one shape, one
+// place that decides what a handle at the edge looks like.
+test("paperPage slices to the page size and rides the handle only when it is a non-empty string", () => {
+  const rows = [
+    { title: "a", url: "u", snippet: "" },
+    { title: "b", url: "u", snippet: "" },
+    { title: "c", url: "u", snippet: "" },
+  ];
+  assert.deepEqual(paperPage(rows, 2).results.map((r) => r.title), ["a", "b"]);
+  assert.equal("nextCursor" in paperPage(rows, 2), false);
+  assert.equal(paperPage(rows, 2, "CURSOR-2").nextCursor, "CURSOR-2");
+  // An exhausted or absent handle never becomes an empty-string cursor the
+  // agent would pass back.
+  assert.equal("nextCursor" in paperPage(rows, 2, null), false);
+  assert.equal("nextCursor" in paperPage(rows, 2, ""), false);
 });
 
 // The shared builder directly (same module Europe PMC renders through):

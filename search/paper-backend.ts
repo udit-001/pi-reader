@@ -135,6 +135,18 @@ export interface PaperPage {
   nextCursor?: string;
 }
 
+/** One page of results: the records sliced to the caller's page size, plus
+ *  the adapter's own handle for the next page when it served one. Both
+ *  backends return their page through this, so the page boundary is part of
+ *  the module's contract rather than a per-adapter detail. An empty or absent
+ *  handle leaves `nextCursor` off the page — never an empty string. Pure;
+ *  exported for tests. */
+export function paperPage(results: PaperRecord[], limit: number, nextCursor?: string | null): PaperPage {
+  const page: PaperPage = { results: results.slice(0, limit) };
+  if (typeof nextCursor === "string" && nextCursor !== "") page.nextCursor = nextCursor;
+  return page;
+}
+
 /** The per-record snippet inputs, whatever backend produced them. Each field
  *  absent tolerated — the builder never invents a token. */
 export interface PaperSnippetMeta {

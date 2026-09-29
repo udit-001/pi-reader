@@ -215,7 +215,11 @@ interface CachedSearch {
   timestamp: number;
 }
 
-function getSearchCacheKey(query: string, options: SearchOptions & { provider?: SearchProviderName | "auto" }): string {
+/** The search-cache key: every option that changes the row set rides it, or a
+ *  later call replays an earlier one's rows. The page size is one of them —
+ *  asking for 200 rows after a 10-row call is a different request, and a shared
+ *  key would answer it with the ten. Pure; exported for tests. */
+export function searchCacheKey(query: string, options: SearchOptions & { provider?: SearchProviderName | "auto" }): string {
   // Hash query + options to create a unique cache key
   const parts = [
     query,
@@ -225,6 +229,7 @@ function getSearchCacheKey(query: string, options: SearchOptions & { provider?: 
     options.license ?? "",
     (options.domains ?? []).sort().join(","),
     String(options.page ?? 1),
+    String(options.numResults ?? ""),
     String(options.includeContent ?? false),
     String(options.includeSummary ?? false),
     // Papers vertical: the backend choice changes results — keyed.
@@ -287,7 +292,7 @@ export async function webSearch(
 
   // Check cache first (unless provider is explicitly set to exa)
   if (requested !== "exa") {
-    const cacheKey = getSearchCacheKey(query, options);
+    const cacheKey = searchCacheKey(query, options);
     const cached = readSearchCache(cacheKey);
     if (cached) {
       return { answer: buildAnswer(cached.results), results: cached.results, provider: cached.provider as SearchProviderName };
@@ -326,7 +331,7 @@ export async function webSearch(
 
   // Cache successful results (shouldCacheSearch — pure, test-pinned)
   if (shouldCacheSearch(response)) {
-    const cacheKey = getSearchCacheKey(query, options);
+    const cacheKey = searchCacheKey(query, options);
     writeSearchCache(cacheKey, {
       query,
       provider: response.provider,

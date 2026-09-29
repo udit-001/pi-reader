@@ -129,6 +129,166 @@ test("searchPapers falls back to OpenAlex on an unknown index value — never Eu
   assert.equal(openalexCalled, 1);
 });
 
+// ── Europe PMC enumeration (PIWEB-33): offset walks, cursor search ───────────
+// The two surfaces are declared honestly rather than unified: the walk
+// endpoints are true offset paging, the search endpoint is cursor-only and
+// ignores `page` outright (verified live: page=2 returns page 1's ids).
+
+const REF = (n: number): EuropePmcResult => ({
+  id: `REF${n}`,
+  source: "MED",
+  pmid: `${40000000 + n}`,
+  title: `Reference ${n}`,
+  journalTitle: "J",
+  pubYear: "2020",
+  authorString: "A B",
+  isOpenAccess: "N",
+  inEPMC: "N",
+  inPMC: "N",
+});
+
+test("a Europe PMC walk is offset-paged: the shared page and numResults reach its route", async () => {
+  const seen: Array<{ path: string; params: URLSearchParams }> = [];
+  await searchPapers("", {
+    index: "europepmc",
+    numResults: 50,
+    page: 2,
+    filters: { citationGraph: { seed: "32581362", direction: "citedBy" } },
+  }, depsWith({
+    europepmc: {
+      fetchRoute: async (path, params) => {
+        seen.push({ path, params });
+        return { hitCount: 59, referenceList: { reference: [REF(1)] } };
+      },
+    },
+  }));
+  assert.equal(seen.length, 1, "one call is one request — no cursor-walking behind the agent's back");
+  assert.equal(seen[0]!.path, "MED/32581362/references");
+  assert.equal(seen[0]!.params.get("page"), "2");
+  assert.equal(seen[0]!.params.get("pageSize"), "50");
+});
+
+test("a 59-entry reference list enumerates completely across offset pages, with no duplicates and no gaps", async () => {
+  const all = Array.from({ length: 59 }, (_, i) => REF(i));
+  const ask = (page: number) => searchPapers("", {
+    index: "europepmc",
+    numResults: 25,
+    page,
+    filters: { citationGraph: { seed: "32581362", direction: "citedBy" } },
+  }, depsWith({
+    europepmc: {
+      // The API's own offset rule: offset = (page - 1) * pageSize.
+      fetchRoute: async (_path, params) => {
+        const size = Number(params.get("pageSize"));
+        const p = Number(params.get("page"));
+        return { hitCount: 59, referenceList: { reference: all.slice((p - 1) * size, p * size) } };
+      },
+    },
+  }));
+  const collected: string[] = [];
+  for (const page of [1, 2, 3]) {
+    const { results } = await ask(page);
+    collected.push(...results.map((r) => r.title));
+  }
+  assert.equal(collected.length, 59);
+  assert.equal(new Set(collected).size, 59);
+  assert.deepEqual(collected, all.map((r) => r.title));
+});
+
+test("Europe PMC's search takes the cursor it was given and hands back the next page's handle", async () => {
+  const seen: URLSearchParams[] = [];
+  const page = await searchPapers("malaria", { index: "europepmc", filters: { cursor: "*" } }, depsWith({
+    europepmc: {
+      fetchResults: async (params) => {
+        seen.push(params);
+        return { hitCount: 291321, resultList: { result: [EPMC_RESULT] }, nextCursorMark: "AoIIQCDKcyg1NTkyNzA3OQ==" };
+      },
+    },
+  }));
+  assert.equal(seen[0]!.get("cursorMark"), "*");
+  // Byte-for-byte: the agent passes it on untouched.
+  assert.equal(page.nextCursor, "AoIIQCDKcyg1NTkyNzA3OQ==");
+  assert.equal(page.results.length, 1);
+});
+
+test("Europe PMC's search leaves nextCursor absent when the enumeration ends", async () => {
+  const page = await searchPapers("malaria", { index: "europepmc" }, depsWith({
+    europepmc: { fetchResults: async () => ({ hitCount: 1, resultList: { result: [EPMC_RESULT] } }) },
+  }));
+  assert.equal("nextCursor" in page, false);
+});
+
+test("Europe PMC's search declines `page` in band, naming the cursor as the mechanism", async () => {
+  await assert.rejects(
+    searchPapers("malaria", { index: "europepmc", page: 2 }, depsWith({
+      europepmc: { fetchResults: async () => { throw new Error("must not be called"); } },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /pages by cursor, not page number/);
+      assert.match(m, /filters\.cursor/);
+      assert.doesNotMatch(m, /index: "openalex"/);
+      return true;
+    },
+  );
+});
+
+test("a Europe PMC walk declines filters.cursor, naming the offset parameter that serves it", async () => {
+  await assert.rejects(
+    searchPapers("", {
+      index: "europepmc",
+      filters: { cursor: "X", citationGraph: { seed: "32581362" } },
+    }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /walk is offset-paged/);
+      assert.match(m, /`page`/);
+      return true;
+    },
+  );
+});
+
+test("a Europe PMC search that never opened an enumeration is not handed its cursor", async () => {
+  // Europe PMC ships nextCursorMark on every search response, cursor mode or
+  // not (verified live). Attaching it always would print a phantom Next cursor
+  // line and cost the search cache, which refuses a cursor-bearing response.
+  const page = await searchPapers("malaria", { index: "europepmc" }, depsWith({
+    europepmc: {
+      fetchResults: async () => ({
+        hitCount: 291321,
+        resultList: { result: [EPMC_RESULT] },
+        nextCursorMark: "AoIIQCDKcyg1NTkyNzA3OQ==",
+      }),
+    },
+  }));
+  assert.equal("nextCursor" in page, false);
+});
+
+test("a forward walk pages its citation list by offset with no duplicates and no gaps", async () => {
+  const all = Array.from({ length: 445 }, (_, i) => REF(i));
+  const ask = (page: number) => searchPapers("", {
+    index: "europepmc",
+    numResults: 30,
+    page,
+    filters: { citationGraph: { seed: "32581362", direction: "cites" } },
+  }, depsWith({
+    europepmc: {
+      fetchRoute: async (path, params) => {
+        assert.equal(path, "MED/32581362/citations", "the forward walk must ride /citations");
+        const size = Number(params.get("pageSize"));
+        const p = Number(params.get("page"));
+        return { hitCount: 445, citationList: { citation: all.slice((p - 1) * size, p * size) } };
+      },
+    },
+  }));
+  const first = await ask(1);
+  const second = await ask(2);
+  assert.equal(first.results.length, 30);
+  assert.equal(second.results.length, 30);
+  const titles = [...first.results, ...second.results].map((r) => r.title);
+  assert.equal(new Set(titles).size, 60);
+});
+
 // ── The same-shape guarantee — no per-backend forking downstream ──────────────
 
 test("both backends emit PaperRecords with the same flat keys on a shared record", async () => {

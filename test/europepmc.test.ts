@@ -19,6 +19,7 @@ import {
   isRetractedPubType,
   mergeRetractionClause,
   RETRACTION_EXCLUSION_CLAUSE,
+  EUROPEPMC_PAGE_SIZE_MAX,
   searchEuropePmcLookup,
   planEuropePmcWalk,
   searchEuropePmc,
@@ -207,6 +208,26 @@ test("europepmc params carry the query, json format, and page size", () => {
   assert.equal(p.get("query"), "CRISPR base editing");
   assert.equal(p.get("format"), "json");
   assert.equal(p.get("pageSize"), "10");
+  // An unnamed page size is the API's default, not a sent 1.
+  assert.equal(p.get("page"), null);
+  assert.equal(p.get("cursorMark"), null);
+});
+
+test("europepmc params carry the paging mechanism the endpoint serves — offset or cursor, never both", () => {
+  const walk = buildEuropePmcParams("", 30, { page: 2 });
+  assert.equal(walk.get("page"), "2");
+  assert.equal(walk.get("cursorMark"), null);
+  const search = buildEuropePmcParams("malaria", 5, { cursor: "*" });
+  assert.equal(search.get("cursorMark"), "*");
+  assert.equal(search.get("page"), null);
+});
+
+test("the Europe PMC page-size ceiling is the tool's own — above it the API answers a silent empty", () => {
+  // Verified live 2026-09-30: pageSize=1000 serves on /search, /references and
+  // /citations; 1001 answers HTTP 200 with zero rows and no hitCount, which
+  // would read as "no results". index.ts imports this constant as the tool's
+  // numResults maximum, so the silent case cannot be requested at all.
+  assert.equal(EUROPEPMC_PAGE_SIZE_MAX, 1000);
 });
 
 // ── parsePubYear — numeric walk entries and string search entries ────────────
@@ -351,7 +372,7 @@ function depsWith(overrides: Partial<EuropePmcDeps>): EuropePmcDeps {
 }
 
 test("searchEuropePmc returns normalized records on the happy path", async () => {
-  const results = await searchEuropePmc("CRISPR base editing", {}, depsWith({}));
+  const { results } = await searchEuropePmc("CRISPR base editing", {}, depsWith({}));
   assert.equal(results.length, 3);
   assert.equal(results[0]!.doi, "10.1038/s41551-026-01747-y");
   assert.equal(results[1]!.oaUrl, "https://europepmc.org/article/PMC13434336");
@@ -372,7 +393,7 @@ test("searchEuropePmc excludes retracted work server-side by default, and honour
 });
 
 test("searchEuropePmc marks a retracted row when the opt-in returns one", async () => {
-  const results = await searchEuropePmc("malaria", { filters: { includeRetracted: true } }, depsWith({
+  const { results } = await searchEuropePmc("malaria", { filters: { includeRetracted: true } }, depsWith({
     fetchResults: async () => ({
       hitCount: 1,
       resultList: { result: [{ ...PUBMED_REC, pubType: "retracted publication; editorial" }] },
@@ -397,7 +418,7 @@ test("searchEuropePmc passes the query, pageSize, and signal through to the fetc
 });
 
 test("searchEuropePmc slices results to numResults", async () => {
-  const results = await searchEuropePmc("q", { numResults: 1 }, depsWith({}));
+  const { results } = await searchEuropePmc("q", { numResults: 1 }, depsWith({}));
   assert.equal(results.length, 1);
 });
 
@@ -450,7 +471,7 @@ test("searchEuropePmc keeps 429 rate-limiting in the backend-down bucket, not ma
 
 test("searchEuropePmc walks forward from a PMID seed through the citations route", async () => {
   const seen: Array<{ path: string; params: URLSearchParams }> = [];
-  const results = await searchEuropePmc("", { filters: { citationGraph: { seed: "32581362", direction: "cites" } } }, depsWith({
+  const { results } = await searchEuropePmc("", { filters: { citationGraph: { seed: "32581362", direction: "cites" } } }, depsWith({
     fetchRoute: async (path, params) => {
       seen.push({ path, params });
       return { hitCount: 445, citationList: { citation: [WALK_REC, PMC_REC] } };
@@ -482,7 +503,7 @@ test("searchEuropePmc resolves a DOI seed through the search endpoint before wal
 });
 
 test("searchEuropePmc applies the year filter to walk results — the documented approximation", async () => {
-  const results = await searchEuropePmc("", {
+  const { results } = await searchEuropePmc("", {
     filters: { citationGraph: { seed: "32581362" }, year: 2026 },
   }, depsWith({
     fetchRoute: async () => ({

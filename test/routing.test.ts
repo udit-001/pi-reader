@@ -5,7 +5,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoChain, shouldCacheSearch, type SearchResponse } from "../search/search.ts";
+import { autoChain, shouldCacheSearch, searchCacheKey, type SearchResponse } from "../search/search.ts";
+
+test("searchCacheKey keys the page size — a bigger ask is not the earlier call's answer", () => {
+  // The cache is keyed on everything that changes the rows. With a page size
+  // missing, asking for 200 rows after a 10-row call replayed the ten.
+  const ten = searchCacheKey("malaria", { provider: "papers", numResults: 10 });
+  const twoHundred = searchCacheKey("malaria", { provider: "papers", numResults: 200 });
+  const unset = searchCacheKey("malaria", { provider: "papers" });
+  assert.notEqual(ten, twoHundred);
+  assert.notEqual(ten, unset);
+  // Everything else unchanged still collides — page size is the only new axis.
+  assert.equal(ten, searchCacheKey("malaria", { provider: "papers", numResults: 10 }));
+});
 
 test("autoChain: plain keyword query starts free at DuckDuckGo", () => {
   assert.deepEqual(autoChain({}), ["duckduckgo", "exa"]);
