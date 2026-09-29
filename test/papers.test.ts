@@ -468,7 +468,7 @@ test("abstractFromInvertedIndex rebuilds plaintext by position and truncates at 
   assert.equal(abstractFromInvertedIndex({}), undefined);
   const long = Array.from({ length: 400 }, (_, i) => `w${i}`).join(" ");
   const built = abstractFromInvertedIndex(Object.fromEntries(long.split(" ").map((w, i) => [w, [i]])))!;
-  assert.equal(built.length, 298); // 297 chars + ellipsis
+  assert.equal(built.length, 300); // 299 chars + ellipsis — the bound is exact
   assert.equal(built.endsWith("…"), true);
 });
 
@@ -890,6 +890,30 @@ test("searchPapers surfaces a rejected cursor as malformed with the API's own co
       const m = (err as Error).message;
       assert.match(m, /rejected the query as malformed \(Invalid cursor value\)/);
       assert.doesNotMatch(m, /unreachable/);
+      return true;
+    },
+  );
+});
+
+test("a rejected filter expression reaches the agent as the backend's own complaint, quoted and bounded", async () => {
+  // The real 400 body for an unknown field is a catalogue of every valid field
+  // — the failure mode that would otherwise carry thousands of characters into
+  // the agent's context on a routine typo. The opening sentence is actionable;
+  // the catalogue is not.
+  const catalogue = "publication_yearx is not a valid field. Valid fields are underscore or hyphenated versions of: "
+    + "abstract.search, ".repeat(300);
+  await assert.rejects(
+    searchPapers("q", { filters: { expression: "publication_yearx:2020" } }, depsWith({
+      fetchWorks: async () => { throw new OpenAlexHttpError(400, null, null, null, catalogue); },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      // Quoted, not paraphrased — and the quote is visibly elided.
+      assert.match(m, /rejected the query as malformed \(publication_yearx is not a valid field\./);
+      assert.match(m, /…/, "the elision must be visible, not silent");
+      assert.ok(m.length < 600, `the complaint should be bounded, got ${m.length} chars`);
+      // An OpenAlex-only expression has no other index to try; the fix is local.
+      assert.doesNotMatch(m, /index: "europepmc"/);
       return true;
     },
   );

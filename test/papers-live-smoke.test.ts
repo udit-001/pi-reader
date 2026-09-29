@@ -36,9 +36,60 @@ test("live: searchPapers returns the deep-research keys the agent reads off a pl
     assert.notEqual(r[key], undefined, `deep-research key ${key} missing — projection or normalizer drifted`);
   }
   assert.ok((r.refs?.length ?? 0) > 0, "refs empty — referenced_works projection lost");
+
+  // Authority (PIWEB-27): the same guard for the fields that make a company lab
+  // distinguishable from a university. A renamed wire field empties every
+  // record silently, so the presence check has to live here.
+  for (const key of ["institutions", "venueType", "refCount"] as const) {
+    assert.notEqual(r[key], undefined, `authority key ${key} missing — projection or normalizer drifted`);
+  }
+  assert.ok((r.institutions?.length ?? 0) > 0, "institutions empty — authorships.institutions lost");
+  const inst = r.institutions![0]!;
+  for (const k of ["name", "type", "country", "ror"] as const) {
+    assert.notEqual(inst[k], undefined, `institution missing ${k} — the authority mapping drifted`);
+  }
+  // Dedupe is the invariant that cannot drift falsely: the anchor's raw
+  // authorships collapse to unique institutions, whatever their count.
+  const names = r.institutions!.map((x) => x.name);
+  assert.equal(new Set(names).size, names.length, "institutions came back duplicated — dedupe drifted");
+  assert.ok((r.refCount ?? 0) > 0, "refCount empty — referenced_works lost");
+
   // Abstracts are genuinely absent for many works in the REST index — the
   // contract is absent-tolerant, so absence here is correct, not drift.
   if (r.content) assert.ok(r.content.length > 0);
+});
+
+test("live: a genuinely rejected expression surfaces the API's own complaint", { skip: !live }, async () => {
+  // readErrorDetail is the only reader of the wire's {"message": …} body, so a
+  // renamed field would degrade every malformed error to "the request was
+  // rejected" — silently, everywhere, which is the drift class this file
+  // exists to catch. An unknown filter field is a real 400 from the real API.
+  await assert.rejects(
+    searchPapers("q", { filters: { expression: "publication_yearx:2020" } }),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /rejected the query as malformed/, "the 400 stopped reading as malformed");
+      assert.match(m, /publication_yearx is not a valid field/, "the API's own complaint stopped arriving — the error body's field name drifted");
+      assert.ok(m.length < 600, `the complaint should stay bounded, got ${m.length} chars`);
+      return true;
+    },
+  );
+});
+
+test("live: a multi-seed expression returns rows in one request", { skip: !live }, async () => {
+  // The pipe is the API's own or-operator, so expanding two seeds is one
+  // request rather than a loop the interface runs (verified live 2026-09-30:
+  // 65,591 works cite either anchor).
+  const { results } = await searchPapers("", {
+    numResults: 5,
+    filters: { expression: "cites:W2101234009|W2066783444" },
+  });
+  assert.ok(results.length > 0, "the pipe or-list returned nothing — the expression path or the filter drifted");
+  for (const row of results) {
+    for (const key of ["title", "url", "snippet"] as const) {
+      assert.notEqual(row[key], undefined, `expression result missing ${key}`);
+    }
+  }
 });
 
 test("live: a cursor enumerates a result set past one page with no duplicates", { skip: !live }, async () => {
@@ -53,6 +104,10 @@ test("live: a cursor enumerates a result set past one page with no duplicates", 
   for (const r2 of second.results) {
     assert.equal(firstIds.has(r2.openalexId), false, `row ${r2.openalexId} repeated across pages`);
   }
+  // The point of the walk: two pages carry more rows than one. A cursor that
+  // silently stopped advancing would still pass the no-duplicates check.
+  const union = new Set([...first.results, ...second.results].map((x) => x.openalexId));
+  assert.ok(union.size > first.results.length, "the second page added no rows — enumeration is not advancing");
 });
 
 // The Europe PMC half of the same guard: its walk endpoints page by offset and

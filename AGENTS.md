@@ -10,7 +10,7 @@ npm run typecheck   # tsc --noEmit
 npm test            # node --test test/*.test.ts
 ```
 
-Gate for every commit: typecheck and the full suite pass. No build step — TypeScript runs directly via Node's `--test` loader. Wire-drift check for the papers vertical (real OpenAlex call, skipped by default, metered): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`.
+Gate for every commit: typecheck and the full suite pass. No build step — TypeScript runs directly via Node's `--test` loader. Wire-drift check for the papers vertical (real API calls — OpenAlex metered, Europe PMC keyless — skipped by default): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`.
 
 ## Architecture
 

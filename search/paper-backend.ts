@@ -6,8 +6,9 @@
 // output and every row reads a different grammar downstream. Every backend
 // normalizes into `PaperRecord` (PIWEB-14's contract, unchanged), renders
 // through `buildPaperSnippet`, and reports failure through `paperError` —
-// named backend, retry `index`, manual-URL escape hatch, and the
-// no-results/backend-down/malformed distinction.
+// named backend, the retry `index` where rerouting can serve the request, the
+// manual-URL escape hatch, and the no-results/backend-down/malformed
+// distinction.
 //
 // No degrade-to-text anywhere in the vertical: prose cannot substitute for
 // paper records, so failure always fails in-band, never fakes rows.
@@ -390,8 +391,10 @@ export function otherIndex(index: PaperIndexName): PaperIndexName {
 /** Build the in-band error for a failed papers search. One single home per
  *  meaning: every papers failure reads through this template, so the agent
  *  always sees the same error grammar — backend named, cause distinguished
- *  (no-results vs backend-down vs malformed), retry `index` and manual URL
- *  named. Pure; exported for tests. */
+ *  (no-results vs backend-down vs malformed), the manual URL named where one
+ *  exists, and the retry `index` offered where rerouting can actually serve
+ *  the request (a `malformed` clause belongs to one adapter's syntax, so its
+ *  caller passes `null`). Pure; exported for tests. */
 export function paperError(
   status: PaperBackendStatus,
   failedIndex: PaperIndexName,

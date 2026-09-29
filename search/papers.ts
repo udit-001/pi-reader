@@ -172,7 +172,7 @@ export function abstractFromInvertedIndex(idx: Record<string, number[]> | null |
   }
   const text = slots.filter((w): w is string => w !== undefined).join(" ").trim();
   if (!text) return undefined;
-  return text.length > 300 ? `${text.slice(0, 297)}…` : text;
+  return elide(text, 300);
 }
 
 /** OpenAlex carries the DOI as an https URL ("https://doi.org/10.1038/…");
@@ -514,8 +514,9 @@ export class OpenAlexHttpError extends Error {
   readonly remaining: number | null;
   readonly remainingUsd: number | null;
   readonly resetSeconds: number | null;
-  /** The API's own `message` from a 400 body — surfaced verbatim as the
-   *  malformed cause, so the agent fixes its cursor or filter in one turn. */
+  /** The API's own `message` from a 400 body — quoted as the malformed
+   *  cause, bounded where it is rendered, so the agent fixes its cursor or
+   *  filter in one turn. */
   readonly detail: string | null;
 
   constructor(
@@ -603,15 +604,30 @@ export function openAlexErrorDetail(
   return "daily credits exhausted (the keyless daily budget is spent) — a free API key raises the budget 10×: get one at openalex.org/settings/api or run /openalex-setup";
 }
 
+/** Truncate to `max` characters with a visible ellipsis — the one place that
+ *  decides what a cut-off looks like, so an abstract preview and a backend's
+ *  complaint read the same way. Pure; module-private. */
+function elide(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** How much of a rejected request's complaint reaches the agent. An unknown
+ *  filter field makes OpenAlex enumerate every valid field — thousands of
+ *  characters of catalogue, measured live — and the opening sentence is the
+ *  actionable part. Bounded rather than dropped, with the elision visible, so
+ *  the agent can see it is reading a quote. Module-private. */
+const COMPLAINT_LIMIT = 240;
+
 /** Wrap any OpenAlex failure as the backend-down contract error; 429/401/403
  *  classify through the metering detail, everything else keeps its message. */
 function openAlexBackendDown(err: unknown, keyed: boolean): PaperError {
   if (err instanceof OpenAlexHttpError) {
-    // A 400 is the API rejecting the request — a bad cursor or filter
-    // expression — not an outage. Surface its own complaint so the fix is
-    // local (the alternative is retrying a working service).
+    // A 400 is the API rejecting the request — a bad cursor or a bad filter
+    // clause — not an outage. Surface its own complaint, bounded, so the fix is
+    // local. No index retry rides along: Europe PMC cannot read an OpenAlex
+    // cursor or filter list, so sending the agent there is a circle.
     if (err.status === 400) {
-      return new PaperError(paperError("malformed", "openalex", err.detail ?? "the request was rejected"));
+      return new PaperError(paperError("malformed", "openalex", elide(err.detail?.trim() || "the request was rejected", COMPLAINT_LIMIT), null));
     }
     const detail = openAlexErrorDetail(err.status, err.remaining, err.remainingUsd, err.resetSeconds, keyed);
     if (detail !== null) return new PaperError(paperError("backend-down", "openalex", detail));

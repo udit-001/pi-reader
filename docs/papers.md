@@ -5,7 +5,17 @@ Reference for `search/papers.ts` (backend dispatch), `search/paper-backend.ts` (
 ## Shape
 
 - `provider: "papers"` → `searchPapers()`: the backend dispatcher. `index` picks the backend — `"openalex"` (default) or `"europepmc"` — and both normalize into the one `PaperRecord` shape (`year`, `authors`, `venue`, `citedBy`, `oaUrl`, `doi`, `retracted`, `topic`, `type` flat keys beside the standard `title`/`url`/`snippet`). Enrichment keys are absent-tolerant — present when the API provides them, never invented. The snippet renders the `retracted` badge before the open-access badge (a retraction changes how every other token is weighed) and the topic token after it. `search/paper-backend.ts` owns the record, the snippet builder, the URL policy, and the error contract; `normalize*` is the only backend fork point, so downstream (entry rendering, the shared helpers in `paper-backend.ts`) never branches on the backend.
-- Failure throws `PaperError`, whose message is built by `paperError()` — the entry passes it verbatim. Three statuses: `no-results`, `backend-down`, `malformed`, each naming the backend, the retry `index`, and a manual-DOI escape hatch. The entry's generic error rewriter never touches these — the retry hint IS the actionability.
+- Failure throws `PaperError`, whose message is built by `paperError()` — the entry passes it verbatim. Three statuses: `no-results`, `backend-down`, `malformed`. The entry's generic error rewriter never touches these — the hint IS the actionability.
+
+## When each cause fires
+
+One grammar, three causes; the adapters differ only in which cause they report into.
+
+- **`malformed`** — the request was rejected, so the fix is in the query rather than in the service. OpenAlex: any HTTP 400 (a misspelled or unknown filter field, a bad clause value, a rejected cursor), carrying the API's own complaint quoted and bounded. The bound is load-bearing: an unknown field makes OpenAlex enumerate *every* valid field, and that catalogue is not the actionable part, so the opening sentence is kept and the elision is made visible. Europe PMC: any 4xx except 429, plus its seed-resolution and identifier failures.
+
+Whether a malformed message also offers the retry `index` depends on whether the other adapter could actually serve the request. An identifier or a query language that belongs to the other one does name it — that *is* the alternative, which is why a PMID handed to OpenAlex and an expression handed to Europe PMC both point across. A rejected filter clause or cursor does not: the syntax belongs to one adapter, so pointing at the other is a circle, and the message sends the agent back to the query instead.
+- **`backend-down`** — the service was unreachable or metered: 429, 401/403, timeouts, 5xx. This is the cause that offers the retry `index` and the manual-DOI escape hatch. Its 429 slice reads the real budget rather than guessing: keyless exhaustion names the free key and `/openalex-setup`, keyed exhaustion gives the countdown from `X-RateLimit-Reset`, remaining budget reads as temporary throttling, and 401/403 reads as a rejected key with the config/env path to it.
+- **`no-results`** — the service answered and matched nothing: an empty page, a walk that filtered everything out, or a genuine empty result set. The other index is offered because a differently-covered one may hold it, alongside rephrasing and the manual-DOI path.
 
 ## The deep-research keys
 
