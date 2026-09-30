@@ -126,10 +126,10 @@ const paperFiltersSchema = Type.Optional(
         description: "Rank by 'citedBy' — descending citation count, the 'find papers on X which are highly cited' ask — or 'date' for newest first. Relevance is the default. Both adapters sort the whole set at the backend; a Europe PMC citation walk is the one exception, its routes taking no sort.",
       })),
       synonym: Type.Optional(Type.Boolean({
-        description: "Europe PMC only: expand the query through the backend's synonym table — 'heart attack' also reaches 'myocardial infarction'. Recall leaps (54,785 → 755,190 on a quoted phrase) at a precision cost, so reach for it when recall is what this turn needs; the works adapter declines it in band.",
+        description: "Europe PMC only: expand the query through the backend's synonym table — 'heart attack' also reaches 'myocardial infarction'. Recall leaps (54,785 → 755,190 on a quoted phrase) at a precision cost, so reach for it when recall is what this turn needs. OpenAlex declines it in band (the lever is Europe PMC's), and so does a Europe PMC citation walk, having no query to expand — run a search instead.",
       })),
       cursor: Type.Optional(Type.String({
-        description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; Europe PMC's /references and /citations lists are offset-paged instead, so pass `page` there. One call fetches one page: the cursor is never followed automatically.",
+        description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; a Europe PMC /references or /citations walk declines the cursor in band — pass `page` there. One call fetches one page: the cursor is never followed automatically.",
       })),
       expression: Type.Optional(Type.String({
         description: EXPRESSION_PARAM_DESCRIPTION,
@@ -212,7 +212,7 @@ const webSearchParams = Type.Object({
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and Europe PMC's /references and /citations lists, whose entries are offset-paged. Every other provider ignores it: papers enumeration pages by cursor instead (filters.cursor), and Europe PMC's search declines `page` in band because its own paging ignores it too.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and Europe PMC's /references and /citations walks, whose entries are offset-paged. Papers enumeration pages by cursor (filters.cursor) instead, and a Europe PMC search declines `page` in band. Other providers ignore it.",
   })),
   recency: recencySchema,
   license: licenseSchema,

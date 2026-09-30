@@ -432,7 +432,7 @@ export const EXPRESSION_PARAM_DESCRIPTION =
   "One work from an identifier you already hold is a clause as well — doi:10.1038/… or ids.pmid:22955618 — and needs none of the traversal machinery. " +
   "Fold year, openAccess and citationGraph into the expression. " +
   "A field beyond these families still rides through — the API lists every field it accepts in the error it returns for an unknown one (https://api.openalex.org/works?filter=unknown:1). " +
-  "Works adapter only; Europe PMC declines the syntax in band, naming the identifier form its own query accepts (DOI:\"…\", EXT_ID:…, PMCID:…).";
+  "Works adapter only; Europe PMC declines the syntax in band, naming `query` as the place for the constraint, with an identifier in its own form (DOI:\"…\", EXT_ID:…, PMCID:…).";
 
 /** Split a filter expression on its own clause separator (a comma, except
  *  inside a quoted value). Null when the text is not a filter expression:
