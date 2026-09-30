@@ -821,9 +821,16 @@ async function searchOpenAlexWalk(
       wId = bareOpenAlexId(rec.id ?? "");
     }
     // One server-side call per walk — cited_by:W… is the seed's reference
-    // list resolved by the index; no chunk loop, no OR-cap math.
+    // list resolved by the index; no chunk loop, no OR-cap math. The agent's
+    // cursor rides through untouched: a citation result set pages exactly like
+    // any other works query, and the handle is never followed here.
     return await fetchOpenAlexWorks(
-      buildPaperParams("", n, key, buildOpenAlexFilter(options.filters, wId, graph.direction ?? "cites")),
+      buildPaperParams(
+        "", n, key,
+        buildOpenAlexFilter(options.filters, wId, graph.direction ?? "cites"),
+        undefined,
+        options.filters?.cursor,
+      ),
       n,
       options,
       deps,
@@ -887,6 +894,14 @@ async function searchOpenAlex(
   if (options.filters?.idsOnly === true) {
     throw new PaperError(paperError("malformed", "openalex",
       "filters.idsOnly is Europe PMC's cheap enumeration tier — OpenAlex has no identifiers-only mode; drop it or retry with index: \"europepmc\""));
+  }
+  // OpenAlex's works endpoint serves `page` natively, but this adapter's papers
+  // handle is the cursor: honoring a second mechanism here would fork the
+  // interface across the two adapters, and ignoring the parameter hands back
+  // page 1 with no warning. So it is declined and the handle named.
+  if (options.page !== undefined) {
+    throw new PaperError(paperError("malformed", "openalex",
+      "OpenAlex's works endpoint pages by cursor, not page number — pass filters.cursor: \"*\" to open the enumeration, then each response's Next cursor to continue it"));
   }
   // The expression door: the agent's own filter list, validated and merged.
   // Computed before the walk branch so an expression riding with a walk leg

@@ -263,6 +263,20 @@ test("Europe PMC's search declines `page` in band, naming the cursor as the mech
   );
 });
 
+test("the works adapter declines `page` in band, naming the cursor as the mechanism", async () => {
+  await assert.rejects(
+    searchPapers("malaria", { index: "openalex", page: 2 }, depsWith({
+      openalex: { fetchWorks: async () => { throw new Error("must not be called"); } },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /OpenAlex's works endpoint pages by cursor, not page number/);
+      assert.match(m, /filters\.cursor/);
+      return true;
+    },
+  );
+});
+
 test("a Europe PMC walk declines filters.cursor, naming the offset parameter that serves it", async () => {
   await assert.rejects(
     searchPapers("", {
@@ -489,6 +503,23 @@ test("openalex walk rejects PMID/PMCID seeds naming the concrete identifier and 
       return true;
     },
   );
+});
+
+test("a citation walk carries the agent's cursor onto the works query, and never follows it", async () => {
+  let sent: URLSearchParams | undefined;
+  const page = await searchPapers("", { filters: { citationGraph: { seed: "W3161425918" }, cursor: "AoIIQDNe" } }, depsWith({
+    openalex: {
+      fetchWorks: async (params) => {
+        sent = params;
+        return { works: [OPENALEX_WORK], nextCursor: "AoJNEXT" };
+      },
+    },
+  }));
+  // One call, one request: the handle rode the query rather than being dropped,
+  // and the response's own cursor is handed back for the agent to decide on.
+  assert.equal(sent!.get("cursor"), "AoIIQDNe");
+  assert.equal(sent!.get("filter"), "is_retracted:false,cites:W3161425918");
+  assert.equal(page.nextCursor, "AoJNEXT");
 });
 
 // ── parsePaperSeed — the shared seed grammar ─────────────────────────────────

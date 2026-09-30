@@ -214,7 +214,7 @@ const webSearchParams = Type.Object({
   page: Type.Optional(Type.Integer({
     minimum: 1,
     maximum: 50,
-    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and Europe PMC's /references and /citations walks, whose entries are offset-paged. Papers enumeration pages by cursor (filters.cursor) instead, and a Europe PMC search declines `page` in band. Other providers ignore it.",
+    description: "Result page to fetch (1 = top results; 2 with numResults 10 = results 11–20). Honored on duckduckgo, news, images, videos, and Europe PMC's /references and /citations walks, whose entries are offset-paged. Papers enumeration pages by cursor (filters.cursor) instead, so the works adapter and a Europe PMC search both decline `page` in band. Other providers ignore it.",
   })),
   recency: recencySchema,
   license: licenseSchema,

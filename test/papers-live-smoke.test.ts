@@ -309,6 +309,27 @@ test("live: Europe PMC's silent repairs are real", { skip: !live }, async () => 
 // PIWEB-33's identifiers-only tier: the cheap page of a large enumeration. The
 // wire returns source-scoped ids only, and the tier is the search endpoint's —
 // the walk routes ignore resultType, so the adapter declines it there.
+// PIWEB-32 AC 12: a citation result set pages like any other works query. The
+// adapter used to drop `filters.cursor` on the walk leg, so a 807-row `cites:`
+// set was capped at one page with no way to ask for the next.
+test("live: an OpenAlex citation walk pages with the agent's cursor", { skip: !live }, async () => {
+  const first = await searchPapers("", {
+    numResults: 3,
+    filters: { citationGraph: { seed: "W3161425918" }, cursor: "*" },
+  });
+  assert.ok(first.results.length > 0, "the walk's first page came back empty");
+  assert.ok(first.nextCursor, "no meta.next_cursor on a citation walk — the cursor was dropped again");
+  const second = await searchPapers("", {
+    numResults: 3,
+    filters: { citationGraph: { seed: "W3161425918" }, cursor: first.nextCursor },
+  });
+  assert.ok(second.results.length > 0, "the walk's second page came back empty — cursor lost or stale");
+  const seen = new Set(first.results.map((r) => r.openalexId));
+  for (const r of second.results) {
+    assert.equal(seen.has(r.openalexId), false, `row ${r.openalexId} repeated across walk pages`);
+  }
+});
+
 test("live: a Europe PMC search enumerates identifiers-only, past one page", { skip: !live }, async () => {
   const first = await searchPapers("malaria", {
     index: "europepmc",
