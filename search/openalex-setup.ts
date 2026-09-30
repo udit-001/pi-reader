@@ -45,7 +45,7 @@ export function classifyOpenAlexValidation(
   key: string,
 ): ValidationResult {
   if (ok) return { ok: true };
-  const detail = openAlexErrorDetail(status, remaining, remainingUsd, null, true)
+  const detail = openAlexErrorDetail(status, { remaining, remainingUsd, resetSeconds: null, retryAfterSeconds: null }, true)
     ?? `OpenAlex returned ${status}`;
   const reason = redact(detail, key);
   if (status === 401 || status === 403) return { ok: false, kind: "invalid", reason };

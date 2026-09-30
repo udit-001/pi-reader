@@ -699,32 +699,37 @@ function readOpenAlexKey(): string | null {
 
 // ── Metering error contract (PIWEB-19) ────────────────────────────────────
 
-/** An OpenAlex HTTP failure carrying the metering headers the 429 contract
- *  reads and the API's own complaint for a rejected request (400). Thrown by
- *  the default deps; classified by openAlexErrorDetail. */
+/** The metering reading off one response — the numbers the 429 contract
+ *  classifies from. One shape: `rateLimitHeaders` produces it, the thrown error
+ *  carries it, and `openAlexErrorDetail` classifies it, so a new header is read
+ *  in one place and reaches the classifier without a new parameter. */
+export interface OpenAlexRateLimit {
+  /** Daily credits left; null when the header is absent. */
+  remaining: number | null;
+  remainingUsd: number | null;
+  /** Seconds to the daily reset (midnight UTC). */
+  resetSeconds: number | null;
+  /** `Retry-After` — present on a per-endpoint throttle (semantic search's
+   *  1 request/second), absent on a daily-budget exhaustion. */
+  retryAfterSeconds: number | null;
+}
+
+/** An OpenAlex HTTP failure carrying the metering reading the 429 contract
+ *  classifies and the API's own complaint for a rejected request (400). Thrown
+ *  by the default deps; classified by openAlexErrorDetail. */
 export class OpenAlexHttpError extends Error {
   readonly status: number;
-  readonly remaining: number | null;
-  readonly remainingUsd: number | null;
-  readonly resetSeconds: number | null;
+  readonly rateLimit: OpenAlexRateLimit;
   /** The API's own `message` from a 400 body — quoted as the malformed
    *  cause, bounded where it is rendered, so the agent fixes its cursor or
    *  filter in one turn. */
   readonly detail: string | null;
 
-  constructor(
-    status: number,
-    remaining: number | null,
-    remainingUsd: number | null,
-    resetSeconds: number | null,
-    detail: string | null = null,
-  ) {
+  constructor(status: number, rateLimit: OpenAlexRateLimit, detail: string | null = null) {
     super(`OpenAlex returned ${status}`);
     this.name = "OpenAlexHttpError";
     this.status = status;
-    this.remaining = remaining;
-    this.remainingUsd = remainingUsd;
-    this.resetSeconds = resetSeconds;
+    this.rateLimit = rateLimit;
     this.detail = detail;
   }
 }
@@ -749,45 +754,48 @@ function parseNumericHeader(v: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function rateLimitHeaders(h: Headers): { remaining: number | null; remainingUsd: number | null; resetSeconds: number | null } {
+function rateLimitHeaders(h: Headers): OpenAlexRateLimit {
   return {
     remaining: parseNumericHeader(h.get("X-RateLimit-Remaining")),
     remainingUsd: parseNumericHeader(h.get("X-RateLimit-Remaining-USD")),
     resetSeconds: parseNumericHeader(h.get("X-RateLimit-Reset")),
+    retryAfterSeconds: parseNumericHeader(h.get("Retry-After")),
   };
 }
 
-/** The parsed metering headers — shared with the setup wizard's free probe
+/** The parsed metering reading — shared with the setup wizard's free probe
  *  and budget readout, so both classify from the same grammar. Exported. */
-export function parseOpenAlexRateLimitHeaders(h: Headers): ReturnType<typeof rateLimitHeaders> {
+export function parseOpenAlexRateLimitHeaders(h: Headers): OpenAlexRateLimit {
   return rateLimitHeaders(h);
 }
 
 /** The 429/401/403 slice of the backend-down contract. Classified from the
- *  wire's own headers — never a live probe: remaining (or remaining-USD)
- *  zero → daily credits exhausted; remaining > 0 → temporary throttling
- *  (the >100 req/s limit); 401/403 → key rejected. Keyless exhaustion names
- *  the free key and /openalex-setup; keyed exhaustion names the reset (from
- *  X-RateLimit-Reset — seconds to midnight UTC). The key value itself never
- *  appears in any text. Non-metering statuses → null — the caller falls
- *  back to the generic message. Pure; exported for tests. */
-export function openAlexErrorDetail(
-  status: number,
-  remaining: number | null,
-  remainingUsd: number | null,
-  resetSeconds: number | null,
-  keyed: boolean,
-): string | null {
+ *  wire's own reading — never a live probe: a zero remaining (or remaining-USD)
+ *  → daily credits exhausted; any other metering signal → temporary throttling
+ *  (a `Retry-After`, or a positive remaining for the burst limit); 401/403 →
+ *  key rejected. Keyless exhaustion names the free key and /openalex-setup;
+ *  keyed exhaustion names the reset (from X-RateLimit-Reset — seconds to
+ *  midnight UTC). The key value itself never appears in any text. Non-metering
+ *  statuses → null — the caller falls back to the generic message. Pure;
+ *  exported for tests. */
+export function openAlexErrorDetail(status: number, rateLimit: OpenAlexRateLimit, keyed: boolean): string | null {
+  const { remaining, remainingUsd, resetSeconds, retryAfterSeconds } = rateLimit;
   if (status === 401 || status === 403) {
     return `key rejected (HTTP ${status}) — check papers.openalexApiKey in ~/.pi/agent/pi-reader.json or OPENALEX_API_KEY in the environment`;
   }
   if (status !== 429) return null;
-  const exhausted = remaining === 0 || remainingUsd === 0
-    // No metering headers at all: assume the daily budget, not the burst —
-    // the exhausted text is the actionable one for a session-long caller.
-    || (remaining === null && remainingUsd === null);
+  // A reading with no metering signal at all is assumed to be the daily budget,
+  // not the burst — the exhausted text is the actionable one for a session-long
+  // caller. `Retry-After` is a signal even without the X-RateLimit headers: it
+  // is what a per-endpoint throttle sends (semantic search's 1 req/s), and
+  // reading that as exhaustion would send the agent away until midnight over a
+  // one-second limit.
+  const signal = remaining !== null || remainingUsd !== null || retryAfterSeconds !== null;
+  const exhausted = remaining === 0 || remainingUsd === 0 || !signal;
   if (!exhausted) {
-    return "temporary throttling (over 100 requests/s) — retry shortly";
+    return retryAfterSeconds !== null
+      ? `temporary throttling — retry in ${retryAfterSeconds} second${retryAfterSeconds === 1 ? "" : "s"}`
+      : "temporary throttling — retry shortly";
   }
   if (keyed) {
     return resetSeconds !== null
@@ -815,7 +823,7 @@ function openAlexBackendDown(err: unknown, keyed: boolean): PaperError {
     if (err.status === 400) {
       return new PaperError(paperError("malformed", "openalex", elide(err.detail?.trim() || "the request was rejected", COMPLAINT_LIMIT), null));
     }
-    const detail = openAlexErrorDetail(err.status, err.remaining, err.remainingUsd, err.resetSeconds, keyed);
+    const detail = openAlexErrorDetail(err.status, err.rateLimit, keyed);
     if (detail !== null) return new PaperError(paperError("backend-down", "openalex", detail));
   }
   return new PaperError(paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)));
@@ -872,7 +880,7 @@ async function fetchJson(url: string, signal?: AbortSignal, apiKey?: string | nu
   });
   if (!res.ok) {
     const rl = rateLimitHeaders(res.headers);
-    throw new OpenAlexHttpError(res.status, rl.remaining, rl.remainingUsd, rl.resetSeconds, await readErrorDetail(res));
+    throw new OpenAlexHttpError(res.status, rl, await readErrorDetail(res));
   }
   return res.json() as unknown;
 }
@@ -889,7 +897,7 @@ export const defaultOpenAlexDeps: OpenAlexDeps = {
     if (res.status === 404) return null;
     if (!res.ok) {
       const rl = rateLimitHeaders(res.headers);
-      throw new OpenAlexHttpError(res.status, rl.remaining, rl.remainingUsd, rl.resetSeconds, await readErrorDetail(res));
+      throw new OpenAlexHttpError(res.status, rl, await readErrorDetail(res));
     }
     return (await res.json()) as OpenAlexWork;
   },

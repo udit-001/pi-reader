@@ -27,6 +27,7 @@ import {
   resolveOpenAlexKey,
   openAlexErrorDetail,
   OpenAlexHttpError,
+  type OpenAlexRateLimit,
   searchPapers,
   type OpenAlexWork,
   type OpenAlexDeps,
@@ -616,32 +617,48 @@ test("openalex key resolution: config wins over env; env alone works; neither �
 
 // ── openAlexErrorDetail — the metering slice of the backend-down contract ───
 
+/** A metering reading for the 429 tests — every header absent unless named. */
+const rl = (o: Partial<OpenAlexRateLimit> = {}): OpenAlexRateLimit => ({
+  remaining: null, remainingUsd: null, resetSeconds: null, retryAfterSeconds: null, ...o,
+});
+
 test("openalex error detail: 429 with zero remaining reports credits exhausted — keyless names the key fix", () => {
-  const d = openAlexErrorDetail(429, 0, null, 300, false);
+  const d = openAlexErrorDetail(429, rl({ remaining: 0, resetSeconds: 300 }), false);
   assert.match(d!, /daily credits exhausted/);
   assert.match(d!, /openalex\.org\/settings\/api/);
   assert.match(d!, /\/openalex-setup/);
 });
 
 test("openalex error detail: keyed exhaustion names the reset from X-RateLimit-Reset", () => {
-  const d = openAlexErrorDetail(429, 0, null, 120, true);
+  const d = openAlexErrorDetail(429, rl({ remaining: 0, resetSeconds: 120 }), true);
   assert.match(d!, /daily credits exhausted/);
   assert.match(d!, /120 seconds/);
   assert.match(d!, /midnight UTC/);
   assert.doesNotMatch(d!, /settings\/api/);
   // Header absent — still keyed-exhaustion, just no countdown.
-  assert.match(openAlexErrorDetail(429, 0, null, null, true)!, /resets at midnight UTC/);
+  assert.match(openAlexErrorDetail(429, rl({ remaining: 0 }), true)!, /resets at midnight UTC/);
 });
 
 test("openalex error detail: 429 with remaining budget reports throttling, retry shortly", () => {
-  assert.match(openAlexErrorDetail(429, 7, null, 60, false)!, /temporary throttling/);
-  assert.match(openAlexErrorDetail(429, null, 0.05, 60, true)!, /temporary throttling/);
-  assert.match(openAlexErrorDetail(429, 7, null, 60, false)!, /retry shortly/);
+  assert.match(openAlexErrorDetail(429, rl({ remaining: 7, resetSeconds: 60 }), false)!, /temporary throttling/);
+  assert.match(openAlexErrorDetail(429, rl({ remainingUsd: 0.05, resetSeconds: 60 }), true)!, /temporary throttling/);
+  assert.match(openAlexErrorDetail(429, rl({ remaining: 7, resetSeconds: 60 }), false)!, /retry shortly/);
+});
+
+test("openalex error detail: a Retry-After with no X-RateLimit headers is throttling, not exhaustion", () => {
+  // Semantic search's 1 req/s sends `Retry-After` and no metering headers at
+  // all (verified live). Reading that as the daily budget would send the agent
+  // away until midnight over a one-second limit.
+  const d = openAlexErrorDetail(429, rl({ retryAfterSeconds: 1 }), true)!;
+  assert.match(d, /temporary throttling/);
+  assert.ok(d.endsWith("retry in 1 second"), `expected a singular-second retry, got: ${d}`);
+  assert.doesNotMatch(d, /exhausted/);
+  assert.match(openAlexErrorDetail(429, rl({ retryAfterSeconds: 30 }), false)!, /retry in 30 seconds/);
 });
 
 test("openalex error detail: 401/403 report key rejected without ever echoing the key", () => {
   for (const status of [401, 403]) {
-    const d = openAlexErrorDetail(status, null, null, null, true)!;
+    const d = openAlexErrorDetail(status, rl(), true)!;
     assert.match(d, /key rejected/);
     assert.match(d, /OPENALEX_API_KEY/);
     assert.doesNotMatch(d, /secret-oa-key/);
@@ -649,8 +666,8 @@ test("openalex error detail: 401/403 report key rejected without ever echoing th
 });
 
 test("openalex error detail: non-metering statuses fall through to null", () => {
-  assert.equal(openAlexErrorDetail(500, null, null, null, false), null);
-  assert.equal(openAlexErrorDetail(503, null, null, null, true), null);
+  assert.equal(openAlexErrorDetail(500, rl(), false), null);
+  assert.equal(openAlexErrorDetail(503, rl(), true), null);
 });
 
 // ── buildOpenAlexFilter — the exact filter= grammar (PIWEB-16) ────────────────
@@ -1026,7 +1043,7 @@ test("the expression rides the search-cache key — two expressions are two keys
 test("searchPapers surfaces a rejected cursor as malformed with the API's own complaint", async () => {
   await assert.rejects(
     searchPapers("q", { filters: { cursor: "stale" } }, depsWith({
-      fetchWorks: async () => { throw new OpenAlexHttpError(400, null, null, null, "Invalid cursor value"); },
+      fetchWorks: async () => { throw new OpenAlexHttpError(400, rl(), "Invalid cursor value"); },
     })),
     (err: unknown) => {
       const m = (err as Error).message;
@@ -1046,7 +1063,7 @@ test("a rejected filter expression reaches the agent as the backend's own compla
     + "abstract.search, ".repeat(300);
   await assert.rejects(
     searchPapers("q", { filters: { expression: "publication_yearx:2020" } }, depsWith({
-      fetchWorks: async () => { throw new OpenAlexHttpError(400, null, null, null, catalogue); },
+      fetchWorks: async () => { throw new OpenAlexHttpError(400, rl(), catalogue); },
     })),
     (err: unknown) => {
       const m = (err as Error).message;
@@ -1097,7 +1114,7 @@ test("a metered 429 (zero remaining) surfaces the credits-exhausted text — key
   await assert.rejects(
     searchPapers("q", {}, depsWith({
       resolveKey: () => "secret-oa-key",
-      fetchWorks: async () => { throw new OpenAlexHttpError(429, 0, null, 45); },
+      fetchWorks: async () => { throw new OpenAlexHttpError(429, rl({ remaining: 0, resetSeconds: 45 })); },
     })),
     (err: unknown) => {
       const m = (err as Error).message;
@@ -1109,7 +1126,7 @@ test("a metered 429 (zero remaining) surfaces the credits-exhausted text — key
   await assert.rejects(
     searchPapers("q", {}, depsWith({
       resolveKey: () => null,
-      fetchWorks: async () => { throw new OpenAlexHttpError(429, 0, null, 45); },
+      fetchWorks: async () => { throw new OpenAlexHttpError(429, rl({ remaining: 0, resetSeconds: 45 })); },
     })),
     (err: unknown) => {
       const m = (err as Error).message;
@@ -1123,7 +1140,7 @@ test("a metered 429 (zero remaining) surfaces the credits-exhausted text — key
 test("a metered 429 with remaining budget surfaces the throttled/retry text", async () => {
   await assert.rejects(
     searchPapers("q", {}, depsWith({
-      fetchWorks: async () => { throw new OpenAlexHttpError(429, 6, null, null); },
+      fetchWorks: async () => { throw new OpenAlexHttpError(429, rl({ remaining: 6 })); },
     })),
     (err: unknown) => {
       assert.match((err as Error).message, /temporary throttling .* retry shortly/);
@@ -1135,7 +1152,7 @@ test("a metered 429 with remaining budget surfaces the throttled/retry text", as
 test("a 401 from OpenAlex surfaces the key-rejected text", async () => {
   await assert.rejects(
     searchPapers("q", {}, depsWith({
-      fetchWorks: async () => { throw new OpenAlexHttpError(401, null, null, null); },
+      fetchWorks: async () => { throw new OpenAlexHttpError(401, rl()); },
     })),
     (err: unknown) => {
       assert.match((err as Error).message, /key rejected \(HTTP 401\)/);
