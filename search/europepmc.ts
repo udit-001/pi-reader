@@ -585,13 +585,40 @@ export function parseAuthors(authorString: string | undefined): string[] | undef
 // ── Normalization (agent-POV) ────────────────────────────────────────────────
 
 /** Europe PMC results → PaperRecords, the same flat keys the OpenAlex
- *  backend produces. Works with no record URL are dropped. Pure; exported
- *  for tests. */
-export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperRecord[] {
+ *  backend produces. Works with no record URL are dropped.
+ *
+ *  `idsOnly` marks rows that came back from the identifiers-only tier
+ *  (`resultType=idlist`), whose wire entry is the source-scoped identifiers and
+ *  nothing else. The tier does not fork the record SHAPE — one normalizer, one
+ *  shape — it decides only how far down that shape there is anything to fill,
+ *  which is what keeps an ordinary row from gaining the tier's keys. Pure;
+ *  exported for tests. */
+export function normalizeEuropePmcResults(
+  results: EuropePmcResult[],
+  options: { idsOnly?: boolean } = {},
+): PaperRecord[] {
   const records: PaperRecord[] = [];
+  const idsOnly = options.idsOnly === true;
   for (const r of results) {
     const url = chooseRecordUrl(r);
     if (url === null) continue;
+    // The tier's row IS its identity, and it is built here, ahead of the
+    // enrichment, so the two paths share only the URL decision and nothing is
+    // computed to be discarded. The enrichment has no wire data to read for an
+    // idlist entry, and running it would derive fields from the id's own source
+    // prefix — a PPR id would read as a `repository` venue never claimed. The
+    // badge is absent because the wire sent no flag, not because it said
+    // closed. (Probed live 2026-09-30: pmid on a MEDLINE row, pmcid on a PMC
+    // one, neither on a preprint or a patent.)
+    if (idsOnly) {
+      const rec: PaperRecord = { title: r.title ?? "", url, snippet: "" };
+      if (r.id) rec.europepmcId = r.id;
+      if (r.source) rec.europepmcSource = r.source;
+      if (r.pmid) rec.pmid = r.pmid;
+      if (r.pmcid) rec.pmcid = r.pmcid;
+      records.push(rec);
+      continue;
+    }
     const types = pubTypes(r);
     const retracted = types.some((t) => isRetractedPubType(t));
     const venue = r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation;
@@ -877,6 +904,9 @@ export async function searchEuropePmc(
       null));
   }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
+  // Read once: the tier decides the request's resultType, whether the rows are
+  // built as identifiers, and whether this surface can serve the request at all.
+  const idsOnly = options.filters?.idsOnly === true;
   const graph = options.filters?.citationGraph;
   if (graph) {
     // The two enumeration surfaces are declared honestly rather than unified:
@@ -890,6 +920,15 @@ export async function searchEuropePmc(
     if (options.filters?.synonym === true) {
       throw new PaperError(paperError("malformed", "europepmc",
         "filters.synonym expands a free-text query — a citation walk has none; pass it on a search instead",
+        null));
+    }
+    // The identifiers-only tier is the search endpoint's. The walk routes
+    // accept resultType and ignore it (verified live — they return full
+    // entries), so forwarding it would answer a request for bare identifiers
+    // with heavy rows while claiming the cheap tier had been served.
+    if (idsOnly) {
+      throw new PaperError(paperError("malformed", "europepmc",
+        "the identifiers-only tier is the search endpoint's — Europe PMC's /references and /citations routes ignore resultType and return full entries; drop filters.idsOnly on a citation walk, or enumerate a search with it instead",
         null));
     }
     return searchEuropePmcWalk(graph, n, options, deps);
@@ -916,7 +955,9 @@ export async function searchEuropePmc(
   }, {
     synonym: options.filters?.synonym,
     sort: sortValue ?? undefined,
-    resultType: "core",
+    // The cheap tier asks for identifiers only; every other search asks for the
+    // full record, because the authority signals live only there.
+    resultType: idsOnly ? "idlist" : "core",
   });
   let body: EuropePmcResponse;
   try {
@@ -926,7 +967,9 @@ export async function searchEuropePmc(
     const message = err instanceof Error ? err.message : String(err);
     throw new PaperError(paperError(classifyEuropePmcFailure(err), "europepmc", message));
   }
-  const results = normalizeEuropePmcResults(body.resultList?.result ?? []);
+  const results = normalizeEuropePmcResults(body.resultList?.result ?? [], {
+    idsOnly,
+  });
   if (results.length === 0) {
     throw new PaperError(paperError("no-results", "europepmc"));
   }

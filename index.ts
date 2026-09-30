@@ -128,6 +128,9 @@ const paperFiltersSchema = Type.Optional(
       synonym: Type.Optional(Type.Boolean({
         description: "Europe PMC only: expand the query through the backend's synonym table — 'heart attack' also reaches 'myocardial infarction'. Recall leaps (54,785 → 755,190 on a quoted phrase) at a precision cost, so reach for it when recall is what this turn needs. OpenAlex declines it in band (the lever is Europe PMC's), and so does a Europe PMC citation walk, having no query to expand — run a search instead.",
       })),
+      idsOnly: Type.Optional(Type.Boolean({
+        description: "Europe PMC only: the identifiers-only tier — the cheap way to enumerate a large set, each match its source-scoped identifiers. Composes with filters.cursor; a citation walk and the OpenAlex adapter decline it.",
+      })),
       cursor: Type.Optional(Type.String({
         description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; a Europe PMC /references or /citations walk declines the cursor in band — pass `page` there. One call fetches one page: the cursor is never followed automatically.",
       })),
@@ -457,6 +460,10 @@ export default function piWeb(pi: ExtensionAPI): void {
                   ...(r.refs?.length ? { refs: r.refs } : {}),
                   ...(r.related?.length ? { related: r.related } : {}),
                   ...(r.openalexId ? { openalexId: r.openalexId } : {}),
+                  ...(r.europepmcId ? { europepmcId: r.europepmcId } : {}),
+                  ...(r.europepmcSource ? { europepmcSource: r.europepmcSource } : {}),
+                  ...(r.pmid ? { pmid: r.pmid } : {}),
+                  ...(r.pmcid ? { pmcid: r.pmcid } : {}),
                   ...(r.field ? { field: r.field } : {}),
                   ...(r.keywords?.length ? { keywords: r.keywords } : {}),
                   ...(r.recentCitations !== undefined ? { recentCitations: r.recentCitations } : {}),

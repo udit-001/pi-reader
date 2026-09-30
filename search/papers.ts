@@ -880,6 +880,14 @@ async function searchOpenAlex(
     throw new PaperError(paperError("malformed", "openalex",
       "filters.synonym is Europe PMC's recall lever — OpenAlex has no synonym expansion; drop it or retry with index: \"europepmc\""));
   }
+  // The identifiers-only tier is the Europe PMC search endpoint's. OpenAlex has
+  // no such mode, and answering a request for bare identifiers with a full
+  // works page is the opposite of the ask, so it is declined and the index that
+  // serves it is named.
+  if (options.filters?.idsOnly === true) {
+    throw new PaperError(paperError("malformed", "openalex",
+      "filters.idsOnly is Europe PMC's cheap enumeration tier — OpenAlex has no identifiers-only mode; drop it or retry with index: \"europepmc\""));
+  }
   // The expression door: the agent's own filter list, validated and merged.
   // Computed before the walk branch so an expression riding with a walk leg
   // is refused rather than half-applied.

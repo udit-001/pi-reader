@@ -41,7 +41,7 @@ import {
   type EuropePmcResult,
   type EuropePmcResponse,
 } from "../search/europepmc.ts";
-import { PaperError } from "../search/paper-backend.ts";
+import { PaperError, parsePaperSeed } from "../search/paper-backend.ts";
 
 // ── Fixtures — trimmed live capture (2026-09-25) ─────────────────────────────
 
@@ -488,6 +488,54 @@ test("parseFunding dedupes the grant list and tolerates a missing identifier or 
   assert.equal(parseFunding({}), undefined);
   // An entry with no agency has nothing to anchor to.
   assert.equal(parseFunding({ grantsList: { grant: [{ grantId: "1" }] } }), undefined);
+});
+
+test("an identifiers-only row carries the identifiers the wire sent and invents nothing else", () => {
+  const rows: EuropePmcResult[] = [
+    { id: "42575118", source: "MED", pmid: "42575118" },
+    { id: "PMC13577938", source: "PMC", pmcid: "PMC13577938", fullTextIdList: { fullTextId: ["PMC13577938"] } },
+    { id: "PPR1327472", source: "PPR" },
+  ];
+  const recs = normalizeEuropePmcResults(rows, { idsOnly: true });
+  // The source-scoped pair is the payload, read from the wire's own keys.
+  assert.deepEqual(recs.map((r) => `${r.europepmcSource}/${r.europepmcId}`), ["MED/42575118", "PMC/PMC13577938", "PPR/PPR1327472"]);
+  // A source-specific identifier rides only where the wire sent one (probed
+  // live: pmid for MED, pmcid for PMC, neither for PPR or PAT).
+  assert.deepEqual(recs.map((r) => r.pmid), ["42575118", undefined, undefined]);
+  assert.deepEqual(recs.map((r) => r.pmcid), [undefined, "PMC13577938", undefined]);
+  // The record's required keys stay, and the derived record URL is what makes
+  // a bare id row actionable — it is also a citation seed parsePaperSeed reads.
+  assert.equal(recs[0]!.url, "https://europepmc.org/article/MED/42575118");
+  assert.equal(recs[0]!.title, "");
+  assert.equal(recs[0]!.snippet, "");
+  for (const r of recs) {
+    for (const k of ["venue", "doi", "oaUrl", "type", "content", "citedBy", "venueType"] as const) {
+      assert.equal(k in r, false, `${k} was invented for a bare id row`);
+    }
+  }
+});
+
+test("an ids-only row's identifiers are the walk seeds, whatever the source", () => {
+  const recs = normalizeEuropePmcResults([
+    { id: "42575118", source: "MED", pmid: "42575118" },
+    { id: "PMC13577938", source: "PMC", pmcid: "PMC13577938" },
+    { id: "PPR1327472", source: "PPR" },
+  ], { idsOnly: true });
+  // The identifier forms are the seeds: a bare PMID, a bare PMC id.
+  assert.equal(parsePaperSeed(recs[0]!.pmid!)?.kind, "pmid");
+  assert.equal(parsePaperSeed(recs[1]!.pmcid!)?.kind, "pmcid");
+  // The derived URL is a record handle. Only the MEDLINE form happens to parse
+  // as a seed — a preprint's does not — which is why the identifiers, not the
+  // URL, are what the tier hands the agent for seeding.
+  assert.equal(parsePaperSeed(recs[0]!.url)?.kind, "pmid");
+  assert.equal(parsePaperSeed(recs[2]!.url), null);
+});
+
+test("a core row carries no identifier keys — the tier belongs to the identifiers-only mode", () => {
+  const [r] = normalizeEuropePmcResults([CORE_REC]);
+  for (const k of ["europepmcId", "europepmcSource", "pmid", "pmcid"] as const) {
+    assert.equal(k in r!, false, `${k} leaked onto an ordinary row`);
+  }
 });
 
 test("the core normalizer rails the subject and provenance block onto the record", () => {
@@ -983,6 +1031,48 @@ test("searchEuropePmc declines the synonym lever on a walk — the route takes n
       return true;
     },
   );
+});
+
+test("searchEuropePmc declines the identifiers-only tier on a walk — its routes ignore resultType", async () => {
+  await assert.rejects(
+    searchEuropePmc("", { filters: { citationGraph: { seed: "32581362" }, idsOnly: true } }, depsWith({})),
+    (err: unknown) => {
+      assert.match((err as Error).message, /identifiers-only tier is the search endpoint/);
+      return true;
+    },
+  );
+});
+
+test("the identifiers-only tier asks for resultType=idlist and returns identifier rows", async () => {
+  let sent: URLSearchParams | undefined;
+  const { results } = await searchEuropePmc("malaria", { numResults: 3, filters: { idsOnly: true, cursor: "*" } }, depsWith({
+    fetchResults: async (params) => {
+      sent = params;
+      return {
+        hitCount: 291379,
+        resultList: { result: [
+          { id: "42575118", source: "MED", pmid: "42575118" },
+          { id: "PPR1327472", source: "PPR" },
+        ] },
+        nextCursorMark: "AoIIQDNeQig1NTM0Mj",
+      } as EuropePmcResponse;
+    },
+  }));
+  assert.equal(sent!.get("resultType"), "idlist");
+  // The cheap tier composes with the enumeration it exists to serve.
+  assert.equal(sent!.get("cursorMark"), "*");
+  assert.deepEqual(results.map((r) => `${r.europepmcSource}/${r.europepmcId}`), ["MED/42575118", "PPR/PPR1327472"]);
+});
+
+test("an ordinary search still asks for the full record", async () => {
+  let sent: URLSearchParams | undefined;
+  await searchEuropePmc("malaria", {}, depsWith({
+    fetchResults: async (params) => {
+      sent = params;
+      return { hitCount: 1, resultList: { result: [PMC_REC] } } as EuropePmcResponse;
+    },
+  }));
+  assert.equal(sent!.get("resultType"), "core");
 });
 
 test("searchEuropePmc slices results to numResults", async () => {

@@ -306,6 +306,34 @@ test("live: Europe PMC's silent repairs are real", { skip: !live }, async () => 
   assert.equal(badSort.ok, false, "an invalid sort no longer fails on the wire — the sort decline's premise changed");
 });
 
+// PIWEB-33's identifiers-only tier: the cheap page of a large enumeration. The
+// wire returns source-scoped ids only, and the tier is the search endpoint's —
+// the walk routes ignore resultType, so the adapter declines it there.
+test("live: a Europe PMC search enumerates identifiers-only, past one page", { skip: !live }, async () => {
+  const first = await searchPapers("malaria", {
+    index: "europepmc",
+    numResults: 5,
+    filters: { idsOnly: true, cursor: "*" },
+  });
+  assert.equal(first.results.length, 5, "the ids-only page came up short — pageSize did not ride the request");
+  for (const r of first.results) {
+    assert.ok(r.europepmcId, "an ids-only row carried no id — resultType=idlist drifted");
+    assert.ok(r.europepmcSource, "an ids-only row carried no source");
+    assert.equal(r.title, "", "an ids-only row carried a title — the lite record leaked back in");
+    assert.equal("venue" in r, false, "an ids-only row carried a heavy field");
+  }
+  assert.ok(first.nextCursor, "no cursor on an ids-only enumeration — the tier must compose with the cursor");
+  const second = await searchPapers("malaria", {
+    index: "europepmc",
+    numResults: 5,
+    filters: { idsOnly: true, cursor: first.nextCursor },
+  });
+  const seen = new Set(first.results.map((r) => r.europepmcId));
+  for (const r of second.results) {
+    assert.equal(seen.has(r.europepmcId), false, `${r.europepmcId} repeated across pages — the cursor is not advancing`);
+  }
+});
+
 // PIWEB-36: the core request is what supplies affiliations, ORCIDs, the work
 // type and the abstract — the lite form carried none of them. A renamed wire
 // field empties every record silently, so the presence check lives here.

@@ -667,6 +667,41 @@ test("a Europe PMC search reaches the caller with the subject and provenance blo
   assert.deepEqual(r.funding, [{ agency: "NIH HHS", grantId: "5DP1OD003893-03", acronym: "OD" }]);
 });
 
+test("the identifiers-only tier rides the cache key — an ids page must not replay a full one", () => {
+  assert.notEqual(filtersCacheKey({ idsOnly: true }), filtersCacheKey({}));
+  assert.notEqual(
+    filtersCacheKey({ idsOnly: true, cursor: "*" }),
+    filtersCacheKey({ cursor: "*" }),
+  );
+});
+
+test("a Europe PMC identifiers-only enumeration reaches the caller as identifier rows", async () => {
+  let sent: URLSearchParams | undefined;
+  const page = await searchPapers("malaria", { index: "europepmc", numResults: 2, filters: { idsOnly: true, cursor: "*" } }, depsWith({
+    europepmc: {
+      fetchResults: async (params) => {
+        sent = params;
+        return {
+          hitCount: 291379,
+          resultList: { result: [
+            { id: "42575118", source: "MED", pmid: "42575118" },
+            { id: "PPR1327472", source: "PPR" },
+          ] },
+          nextCursorMark: "AoIIQDNeQig1NTM0Mj",
+        } as EuropePmcResponse;
+      },
+    },
+  }));
+  assert.equal(sent!.get("resultType"), "idlist");
+  assert.equal(page.total, 291379);
+  assert.equal(page.results.length, 2);
+  assert.equal(page.results[0]!.europepmcSource, "MED");
+  assert.equal(page.results[0]!.europepmcId, "42575118");
+  assert.equal(page.results[0]!.pmid, "42575118");
+  assert.equal(page.results[1]!.europepmcId, "PPR1327472");
+  assert.equal(page.nextCursor, "AoIIQDNeQig1NTM0Mj");
+});
+
 // ── a paper already identified — the retired lookup's replacement ────────────
 //
 // One shape for both adapters: an identifier is a constraint, so it rides the

@@ -73,6 +73,19 @@ export interface PaperRecord extends SearchResult {
   /** Bare OpenAlex W-id — the seed vocabulary for citation walks and the
  *  graph math on refs/related; never surfaced in the snippet. */
   openalexId?: string;
+  /** The source-scoped record identity, Europe PMC's own `id`/`source` pair
+   *  ("MED" + "42575118"). Carried on an identifiers-only row, where the pair
+   *  is the row's whole payload; absent otherwise, where the DOI and the URL
+   *  already identify the work. */
+  europepmcId?: string;
+  /** The index `europepmcId` belongs to: MED, PMC, PPR, PAT, AGR, or CBA. */
+  europepmcSource?: string;
+  /** A PubMed identifier, where the record is a MED record. An ids-only row
+   *  carries whichever of this and `pmcid` the wire sent — the identifier the
+   *  lookup forms take. Absent on a source that has none. */
+  pmid?: string;
+  /** A PubMed Central identifier, where the record is a PMC record. */
+  pmcid?: string;
   /** The work's institutions, one entry per institution in authorship order
    *  (a dual-affiliated author and a co-author at the same lab collapse to
    *  one) — the provenance signal: a company lab reads differently from a
@@ -181,6 +194,7 @@ export function isPaperRecord(r: SearchResult): r is PaperRecord {
     || "openalexId" in r || "keywords" in r || "citationTrend" in r
     || "institutions" in r || "venueType" in r || "refCount" in r
     || "subjects" in r || "compounds" in r || "funding" in r
+    || "europepmcId" in r || "europepmcSource" in r || "pmid" in r || "pmcid" in r
     || Array.isArray((r as PaperRecord).authors);
 }
 
@@ -361,6 +375,15 @@ export interface PaperFilters {
    *  so it is opt-in. The works adapter has no synonym expansion and declines
    *  it in band. */
   synonym?: boolean;
+  /** Europe PMC only: request the identifiers-only enumeration tier — each
+   *  match comes back as its source-scoped identifiers and nothing else, so
+   *  enumerating a large set costs a fraction of a full-record page. The rows
+   *  still carry a `url` derived from the pair, which is what makes each one
+   *  actionable. The tier belongs to the search endpoint alone: Europe PMC's
+   *  /references and /citations routes ignore `resultType` and return full
+   *  entries, so a citation walk declines this in band, and OpenAlex has no such
+   *  mode and declines it too. */
+  idsOnly?: boolean;
   /** Opaque cursor for the OpenAlex works endpoint — the `meta.next_cursor`
    *  one call hands back, passed unmodified to the next to enumerate a
    *  result set to its end (the works adapter's own capability; other
@@ -470,6 +493,7 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.openAccess === true ? "y" : "",
     f.sort ?? "",
     f.synonym === true ? "y" : "",
+    f.idsOnly === true ? "ids" : "",
     f.cursor ?? "",
     f.expression ?? "",
     f.includeRetracted === true ? "y" : "",
