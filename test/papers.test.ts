@@ -549,6 +549,10 @@ test("paper params carry the citedBy sort server-side; relevance when sort is ab
   assert.equal(unsorted.get("sort"), null);
 });
 
+test("paper params carry the date sort server-side — newest first, across the whole index", () => {
+  assert.equal(buildPaperParams("lichen", 10, null, "", "date").get("sort"), "publication_date:desc");
+});
+
 test("paper params carry the cursor verbatim; an absent cursor stays off the wire", () => {
   const p = buildPaperParams("q", 10, null, "", undefined, "IlsxNzQ4");
   assert.equal(p.get("cursor"), "IlsxNzQ4");
@@ -917,6 +921,18 @@ test("selecting Europe PMC with an expression declines in band, naming the adapt
       assert.match(m, /DOI:"10\.…"/);
       assert.match(m, /EXT_ID:22955618/);
       assert.match(m, /index: "openalex"/);
+      return true;
+    },
+  );
+});
+
+test("the works adapter declines filters.synonym in band — the biomedical index owns that lever", async () => {
+  await assert.rejects(
+    searchPapers("malaria", { filters: { synonym: true } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /filters\.synonym is Europe PMC's recall lever/);
+      assert.match(m, /index: "europepmc"/);
       return true;
     },
   );

@@ -527,6 +527,9 @@ test("filtersCacheKey serializes stably and distinguishes filter combos", () => 
     filtersCacheKey({}),
     filtersCacheKey({ sort: "citedBy" }),
   );
+  // The synonym lever changes the result set, so it is part of the call
+  // identity — a cached exact search must not answer an expanded one.
+  assert.notEqual(filtersCacheKey({}), filtersCacheKey({ synonym: true }));
   // The cursor is part of the call identity: two pages must never share a
   // cache key, or page 2 would replay page 1.
   assert.notEqual(
@@ -536,7 +539,7 @@ test("filtersCacheKey serializes stably and distinguishes filter combos", () => 
   assert.notEqual(filtersCacheKey({}), filtersCacheKey({ cursor: "CURSOR-1" }));
 });
 
-// ── applySort — citedBy ranking, Europe PMC's post-fetch approximation ────────
+// ── applySort — the post-fetch fallback for surfaces that cannot sort server-side ──
 
 test("applySort ranks by descending citation count; uncounted records keep position", () => {
   const records: PaperRecord[] = [
@@ -548,6 +551,15 @@ test("applySort ranks by descending citation count; uncounted records keep posit
   assert.deepEqual(sorted.map((r) => r.title), ["c", "a", "b"]);
   // No sort requested — identity.
   assert.equal(applySort(records, undefined), records);
+});
+
+test("applySort orders newest-first when date is asked; yearless records keep position", () => {
+  const records: PaperRecord[] = [
+    { title: "old", url: "u1", snippet: "s", year: 2019 },
+    { title: "new", url: "u2", snippet: "s", year: 2024 },
+    { title: "unknown", url: "u3", snippet: "s" },
+  ];
+  assert.deepEqual(applySort(records, { sort: "date" }).map((r) => r.title), ["new", "old", "unknown"]);
 });
 
 // ── a paper already identified — the retired lookup's replacement ────────────

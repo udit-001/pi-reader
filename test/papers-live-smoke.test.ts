@@ -214,3 +214,36 @@ test("live: an ordinary Europe PMC search is not handed a cursor", { skip: !live
   const plain = await searchPapers("malaria", { index: "europepmc", numResults: 5 });
   assert.equal("nextCursor" in plain, false, "the adapter leaked the wire's always-present cursorMark");
 });
+
+// The Europe PMC query-language half of PIWEB-38: synonym expansion is the
+// backend's recall lever, and both sorts are the index's rather than the
+// fetched page's. Verified live 2026-09-30 — `"heart attack"` returns 54,785
+// with synonyms off and 755,190 with them on; `CITED desc` on malaria puts the
+// 14,722-citation row first where relevance returns uncited ones.
+test("live: Europe PMC's synonym expansion widens the set by an order of magnitude", { skip: !live }, async () => {
+  const exact = await searchPapers('"heart attack"', { index: "europepmc", numResults: 5 });
+  const expanded = await searchPapers('"heart attack"', { index: "europepmc", numResults: 5, filters: { synonym: true } });
+  assert.ok(
+    (expanded.total ?? 0) > (exact.total ?? 0),
+    `synonym expansion did not widen the set — exact ${exact.total}, expanded ${expanded.total}`,
+  );
+  assert.ok(
+    (expanded.total ?? 0) > 100_000,
+    `the order-of-magnitude difference is gone (expanded ${expanded.total}) — the synonym wire changed`,
+  );
+});
+
+test("live: Europe PMC's sort orders the whole index, not the fetched page", { skip: !live }, async () => {
+  const cited = await searchPapers("malaria", { index: "europepmc", numResults: 10, filters: { sort: "citedBy" } });
+  const counts = cited.results.map((r) => r.citedBy ?? -1);
+  for (let i = 1; i < counts.length; i++) {
+    assert.ok(counts[i - 1]! >= counts[i]!, `citedBy sort is not descending at ${i}: ${counts.join(", ")}`);
+  }
+  assert.ok((counts[0] ?? 0) > 0, "the top row carries no citation count — the sort or the citedByCount field drifted");
+
+  const newest = await searchPapers("malaria", { index: "europepmc", numResults: 10, filters: { sort: "date" } });
+  const years = newest.results.map((r) => r.year ?? 0);
+  for (let i = 1; i < years.length; i++) {
+    assert.ok(years[i - 1]! >= years[i]!, `date sort is not newest-first at ${i}: ${years.join(", ")}`);
+  }
+});

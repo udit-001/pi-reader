@@ -253,6 +253,11 @@ export function chooseFetchableUrl(candidates: Array<string | null | undefined>)
 
 // ── Filters + citation traversal (PIWEB-16) ───────────────────────────────
 
+/** The orderings the interface offers, shared by every adapter's mapping and
+ *  by the post-fetch fallback (applySort). One name, so a new key is a
+ *  one-place type change rather than three literals that can drift. */
+export type PaperSort = "citedBy" | "date";
+
 /** Constrain a papers search, or turn it into a citation walk. Shared across
  *  backends so PIWEB-15's same-shape normalizers stay the only fork point. */
 export interface PaperFilters {
@@ -264,13 +269,20 @@ export interface PaperFilters {
   yearRange?: number[];
   /** Restrict to open-access-readable results. */
   openAccess?: boolean;
-  /** Sort results by descending citation count instead of relevance
-   *  ("highly cited" asks). OpenAlex sorts server-side; Europe PMC's search
-   *  endpoint sorts its whole index on request too, which the adapter does not
-   *  ask for yet, so it sorts post-fetch on the page it already fetched — a
-   *  top-N over one page, not the whole index (server-side sorting is
-   *  PIWEB-38). */
-  sort?: "citedBy";
+  /** Order results away from relevance. `"citedBy"` is descending citation
+   *  count (the "highly cited" ask), `"date"` is newest-first. Both adapters
+   *  ask the backend to sort the whole set, not the fetched page: OpenAlex
+   *  maps to `cited_by_count:desc` / `publication_date:desc`, Europe PMC to
+   *  `CITED desc` / `P_PDATE_D desc` through EUROPEPMC_SORTS. A Europe PMC
+   *  citation walk is the one exception — its routes take no sort, so the
+   *  ordering applies to the page the endpoint returns (see applySort). */
+  sort?: PaperSort;
+  /** Europe PMC only: expand the query with the backend's synonym table —
+   *  "heart attack" also reaches "myocardial infarction". Multiplies recall
+   *  (verified live: 54,785 → 755,190 on a quoted phrase) and costs precision,
+   *  so it is opt-in. The works adapter has no synonym expansion and declines
+   *  it in band. */
+  synonym?: boolean;
   /** Opaque cursor for the OpenAlex works endpoint — the `meta.next_cursor`
    *  one call hands back, passed unmodified to the next to enumerate a
    *  result set to its end (the works adapter's own capability; other
@@ -336,16 +348,18 @@ export function parsePaperSeed(seed: string): PaperSeed | null {
   return null;
 }
 
-/** Sort results by descending citation count when filters ask (the
- *  "citedBy" sort). OpenAlex sorts server-side; Europe PMC's search endpoint
- *  sorts its whole index on request too, which the adapter does not ask for
- *  yet, so this post-fetch form covers the fetched page, not the index — a
- *  top-N of one page (server-side sorting is PIWEB-38). Records without a
- *  count keep their order (stable sort) rather than being dropped. Pure;
- *  exported for tests. */
+/** Order results away from relevance for the one surface whose endpoint
+ *  cannot: Europe PMC's citation-walk routes take no sort (verified live — a
+ *  `sort` sent there is ignored). Records without a count or year keep their
+ *  order (stable sort) rather than being dropped. Pure; exported for tests. */
 export function applySort(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
-  if (filters?.sort !== "citedBy") return records;
-  return records.toSorted((a, b) => (b.citedBy ?? -1) - (a.citedBy ?? -1));
+  if (filters?.sort === "citedBy") {
+    return records.toSorted((a, b) => (b.citedBy ?? -1) - (a.citedBy ?? -1));
+  }
+  if (filters?.sort === "date") {
+    return records.toSorted((a, b) => (b.year ?? -Infinity) - (a.year ?? -Infinity));
+  }
+  return records;
 }
 
 /** Year constraints on citation-walk results: Europe PMC's walk endpoints
@@ -377,6 +391,7 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.yearRange?.[1] ?? "",
     f.openAccess === true ? "y" : "",
     f.sort ?? "",
+    f.synonym === true ? "y" : "",
     f.cursor ?? "",
     f.expression ?? "",
     f.includeRetracted === true ? "y" : "",

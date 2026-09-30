@@ -103,6 +103,19 @@ Whatever the mechanism, the adapter passes the agent's handle through untouched 
 
 The page size is `numResults`, one name for the whole tool. Its ceiling is Europe PMC's 1000 — above that the API answers HTTP 200 with zero rows and *no* `hitCount`, so an over-cap request reads as "no results" rather than as a rejected request. Keeping the schema's maximum at the highest real ceiling means that case cannot be sent at all; the nearer OpenAlex ceiling of 200 is the API's own 400 (`per-page parameter must be between 1 and 200`), surfaced under the malformed cause with the cap named. The page size also rides `searchCacheKey`: asking for 200 rows after a 10-row call is a different request, and a shared key would answer it with the ten.
 
-## The citedBy sort
+## Europe PMC's query language
 
-`filters.sort: "citedBy"` answers the "find papers on X which are highly cited" ask — relevance-ranked retrieval surfaces the pool, but the ordering the agent cites must be the citations'. OpenAlex sorts server-side (`sort=cited_by_count:desc`), so the ordering is exact. Europe PMC sorts its whole index server-side on request too — verified live: `sort=CITED desc` on `malaria` returns the 14,722-citation row first where relevance returns uncited ones. The adapter simply does not ask it to yet, so `applySort` ranks the fetched page instead: a top-N of that page, not the index. Acceptable because relevance ranking already picked the pool: only the ordering of the fetched page is approximate, the exact version is one `index: "openalex"` flip away, and server-side sorting here is PIWEB-38's job.
+`query` is Europe PMC's own field language, distinct from OpenAlex's `filters.expression`. The accepted fields live in one table — `EUROPEPMC_OPERATORS`, in `search/europepmc.ts` — which composes both the listing the `index: "europepmc"` description carries and the validator's check, so a field cannot be documented and rejected at once (asserted in both directions by the tests).
+
+The validator scans the query's uppercase `TOKEN:` prefixes and declines anything outside the table in band, naming the accepted fields. That matters because Europe PMC does not reject an unknown prefix: verified live 2026-09-30, `AUTHR:Venter` (a one-character typo for `AUTH`) returns a plausible count instead of an error, so a silent drop is indistinguishable from an empty literature. Two value traps the table records: a PMID goes in `EXT_ID:22955618` (`PMID:` is not a field), and a MeSH descriptor is quoted (`MESH:"Malaria"`).
+
+Two levers ride the same query, both verified live 2026-09-30:
+
+- **`filters.synonym`** sets `synonym=true`, expanding the query through the backend's synonym table, so a colloquial phrase also reaches the formal term. It is opt-in because the recall gain costs precision, and the trade is stated where the option is offered — the parameter's own description. The works adapter has no synonym table, so it declines `synonym` in band, naming the biomedical index.
+- **`filters.sort`** is the backend's own ordering — see below.
+
+## Ordering: the backend sorts the set
+
+`filters.sort` takes `"citedBy"` (descending citation count — the "find papers on X which are highly cited" ask) or `"date"` (newest first). Both adapters ask the backend to sort the whole index, not the page already fetched: OpenAlex maps to `sort=cited_by_count:desc` / `publication_date:desc`, Europe PMC to `CITED desc` / `P_PDATE_D desc` (`EUROPEPMC_SORTS`). Verified live 2026-09-30: `CITED desc` on `malaria` puts the 14,722-citation row first where relevance returns uncited ones, and `P_PDATE_D desc` puts 2027 first. An unrecognised sort key never reaches the wire — Europe PMC answers one with HTTP 503, which would read as an outage.
+
+One surface cannot be sorted server-side: Europe PMC's `/references` and `/citations` routes accept a `sort` param and ignore it (verified live — the order is unchanged), so a walk's ordering comes from `applySort` over the fetched page. That is the only place the approximation survives; an ordinary search is ordered by the backend.

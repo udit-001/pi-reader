@@ -39,6 +39,7 @@ import {
   type PaperPage,
   type PaperRecord,
   type PaperSeed,
+  type PaperSort,
 } from "./paper-backend.ts";
 
 const TIMEOUT_MS = 25_000;
@@ -50,6 +51,82 @@ const EPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest";
  *  ceiling is set to this value, which is what makes that silent empty
  *  unsendable rather than a case to guard against. */
 export const EUROPEPMC_PAGE_SIZE_MAX = 1000;
+
+// ── Pure seam: the query language ────────────────────────────────────────────
+
+/** The query fields this adapter accepts and documents — one table, so the
+ *  composed listing and the validator's check cannot disagree. Anything
+ *  outside it is declined in band (docs/papers.md carries the why). Every
+ *  field verified live 2026-09-30. */
+export const EUROPEPMC_OPERATORS: ReadonlyArray<{ token: string; meaning: string }> = [
+  { token: "TITLE", meaning: "words in the title" },
+  { token: "ABSTRACT", meaning: "words in the abstract" },
+  { token: "TITLE_ABS", meaning: "title or abstract" },
+  { token: "AUTH", meaning: "author name" },
+  { token: "AFF", meaning: "author affiliation" },
+  { token: "JOURNAL", meaning: "journal name" },
+  { token: "ISSN", meaning: "journal ISSN" },
+  { token: "MESH", meaning: "MeSH descriptor, quoted: \"Malaria\"" },
+  { token: "KEYWORD", meaning: "author keyword" },
+  { token: "PUB_TYPE", meaning: "review, editorial, retracted publication, …" },
+  { token: "GRANT_AGENCY", meaning: "funding agency" },
+  { token: "GRANT_ID", meaning: "grant identifier" },
+  { token: "PUB_YEAR", meaning: "year, or a range [2019 TO 2021]" },
+  { token: "FIRST_PDATE", meaning: "date, or a range [2019-01-01 TO 2021-12-31]" },
+  { token: "LANG", meaning: "three-letter code, e.g. eng" },
+  { token: "SRC", meaning: "MED, PMC, PPR, PAT, AGR, CBA" },
+  { token: "DOI", meaning: "bare, e.g. 10.1038/nature12373" },
+  { token: "EXT_ID", meaning: "a PMID goes here, e.g. 22955618" },
+  { token: "PMCID", meaning: "e.g. PMC4221854" },
+  { token: "OPEN_ACCESS", meaning: "y/n, open access" },
+  { token: "HAS_FT", meaning: "y/n, full text present" },
+  { token: "HAS_ABSTRACT", meaning: "y/n, abstract present" },
+  { token: "HAS_SUPPL", meaning: "y/n, supplementary data present" },
+  { token: "IN_EPMC", meaning: "y/n, in Europe PMC" },
+  { token: "IN_PMC", meaning: "y/n, in PMC" },
+];
+
+/** The operator table as one description-ready string. Composed from the same
+ *  table the validator reads, so the named set and the accepted set cannot
+ *  drift — the round-trip is asserted in the tests. */
+export const EUROPEPMC_OPERATOR_LISTING =
+  EUROPEPMC_OPERATORS.map((o) => `${o.token} ${o.meaning}`).join("; ");
+
+/** The sort keys the interface offers, mapped to Europe PMC's own `sort`
+ *  values — the backend sorts the whole index, not the fetched page.
+ *  Verified live 2026-09-30: both reorder the index with hitCount unchanged,
+ *  while an unrecognised key answers HTTP 503 (the outage-lookalike). */
+export const EUROPEPMC_SORTS: ReadonlyArray<{ key: PaperSort; value: string }> = [
+  { key: "citedBy", value: "CITED desc" },
+  { key: "date", value: "P_PDATE_D desc" },
+];
+
+/** The Europe PMC `sort` value for an interface sort key, or null when the key
+ *  is outside the accepted set. Pure; exported for tests. */
+export function europePmcSortValue(key: string | undefined): string | null {
+  if (key === undefined) return null;
+  return EUROPEPMC_SORTS.find((s) => s.key === key)?.value ?? null;
+}
+
+/** Field prefixes the query uses that the table does not recognise. Scans the
+ *  uppercase `TOKEN:` form, which is EPMC's own field convention, so free
+ *  text, booleans, parentheses, quoted values and ranges pass through. Pure;
+ *  exported for tests. */
+export function unrecognisedEuropePmcOperators(query: string): string[] {
+  const known = new Set(EUROPEPMC_OPERATORS.map((o) => o.token));
+  const seen = new Set<string>();
+  const unknown: string[] = [];
+  // Scan outside quoted values: TITLE:"MALARIA: A REVIEW" carries an
+  // uppercase colon pair that is data, not a field prefix.
+  const unquoted = query.replace(/"[^"]*"/g, '""');
+  for (const m of unquoted.matchAll(/\b([A-Z][A-Z0-9_]+)\s*:/g)) {
+    const token = m[1]!;
+    if (known.has(token) || seen.has(token)) continue;
+    seen.add(token);
+    unknown.push(token);
+  }
+  return unknown;
+}
 
 // ── Raw shape (Europe PMC result — trimmed live capture 2026-09-25) ──────────
 // resultType=lite (the default). Only the fields normalization reads are
@@ -221,15 +298,19 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
 // ── Pure seam: request params ────────────────────────────────────────────────
 
 /** Build the Europe PMC request params: query + format + pageSize, plus the
- *  paging mechanism the endpoint actually serves. `paging.page` is the walk
- *  endpoints' own offset (1-based, verified live: offset = (page-1)*pageSize,
- *  and pageSize=1000 serves while 1001 answers 200 with zero rows);
+ *  paging mechanism the endpoint actually serves, the synonym-recall lever,
+ *  and the backend's own `sort`. `paging.page` is the walk endpoints' own
+ *  offset (1-based, verified live: offset = (page-1)*pageSize, and
+ *  pageSize=1000 serves while 1001 answers 200 with zero rows);
  *  `paging.cursor` is the search endpoint's `cursorMark`, where `*` opens the
- *  enumeration. Pure; exported for tests. */
+ *  enumeration. `options.synonym` sets `synonym=true`; `options.sort` is an
+ *  already-mapped Europe PMC value (see EUROPEPMC_SORTS). Pure; exported for
+ *  tests. */
 export function buildEuropePmcParams(
   query: string,
   numResults: number,
   paging: { page?: number; cursor?: string } = {},
+  options: { synonym?: boolean; sort?: string } = {},
 ): URLSearchParams {
   const params = new URLSearchParams({
     format: "json",
@@ -238,6 +319,9 @@ export function buildEuropePmcParams(
   if (query) params.set("query", query);
   if (paging.page !== undefined) params.set("page", String(paging.page));
   if (paging.cursor !== undefined) params.set("cursorMark", paging.cursor);
+  // The two recall/ordering levers the backend evaluates across the whole set.
+  if (options.synonym === true) params.set("synonym", "true");
+  if (options.sort !== undefined) params.set("sort", options.sort);
   return params;
 }
 
@@ -423,14 +507,38 @@ export async function searchEuropePmc(
     throw new PaperError(paperError("malformed", "europepmc",
       "filters.expression is OpenAlex's filter list — write the constraint into the query instead, e.g. PUB_YEAR:\"2020\", OPEN_ACCESS:y, SRC:MED; an identifier goes there too, e.g. DOI:\"10.…\", EXT_ID:22955618, PMCID:PMC…"));
   }
+  // The query language is loose on the wire: an unrecognised field prefix is
+  // dropped or searched as free text and comes back as a plausible count that
+  // is not the query the agent wrote. The accepted set is the operator table,
+  // so anything outside it is declined here rather than forwarded.
+  const unknown = unrecognisedEuropePmcOperators(query);
+  if (unknown.length > 0) {
+    throw new PaperError(paperError("malformed", "europepmc",
+      `unrecognised query field ${unknown.map((t) => `"${t}"`).join(", ")} — Europe PMC does not reject an unknown prefix, it drops it and returns a plausible count. Accepted fields: ${EUROPEPMC_OPERATORS.map((o) => o.token).join(", ")}`));
+  }
+  // A sort key outside the accepted set is declined before it is sent: the
+  // backend answers an invalid sort with a 503, which reads as an outage.
+  const sortValue = options.filters?.sort === undefined
+    ? undefined
+    : europePmcSortValue(options.filters.sort);
+  if (options.filters?.sort !== undefined && sortValue === null) {
+    throw new PaperError(paperError("malformed", "europepmc",
+      `unrecognised sort ${JSON.stringify(options.filters.sort)} — accepted: ${EUROPEPMC_SORTS.map((s) => s.key).join(", ")}. Europe PMC answers an invalid sort as a 503 outage-lookalike, so it is never sent`));
+  }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const graph = options.filters?.citationGraph;
   if (graph) {
     // The two enumeration surfaces are declared honestly rather than unified:
-    // a walk is offset-paged, so a cursor is not its mechanism.
+    // a walk is offset-paged, so a cursor is not its mechanism. The walk also
+    // takes no query, so the synonym lever has nothing to expand.
     if (options.filters?.cursor !== undefined) {
       throw new PaperError(paperError("malformed", "europepmc",
         "a Europe PMC citation walk is offset-paged — pass `page` for the page number and numResults for the page size; filters.cursor serves the search endpoint",
+        null));
+    }
+    if (options.filters?.synonym === true) {
+      throw new PaperError(paperError("malformed", "europepmc",
+        "filters.synonym expands a free-text query — a citation walk has none; pass it on a search instead",
         null));
     }
     return searchEuropePmcWalk(graph, n, options, deps);
@@ -445,6 +553,9 @@ export async function searchEuropePmc(
   }
   const params = buildEuropePmcParams(buildEuropePmcFilterQuery(query, options.filters), n, {
     cursor: options.filters?.cursor,
+  }, {
+    synonym: options.filters?.synonym,
+    sort: sortValue ?? undefined,
   });
   let body: EuropePmcResponse;
   try {

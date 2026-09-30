@@ -34,7 +34,7 @@ import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { isPaperRecord, PaperError, type PaperRecord } from "./search/paper-backend.ts";
-import { EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
+import { EUROPEPMC_OPERATOR_LISTING, EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
 import { EXPRESSION_PARAM_DESCRIPTION, OPENALEX_CITATION_EDGES } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
 
@@ -89,8 +89,8 @@ const providerSchema = Type.Optional(
         "a constraint (filters.expression 'doi:…' / 'ids.pmid:…', or inside query on " +
         "Europe PMC), which needs none of the traversal machinery. Enumerate a " +
         "reference or citation list to its end: filters.cursor on a search, page on a " +
-        "Europe PMC walk. Rank a topic by citations rather than relevance: " +
-        "filters.sort: 'citedBy'.",
+        "Europe PMC walk. Rank a topic by citations or recency: " +
+        "filters.sort.",
     },
   ),
 );
@@ -100,7 +100,8 @@ const paperIndexSchema = Type.Optional(
     description:
       "Papers provider only: which backend to query. 'openalex' (default) — open " +
       "scholarly metadata across all disciplines. 'europepmc' — biomedical full text: " +
-      "PubMed, PMC copies, preprints, patents.",
+      "PubMed, PMC copies, preprints, patents. Its `query` is Europe PMC's own field " +
+      "language, written TOKEN:value: " + EUROPEPMC_OPERATOR_LISTING + ".",
   }),
 );
 
@@ -121,8 +122,11 @@ const paperFiltersSchema = Type.Optional(
       includeRetracted: Type.Optional(Type.Boolean({
         description: "Papers provider only: include retracted works. They are excluded by default — a retraction disqualifies the work as a reading candidate; when included, the retracted key marks them.",
       })),
-      sort: Type.Optional(Type.Union([Type.Literal("citedBy")], {
-        description: "Rank by citation count, descending — the 'find papers on X which are highly cited' ask. OpenAlex sorts server-side; Europe PMC sorts the fetched page (approximation — top-N of that page, not the index). Default is relevance.",
+      sort: Type.Optional(Type.Union([Type.Literal("citedBy"), Type.Literal("date")], {
+        description: "Rank by 'citedBy' — descending citation count, the 'find papers on X which are highly cited' ask — or 'date' for newest first. Relevance is the default. Both adapters sort the whole set at the backend; a Europe PMC citation walk is the one exception, its routes taking no sort.",
+      })),
+      synonym: Type.Optional(Type.Boolean({
+        description: "Europe PMC only: expand the query through the backend's synonym table — 'heart attack' also reaches 'myocardial infarction'. Recall leaps (54,785 → 755,190 on a quoted phrase) at a precision cost, so reach for it when recall is what this turn needs; the works adapter declines it in band.",
       })),
       cursor: Type.Optional(Type.String({
         description: "Papers provider only: continue an enumeration with the handle the last response returned — pass '*' to open one, then each response's Next cursor, unmodified, until it stops coming (e.g. a long reference or citation list). OpenAlex's works endpoint and Europe PMC's search both page this way; Europe PMC's /references and /citations lists are offset-paged instead, so pass `page` there. One call fetches one page: the cursor is never followed automatically.",

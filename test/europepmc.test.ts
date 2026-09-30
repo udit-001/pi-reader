@@ -19,6 +19,10 @@ import {
   mergeRetractionClause,
   RETRACTION_EXCLUSION_CLAUSE,
   EUROPEPMC_PAGE_SIZE_MAX,
+  EUROPEPMC_OPERATORS,
+  EUROPEPMC_OPERATOR_LISTING,
+  europePmcSortValue,
+  unrecognisedEuropePmcOperators,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
@@ -228,6 +232,62 @@ test("the Europe PMC page-size ceiling is the tool's own — above it the API an
   assert.equal(EUROPEPMC_PAGE_SIZE_MAX, 1000);
 });
 
+// ── the query language — operator table, validator, synonym, sort ────────────
+
+test("the operator listing and the accepted set are the same set, in both directions", () => {
+  // Parsed from the listing's own text, not from the table it was composed
+  // from: a token added to the table without reaching the listing fails here.
+  const listedTokens = EUROPEPMC_OPERATOR_LISTING.split("; ").map((s) => s.split(" ")[0]!);
+  assert.ok(listedTokens.length > 0);
+  // listed → accepted: every token the listing names passes the validator.
+  for (const token of listedTokens) {
+    assert.deepEqual(unrecognisedEuropePmcOperators(`${token}:"x"`), [], `listing names ${token}, validator declined it`);
+  }
+  // accepted → listed: a token no listing names is declined.
+  assert.deepEqual(unrecognisedEuropePmcOperators('NOPE:"x"'), ["NOPE"], "the validator accepted a token no listing names");
+  // accepted → listed: every table token actually appears in the listing text.
+  for (const { token } of EUROPEPMC_OPERATORS) {
+    assert.ok(listedTokens.includes(token), `table token ${token} is missing from the listing`);
+  }
+});
+
+test("the validator reads field prefixes, not uppercase words inside a quoted value", () => {
+  assert.deepEqual(unrecognisedEuropePmcOperators('TITLE:"MALARIA: A REVIEW"'), []);
+  assert.deepEqual(unrecognisedEuropePmcOperators('TITLE:"MALARIA: A REVIEW" AND AUTHR:x'), ["AUTHR"]);
+});
+
+test("every operator the table names is accepted by the validator", () => {
+  const query = EUROPEPMC_OPERATORS.map((o) => `${o.token}:"x"`).join(" AND ");
+  assert.deepEqual(unrecognisedEuropePmcOperators(query), []);
+});
+
+test("the validator flags a field prefix outside the table, and only that", () => {
+  assert.deepEqual(unrecognisedEuropePmcOperators("AUTHR:Venter"), ["AUTHR"]);
+  assert.deepEqual(unrecognisedEuropePmcOperators("MESHH:malaria OR TITLE:malaria"), ["MESHH"]);
+  // The table itself, booleans, parentheses, wildcards and ranges pass through.
+  assert.deepEqual(unrecognisedEuropePmcOperators("malaria AND (vaccine OR vaccine*)"), []);
+  assert.deepEqual(unrecognisedEuropePmcOperators("PUB_YEAR:[2019 TO 2021]"), []);
+  // Lowercase prose is not a field prefix — EPMC's field convention is upper
+  // case, so free text and URLs are not mistaken for operators.
+  assert.deepEqual(unrecognisedEuropePmcOperators("see https://example.org/x and note: something"), []);
+});
+
+test("the sort mapping is one table, and a key outside it maps to nothing", () => {
+  assert.equal(europePmcSortValue("citedBy"), "CITED desc");
+  assert.equal(europePmcSortValue("date"), "P_PDATE_D desc");
+  assert.equal(europePmcSortValue("bogus"), null);
+  assert.equal(europePmcSortValue(undefined), null);
+});
+
+test("europepmc params carry the synonym lever and the backend sort only when asked", () => {
+  const plain = buildEuropePmcParams("malaria", 10);
+  assert.equal(plain.get("synonym"), null);
+  assert.equal(plain.get("sort"), null);
+  const levered = buildEuropePmcParams("malaria", 10, {}, { synonym: true, sort: "CITED desc" });
+  assert.equal(levered.get("synonym"), "true");
+  assert.equal(levered.get("sort"), "CITED desc");
+});
+
 // ── parsePubYear — numeric walk entries and string search entries ────────────
 
 test("parsePubYear reads both entry shapes, invents nothing", () => {
@@ -409,6 +469,53 @@ test("searchEuropePmc passes the query, pageSize, and signal through to the fetc
   assert.equal(seen[0]!.params.get("query"), "prime editing");
   assert.equal(seen[0]!.params.get("pageSize"), "7");
   assert.equal(seen[0]!.signal, signal);
+});
+
+test("searchEuropePmc asks the backend for synonym expansion and the whole-set sort", async () => {
+  const seen: URLSearchParams[] = [];
+  await searchEuropePmc("malaria", { filters: { synonym: true, sort: "date" } }, depsWith({
+    fetchResults: async (params) => {
+      seen.push(params);
+      return { hitCount: 1, resultList: { result: [PMC_REC] } };
+    },
+  }));
+  assert.equal(seen[0]!.get("synonym"), "true");
+  assert.equal(seen[0]!.get("sort"), "P_PDATE_D desc");
+});
+
+test("searchEuropePmc declines an unrecognised query field in band, naming it — never a silent free-text search", async () => {
+  await assert.rejects(
+    searchEuropePmc("AUTHR:Venter", {}, depsWith({})),
+    (err: unknown) => {
+      assert.ok(err instanceof PaperError);
+      const m = (err as Error).message;
+      assert.match(m, /unrecognised query field "AUTHR"/);
+      assert.match(m, /Accepted fields: .*\bAUTH\b/);
+      return true;
+    },
+  );
+});
+
+test("searchEuropePmc declines a sort key outside the accepted set before sending it", async () => {
+  await assert.rejects(
+    searchEuropePmc("malaria", { filters: { sort: "bogus" as never } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /unrecognised sort "bogus"/);
+      assert.match(m, /accepted: citedBy, date/);
+      return true;
+    },
+  );
+});
+
+test("searchEuropePmc declines the synonym lever on a walk — the route takes no query", async () => {
+  await assert.rejects(
+    searchEuropePmc("", { filters: { citationGraph: { seed: "32581362" }, synonym: true } }, depsWith({})),
+    (err: unknown) => {
+      assert.match((err as Error).message, /filters\.synonym expands a free-text query/);
+      return true;
+    },
+  );
 });
 
 test("searchEuropePmc slices results to numResults", async () => {

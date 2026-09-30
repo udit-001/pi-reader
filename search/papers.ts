@@ -34,6 +34,7 @@ import {
   type PaperInstitution,
   type PaperPage,
   type PaperRecord,
+  type PaperSort,
 } from "./paper-backend.ts";
 import { searchEuropePmc, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
 import { loadConfig } from "../config.ts";
@@ -537,7 +538,7 @@ export function buildOpenAlexExpressionFilter(filters: PaperFilters): string {
  *  set only when filters ask for citation ranking (the API default is
  *  relevance). `search` is omitted when the query is empty (a walk has none).
  *  Pure; exported for tests. */
-export function buildPaperParams(query: string, numResults: number, apiKey: string | null, filter = "", sort: "citedBy" | undefined = undefined, cursor?: string): URLSearchParams {
+export function buildPaperParams(query: string, numResults: number, apiKey: string | null, filter = "", sort: PaperSort | undefined = undefined, cursor?: string): URLSearchParams {
   const params = new URLSearchParams({
     "per-page": String(numResults),
     // Lean payloads: one shared projection on every works-list call.
@@ -547,6 +548,7 @@ export function buildPaperParams(query: string, numResults: number, apiKey: stri
   if (filter) params.set("filter", filter);
   if (apiKey) params.set("api_key", apiKey);
   if (sort === "citedBy") params.set("sort", "cited_by_count:desc");
+  if (sort === "date") params.set("sort", "publication_date:desc");
   // Cursor paging is the works endpoint's own mechanism; `cursor=*` opens the
   // walk, and the response's `meta.next_cursor` closes the loop.
   if (cursor) params.set("cursor", cursor);
@@ -876,6 +878,13 @@ async function searchOpenAlex(
 ): Promise<PaperPage> {
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const key = (deps.resolveKey ?? readOpenAlexKey)();
+  // The synonym lever is Europe PMC's — OpenAlex has no synonym table. Dropping
+  // it silently would be a lie the agent can act on, so it is declined and the
+  // index that serves it is named.
+  if (options.filters?.synonym === true) {
+    throw new PaperError(paperError("malformed", "openalex",
+      "filters.synonym is Europe PMC's recall lever — OpenAlex has no synonym expansion; drop it or retry with index: \"europepmc\""));
+  }
   // The expression door: the agent's own filter list, validated and merged.
   // Computed before the walk branch so an expression riding with a walk leg
   // is refused rather than half-applied.
