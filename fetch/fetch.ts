@@ -57,7 +57,7 @@ export interface FetchOptions {
   signal?: AbortSignal;
   /** Extract sections matching this topic instead of returning full content. */
   topic?: string;
-  /** "raw" returns the exact response body (skips handlers, extraction, topic, and cache). */
+  /** "raw" returns the exact response body (skips extraction, topic, and cache; a site handler may declare a fetchRaw projection — see MagpiHandler). */
   mode?: "markdown" | "raw";
 }
 
@@ -123,13 +123,39 @@ export async function fetchContent(
       : cachedResults.get(u)!);
   }
 
-  // Try structured handlers first (GitHub, npm, Wikipedia, etc.) — raw mode
-  // bypasses them: raw means the HTTP response body, not a derived view.
+  // Try structured handlers first (GitHub, npm, Wikipedia, etc.). Raw mode
+  // bypasses them, except handlers that opt in with fetchRaw: a site whose
+  // public URL is a JS shell (orcid.org) declares where its canonical body
+  // lives, and raw serves that. No fetchRaw -> the URL's own body, as before.
   const handlerResults = new Map<string, FetchResult>();
   const unhandledUrls: string[] = [];
 
   for (const urlStr of urlsToProcess) {
     if (raw) {
+      try {
+        const url = new URL(urlStr);
+        const handler = resolveHandler(url);
+        if (handler?.fetchRaw) {
+          const result = await handler.fetchRaw(url, { mode: "light", entryDir: "", signal: options.signal });
+          handlerResults.set(urlStr, {
+            url: urlStr,
+            title: result.title ?? "",
+            content: result.content.slice(0, maxChars),
+            error: null,
+          });
+          continue;
+        }
+      } catch (err) {
+        // A failed fetchRaw must not fall through to the plain raw fetch: for a
+        // JS-shell site that would "succeed" with the placeholder page.
+        handlerResults.set(urlStr, {
+          url: urlStr,
+          title: "",
+          content: "",
+          error: err instanceof Error ? err.message : "Raw handler fetch failed.",
+        });
+        continue;
+      }
       unhandledUrls.push(urlStr);
       continue;
     }

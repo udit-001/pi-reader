@@ -13,7 +13,7 @@ Reference for `fetch/fetch.ts`, `fetch/handlers/`, and `cache/`. Open this befor
 
 A tier's output thinner than `MIN_FALLBACK_CONTENT` (50 chars) is discarded and the chain continues.
 
-Known-site URLs short-circuit the chain: `fetch/handlers/registry.ts` resolves a handler (GitHub, GitLab, 8 registries, Wikipedia, Reddit, HN, Stack Exchange, arXiv, RSS/Atom feeds, next-flight) and `fetchWithHandler()` renders structured content. `mode: "raw"` skips handlers, extraction, topic, and cache — the exact response body, labeled with status and content type.
+Known-site URLs short-circuit the chain: `fetch/handlers/registry.ts` resolves a handler (GitHub, GitLab, 8 registries, Wikipedia, Reddit, HN, Stack Exchange, arXiv, ORCID, RSS/Atom feeds, next-flight) and `fetchWithHandler()` renders structured content. `mode: "raw"` skips handlers, extraction, topic, and cache — the exact response body, labeled with status and content type — except handlers that opt in with `fetchRaw` (see `MagpiHandler`): a site whose public URL is a JS app shell (orcid.org) declares where its canonical body lives, and raw serves that instead.
 
 ## Constants (`fetch/fetch.ts`)
 

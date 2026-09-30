@@ -274,7 +274,9 @@ const webFetchParams = Type.Object({
     description:
       "Response format. 'markdown' (default) extracts readable content. " +
       "'raw' returns the exact response body — HTML/XML/JSON with a status and content-type label — " +
-      "for metadata inspection, structured data in pages, or debugging extraction.",
+      "for metadata inspection, structured data in pages, or debugging extraction. " +
+      "On sites whose public URL is an app shell, raw serves the site's canonical API body; " +
+      "read those sites with markdown.",
   })),
   prompt: Type.Optional(Type.String({
     description: "If set, answer this prompt about the page(s) using the current pi model",
@@ -528,7 +530,8 @@ export default function piWeb(pi: ExtensionAPI): void {
       "document — state, checks rollup, review verdicts, files, commits, comments — " +
       "via gh auth when available, so private repos render too), GitLab, package registries " +
       "(npm, PyPI, crates.io, …), Wikipedia, Reddit, Stack Exchange, arXiv, HN (item pages " +
-      "and listings), and RSS/Atom feeds (.xml, .rss, .atom, /feed). " +
+      "and listings), ORCID researcher profiles (orcid.org/{id} — name, affiliations, public works), " +
+      "and RSS/Atom feeds (.xml, .rss, .atom, /feed). " +
       "mode:'raw' returns the exact response body with a status and content-type label — " +
       "for metadata inspection, structured data in pages, or debugging extraction. " +
       "topic extracts just the matching sections of long pages. " +

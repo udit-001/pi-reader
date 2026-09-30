@@ -40,6 +40,13 @@ export interface MagpiHandler {
   description: string;
   match(url: URL): boolean;
   fetch(url: URL, ctx: FetchContext): Promise<HandlerResult>;
+  /**
+   * Opt-in raw projection: the canonical body behind the URL, served when the
+   * caller asks for mode "raw". Declare it when the site's public URL is a JS
+   * shell whose data lives at an API (orcid.org). Undefined -> raw mode
+   * bypasses the handler entirely and fetches the URL directly.
+   */
+  fetchRaw?(url: URL, ctx: FetchContext): Promise<HandlerResult>;
 }
 
 const UA = "Mozilla/5.0 (compatible; pi-reader/0.3)";
@@ -422,12 +429,13 @@ export const defaultFetch = async (url: URL, ctx: FetchContext): Promise<Handler
   return { kind: "text", content: text };
 };
 
-/** Handler template. Omit fetch to get the default pipeline. */
+/** Handler template. Omit fetch to get the default pipeline; omit fetchRaw so raw mode fetches the URL directly. */
 export function defineHandler(def: {
   name: string;
   description?: string;
   match: (url: URL) => boolean;
   fetch?: (url: URL, ctx: FetchContext) => Promise<HandlerResult>;
+  fetchRaw?: (url: URL, ctx: FetchContext) => Promise<HandlerResult>;
 }): MagpiHandler {
   if (!def.name || typeof def.match !== "function") {
     throw new Error("handler needs at least { name, match }");
