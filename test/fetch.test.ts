@@ -5,7 +5,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel, opencodeSessionHeaders } from "../fetch/fetch.ts";
+import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel, opencodeSessionHeaders, rawViaHandler } from "../fetch/fetch.ts";
+import { FetchError, defineHandler } from "../fetch/handlers/handler.ts";
+import { registerHandler } from "../fetch/handlers/registry.ts";
 
 test("fetch: converts a simple article to clean markdown", () => {
   const html = `
@@ -202,4 +204,49 @@ test("opencodeSessionHeaders: pi-zen provider is recognized even with a foreign 
   const headers = opencodeSessionHeaders({ provider: "pi-zen", baseUrl: "https://example.com/zen/v1" }, "session-abc");
   assert.ok(headers, "expected identity headers for the pi-zen provider");
   assert.match(headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+});
+
+// rawViaHandler: the raw-mode dispatch decision, against fake handlers on
+// synthetic hosts (node --test runs each file in its own process, so the
+// registrations cannot leak into other files).
+
+registerHandler(
+  defineHandler({
+    name: "raw-dispatch-test",
+    match: (url) => url.hostname === "raw-dispatch.test",
+    fetch: async () => ({ kind: "fake", content: "should not be called in raw mode" }),
+    fetchRaw: async () => ({ kind: "fake-raw", title: "Fake Raw", content: "CANONICAL BODY" }),
+  }),
+);
+
+registerHandler(
+  defineHandler({
+    name: "raw-dispatch-boom",
+    match: (url) => url.hostname === "boom.test",
+    fetch: async () => ({ kind: "fake", content: "x" }),
+    fetchRaw: async () => {
+      throw new FetchError("ORCID record not found (or not public)");
+    },
+  }),
+);
+
+test("fetch: rawViaHandler lets a fetchRaw handler claim the URL", async () => {
+  const r = await rawViaHandler("https://raw-dispatch.test/page");
+  assert.ok(r);
+  assert.equal(r.error, null);
+  assert.equal(r.title, "Fake Raw");
+  assert.equal(r.content, "CANONICAL BODY");
+});
+
+test("fetch: rawViaHandler turns a failed fetchRaw into an error result, never a fall-through", async () => {
+  const r = await rawViaHandler("https://boom.test/page");
+  assert.ok(r);
+  assert.match(r.error!, /not found/);
+  assert.equal(r.content, "");
+});
+
+test("fetch: rawViaHandler returns null when no handler claims raw or the URL is unparseable", async () => {
+  // the default handler has no fetchRaw -> raw keeps fetching the URL itself
+  assert.equal(await rawViaHandler("https://example.com/page"), null);
+  assert.equal(await rawViaHandler("not a url at all"), null);
 });

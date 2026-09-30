@@ -11,7 +11,7 @@
 // summarize skill — the caller gets quotable text, never raw HTML.
 //
 // Internal seams exported for their own tests (not for callers):
-// convert, htmlToMarkdown, fitToBudget.
+// convert, htmlToMarkdown, fitToBudget, rawViaHandler.
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
@@ -62,6 +62,36 @@ export interface FetchOptions {
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
+
+/**
+ * Raw-mode handler dispatch, as its own seam so tests can pin the decision
+ * without live HTTP. A handler with fetchRaw substitutes the site's canonical
+ * body (orcid.org's API JSON) instead of its public URL's JS shell; returns
+ * null when no handler claims raw — the caller fetches the URL itself.
+ * A fetchRaw failure is an error result, never a fall-through: for a JS-shell
+ * site the plain raw fetch would "succeed" with the placeholder page.
+ */
+export async function rawViaHandler(urlStr: string, signal?: AbortSignal): Promise<FetchResult | null> {
+  let url: URL;
+  try {
+    url = new URL(urlStr);
+  } catch {
+    return null;
+  }
+  const handler = resolveHandler(url);
+  if (!handler?.fetchRaw) return null;
+  try {
+    const result = await handler.fetchRaw(url, { mode: "light", entryDir: "", signal });
+    return { url: urlStr, title: result.title ?? "", content: result.content, error: null };
+  } catch (err) {
+    return {
+      url: urlStr,
+      title: "",
+      content: "",
+      error: err instanceof Error ? err.message : "Raw handler fetch failed.",
+    };
+  }
+}
 
 export async function fetchContent(
   urls: string[],
@@ -124,39 +154,20 @@ export async function fetchContent(
   }
 
   // Try structured handlers first (GitHub, npm, Wikipedia, etc.). Raw mode
-  // bypasses them, except handlers that opt in with fetchRaw: a site whose
-  // public URL is a JS shell (orcid.org) declares where its canonical body
-  // lives, and raw serves that. No fetchRaw -> the URL's own body, as before.
+  // bypasses them, except handlers that opt in with fetchRaw (rawViaHandler
+  // below): a site whose public URL is a JS shell declares where its canonical
+  // body lives, and raw serves that. No fetchRaw -> the URL's own body, as before.
   const handlerResults = new Map<string, FetchResult>();
   const unhandledUrls: string[] = [];
 
   for (const urlStr of urlsToProcess) {
     if (raw) {
-      try {
-        const url = new URL(urlStr);
-        const handler = resolveHandler(url);
-        if (handler?.fetchRaw) {
-          const result = await handler.fetchRaw(url, { mode: "light", entryDir: "", signal: options.signal });
-          handlerResults.set(urlStr, {
-            url: urlStr,
-            title: result.title ?? "",
-            content: result.content.slice(0, maxChars),
-            error: null,
-          });
-          continue;
-        }
-      } catch (err) {
-        // A failed fetchRaw must not fall through to the plain raw fetch: for a
-        // JS-shell site that would "succeed" with the placeholder page.
-        handlerResults.set(urlStr, {
-          url: urlStr,
-          title: "",
-          content: "",
-          error: err instanceof Error ? err.message : "Raw handler fetch failed.",
-        });
-        continue;
+      const viaHandler = await rawViaHandler(urlStr, options.signal);
+      if (viaHandler) {
+        handlerResults.set(urlStr, { ...viaHandler, content: viaHandler.content.slice(0, maxChars) });
+      } else {
+        unhandledUrls.push(urlStr);
       }
-      unhandledUrls.push(urlStr);
       continue;
     }
     try {
