@@ -23,6 +23,7 @@ import {
   EUROPEPMC_OPERATOR_LISTING,
   europePmcSortValue,
   unrecognisedEuropePmcOperators,
+  europePmcQueryFaults,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
@@ -254,6 +255,74 @@ test("the operator listing and the accepted set are the same set, in both direct
 test("the validator reads field prefixes, not uppercase words inside a quoted value", () => {
   assert.deepEqual(unrecognisedEuropePmcOperators('TITLE:"MALARIA: A REVIEW"'), []);
   assert.deepEqual(unrecognisedEuropePmcOperators('TITLE:"MALARIA: A REVIEW" AND AUTHR:x'), ["AUTHR"]);
+});
+
+// ── silent repairs get names (PIWEB-40) — every fault, its own cause ──────────
+
+test("a sound query has no faults — the structure scan does not fire on syntax", () => {
+  for (const q of [
+    "malaria AND tuberculosis",
+    "(malaria OR tuberculosis)",
+    "NOT malaria",
+    "malaria NOT tuberculosis",
+    "malaria AND NOT tuberculosis",
+    "malaria OR NOT tuberculosis",
+    'TITLE:"MALARIA: A REVIEW" AND AUTH:Venter',
+    "PUB_YEAR:[2019 TO 2021]",
+    "malaria* AND vaccine?",
+  ]) {
+    assert.deepEqual(europePmcQueryFaults(q), [], `sound query "${q}" was flagged`);
+  }
+});
+
+test("the negation form X NOT Y is sound — only same-kind pairs are doubled", () => {
+  assert.deepEqual(europePmcQueryFaults("malaria AND NOT tuberculosis"), []);
+  assert.deepEqual(europePmcQueryFaults("malaria OR NOT tuberculosis"), []);
+  const notNot = europePmcQueryFaults("malaria NOT NOT tuberculosis")[0]!;
+  assert.match(notNot, /doubled "NOT NOT"/);
+  assert.match(notNot, /reads it as AND/);
+  assert.match(europePmcQueryFaults("malaria AND OR tuberculosis")[0]!, /doubled "AND OR"/);
+});
+
+test("an unclosed quote names the loose-term repair", () => {
+  const [fault] = europePmcQueryFaults('TITLE:"heart attack');
+  assert.match(fault!, /unclosed double quote/);
+  assert.match(fault!, /separate terms/);
+});
+
+test("an unclosed parenthesis names the OR-to-AND flip", () => {
+  const [fault] = europePmcQueryFaults("(malaria OR tuberculosis");
+  assert.match(fault!, /unclosed parenthesis/);
+  assert.match(fault!, /missing close as AND/);
+});
+
+test("an unmatched close parenthesis is named", () => {
+  assert.match(europePmcQueryFaults("malaria)")[0]!, /unmatched "\)"/);
+});
+
+test("empty parentheses are named", () => {
+  assert.match(europePmcQueryFaults("malaria AND ()")[0]!, /empty "\(\)"/);
+});
+
+test("a doubled OR names the AND it is read as; a doubled AND names the collapse", () => {
+  const orFault = europePmcQueryFaults("malaria OR OR tuberculosis")[0]!;
+  assert.match(orFault, /doubled "OR OR"/);
+  assert.match(orFault, /reads it as AND/);
+  const andFault = europePmcQueryFaults("malaria AND AND tuberculosis")[0]!;
+  assert.match(andFault, /doubled "AND AND"/);
+  assert.match(andFault, /collapses it/);
+});
+
+test("a dangling conjunction is named at either end; a leading NOT is sound", () => {
+  assert.match(europePmcQueryFaults("malaria AND")[0]!, /ends with "AND"/);
+  assert.match(europePmcQueryFaults("malaria NOT")[0]!, /ends with "NOT"/);
+  assert.match(europePmcQueryFaults("OR malaria")[0]!, /starts with "OR"/);
+  assert.deepEqual(europePmcQueryFaults("NOT malaria"), []);
+});
+
+test("the structure scan reads outside quoted values — syntax inside a phrase is data", () => {
+  assert.deepEqual(europePmcQueryFaults('TITLE:"A AND B"'), []);
+  assert.deepEqual(europePmcQueryFaults('TITLE:"(unclosed"'), []);
 });
 
 test("every operator the table names is accepted by the validator", () => {
@@ -491,6 +560,59 @@ test("searchEuropePmc declines an unrecognised query field in band, naming it �
       const m = (err as Error).message;
       assert.match(m, /unrecognised query field "AUTHR"/);
       assert.match(m, /Accepted fields: .*\bAUTH\b/);
+      // A one-character syntax fix is local — the other index is not a retry.
+      assert.doesNotMatch(m, /Retry with index/);
+      return true;
+    },
+  );
+});
+
+test("searchEuropePmc declines each silently-repaired expression, naming the cause — not no-results, not an outage", async () => {
+  const cases: Array<[string, RegExp]> = [
+    ["(malaria OR tuberculosis", /missing close as AND/],
+    ["malaria)", /unmatched "\)"/],
+    ["malaria AND ()", /empty "\(\)"/],
+    ["malaria OR OR tuberculosis", /doubled "OR OR"/],
+    ['TITLE:"heart attack', /unclosed double quote/],
+    ["malaria AND", /ends with "AND"/],
+  ];
+  for (const [query, cause] of cases) {
+    await assert.rejects(searchEuropePmc(query, {}, depsWith({})), (err: unknown) => {
+      assert.ok(err instanceof PaperError);
+      const m = (err as Error).message;
+      assert.match(m, /rejected the query as malformed/);
+      assert.match(m, cause);
+      assert.doesNotMatch(m, /returned no results/, "a repaired query must not read as empty");
+      assert.doesNotMatch(m, /unreachable/, "a repaired query must not read as an outage");
+      assert.doesNotMatch(m, /Retry with index/, "a syntax fix is local, not a reroute");
+      return true;
+    });
+  }
+});
+
+test("a genuine empty result set still reads as empty, not as a malformed expression", async () => {
+  await assert.rejects(
+    searchEuropePmc("malaria AND tuberculosis", {}, depsWith({
+      fetchResults: async () => ({ hitCount: 0, resultList: { result: [] } }),
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /returned no results/);
+      assert.doesNotMatch(m, /malformed/);
+      return true;
+    },
+  );
+});
+
+test("an outage still reads as an outage, not as a malformed expression", async () => {
+  await assert.rejects(
+    searchEuropePmc("malaria", {}, depsWith({
+      fetchResults: async () => { throw new Error("Europe PMC returned 503"); },
+    })),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /unreachable/);
+      assert.doesNotMatch(m, /malformed/);
       return true;
     },
   );
@@ -503,6 +625,8 @@ test("searchEuropePmc declines a sort key outside the accepted set before sendin
       const m = (err as Error).message;
       assert.match(m, /unrecognised sort "bogus"/);
       assert.match(m, /accepted: citedBy, date/);
+      // An invalid argument is a local fix, not a reroute to the other index.
+      assert.doesNotMatch(m, /Retry with index/);
       return true;
     },
   );

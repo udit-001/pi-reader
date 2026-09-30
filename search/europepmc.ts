@@ -108,6 +108,12 @@ export function europePmcSortValue(key: string | undefined): string | null {
   return EUROPEPMC_SORTS.find((s) => s.key === key)?.value ?? null;
 }
 
+/** The query with quoted values blanked, so a field prefix or a conjunction
+ *  inside a phrase is never read as syntax. Pure; module-private. */
+function stripQuoted(query: string): string {
+  return query.replace(/"[^"]*"/g, '""');
+}
+
 /** Field prefixes the query uses that the table does not recognise. Scans the
  *  uppercase `TOKEN:` form, which is EPMC's own field convention, so free
  *  text, booleans, parentheses, quoted values and ranges pass through. Pure;
@@ -118,14 +124,62 @@ export function unrecognisedEuropePmcOperators(query: string): string[] {
   const unknown: string[] = [];
   // Scan outside quoted values: TITLE:"MALARIA: A REVIEW" carries an
   // uppercase colon pair that is data, not a field prefix.
-  const unquoted = query.replace(/"[^"]*"/g, '""');
-  for (const m of unquoted.matchAll(/\b([A-Z][A-Z0-9_]+)\s*:/g)) {
+  for (const m of stripQuoted(query).matchAll(/\b([A-Z][A-Z0-9_]+)\s*:/g)) {
     const token = m[1]!;
     if (known.has(token) || seen.has(token)) continue;
     seen.add(token);
     unknown.push(token);
   }
   return unknown;
+}
+
+/** Every way the agent's query would be silently repaired or mis-read by
+ *  Europe PMC, as in-band detail strings — empty when the query is sound.
+ *  Europe PMC returns no error for any of these: it repairs the query or
+ *  answers a plausible count for a question that was not asked, which is why
+ *  each carries its own cause rather than reading as "no results". Verified
+ *  live 2026-09-30. Pure; exported for tests. */
+export function europePmcQueryFaults(query: string): string[] {
+  const faults: string[] = [];
+  // The quote is checked first: an unclosed one makes every later scan
+  // unreliable, and it changes the search — the phrase becomes loose terms.
+  if ((query.match(/"/g)?.length ?? 0) % 2 === 1) {
+    faults.push("unclosed double quote — Europe PMC discards it and searches the words as separate terms, not a phrase; close the quote");
+    return faults;
+  }
+  const unquoted = stripQuoted(query);
+  const unknown = unrecognisedEuropePmcOperators(query);
+  if (unknown.length > 0) {
+    faults.push(`unrecognised query field ${unknown.map((t) => `"${t}"`).join(", ")} — Europe PMC does not reject an unknown prefix, it drops it and returns a plausible count. Accepted fields: ${EUROPEPMC_OPERATORS.map((o) => o.token).join(", ")}`);
+  }
+  // Parenthesis balance: an unclosed `(` reads as AND, flipping a group
+  // written with OR into its AND set — the one repair that changes meaning.
+  let depth = 0;
+  for (const ch of unquoted) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+  }
+  if (depth < 0) faults.push('unmatched ")" — Europe PMC discards it; remove it');
+  else if (depth > 0) faults.push('unclosed parenthesis — Europe PMC reads the missing close as AND, so a group written with OR returns its AND set; add the ")"');
+  if (/\(\s*\)/.test(unquoted)) faults.push('empty "()" — Europe PMC discards it; remove it');
+  const doubled = unquoted.match(/\b(AND|OR|NOT)\s+(AND|OR|NOT)\b/i);
+  if (doubled) {
+    const first = doubled[1]!.toUpperCase();
+    const second = doubled[2]!.toUpperCase();
+    // `X NOT Y` is the standard negation form — only same-kind pairs, and the
+    // AND/OR mix, are doubled operators.
+    if (second !== "NOT" || first === "NOT") {
+      const pair = `${first} ${second}`;
+      faults.push(/OR/.test(pair) || first === "NOT"
+        ? `doubled "${pair}" — Europe PMC reads it as AND; write one`
+        : `doubled "${pair}" — Europe PMC collapses it; write one`);
+    }
+  }
+  const lead = unquoted.match(/^\s*(AND|OR)\b/i);
+  if (lead) faults.push(`the query starts with "${lead[1]!.toUpperCase()}" — Europe PMC discards it; remove it`);
+  const tail = unquoted.match(/\b(AND|OR|NOT)\s*$/i);
+  if (tail) faults.push(`the query ends with "${tail[1]!.toUpperCase()}" — Europe PMC discards it; remove it`);
+  return faults;
 }
 
 // ── Raw shape (Europe PMC result — trimmed live capture 2026-09-25) ──────────
@@ -507,15 +561,6 @@ export async function searchEuropePmc(
     throw new PaperError(paperError("malformed", "europepmc",
       "filters.expression is OpenAlex's filter list — write the constraint into the query instead, e.g. PUB_YEAR:\"2020\", OPEN_ACCESS:y, SRC:MED; an identifier goes there too, e.g. DOI:\"10.…\", EXT_ID:22955618, PMCID:PMC…"));
   }
-  // The query language is loose on the wire: an unrecognised field prefix is
-  // dropped or searched as free text and comes back as a plausible count that
-  // is not the query the agent wrote. The accepted set is the operator table,
-  // so anything outside it is declined here rather than forwarded.
-  const unknown = unrecognisedEuropePmcOperators(query);
-  if (unknown.length > 0) {
-    throw new PaperError(paperError("malformed", "europepmc",
-      `unrecognised query field ${unknown.map((t) => `"${t}"`).join(", ")} — Europe PMC does not reject an unknown prefix, it drops it and returns a plausible count. Accepted fields: ${EUROPEPMC_OPERATORS.map((o) => o.token).join(", ")}`));
-  }
   // A sort key outside the accepted set is declined before it is sent: the
   // backend answers an invalid sort with a 503, which reads as an outage.
   const sortValue = options.filters?.sort === undefined
@@ -523,7 +568,8 @@ export async function searchEuropePmc(
     : europePmcSortValue(options.filters.sort);
   if (options.filters?.sort !== undefined && sortValue === null) {
     throw new PaperError(paperError("malformed", "europepmc",
-      `unrecognised sort ${JSON.stringify(options.filters.sort)} — accepted: ${EUROPEPMC_SORTS.map((s) => s.key).join(", ")}. Europe PMC answers an invalid sort as a 503 outage-lookalike, so it is never sent`));
+      `unrecognised sort ${JSON.stringify(options.filters.sort)} — accepted: ${EUROPEPMC_SORTS.map((s) => s.key).join(", ")}. Europe PMC answers an invalid sort as a 503 outage-lookalike, so it is never sent`,
+      null));
   }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;
   const graph = options.filters?.citationGraph;
@@ -550,6 +596,15 @@ export async function searchEuropePmc(
     throw new PaperError(paperError("malformed", "europepmc",
       "Europe PMC's search endpoint pages by cursor, not page number — pass filters.cursor: \"*\" to open the enumeration, then each response's Next cursor to continue it",
       null));
+  }
+  // The query language is loose on the wire: an unrecognised field prefix, an
+  // unclosed quote or parenthesis, a doubled or dangling conjunction, an empty
+  // pair of parentheses — Europe PMC returns no error for any of them, so a
+  // repaired query would answer a question the agent did not ask. Each is
+  // declined here with its own cause, and the fix is local (no retry index).
+  const faults = europePmcQueryFaults(query);
+  if (faults.length > 0) {
+    throw new PaperError(paperError("malformed", "europepmc", faults.join("; "), null));
   }
   const params = buildEuropePmcParams(buildEuropePmcFilterQuery(query, options.filters), n, {
     cursor: options.filters?.cursor,

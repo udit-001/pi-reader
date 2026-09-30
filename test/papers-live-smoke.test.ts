@@ -247,3 +247,61 @@ test("live: Europe PMC's sort orders the whole index, not the fetched page", { s
     assert.ok(years[i - 1]! >= years[i]!, `date sort is not newest-first at ${i}: ${years.join(", ")}`);
   }
 });
+
+// The silent repairs PIWEB-40 names are pinned against the real backend. The
+// adapter declines these before sending, so each repair is falsifiable only by
+// a direct probe: the malformed form returns the same set as the form Europe
+// PMC repaired it into.
+test("live: Europe PMC's silent repairs are real", { skip: !live }, async () => {
+  const count = async (query: string): Promise<number> => {
+    const url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search?"
+      + new URLSearchParams({ query, pageSize: "1", resultType: "idlist", format: "json" });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const body = (await res.json()) as { hitCount?: number };
+        if (typeof body.hitCount === "number") return body.hitCount;
+      } catch { /* Europe PMC throws transient 502/503 — retry */ }
+    }
+    return -1;
+  };
+
+  const malaria = await count("malaria");
+  const and = await count("malaria AND tuberculosis");
+  const or = await count("malaria OR tuberculosis");
+  assert.ok(malaria > 0 && and > 0 && or > and, `controls did not separate: ${malaria}/${and}/${or}`);
+
+  const repairs: Array<[string, number, string]> = [
+    ["(malaria OR tuberculosis", and, "unclosed parenthesis reads as AND"],
+    ["malaria)", malaria, "unmatched close is discarded"],
+    ["malaria AND ()", malaria, "empty parentheses are discarded"],
+    ["malaria AND AND tuberculosis", and, "doubled AND collapses"],
+    ["malaria OR OR tuberculosis", and, "doubled OR reads as AND"],
+    ["malaria NOT NOT tuberculosis", and, "doubled NOT reads as AND"],
+    ["AND malaria", malaria, "leading AND is discarded"],
+    ["malaria AND", malaria, "trailing AND is discarded"],
+    ["malaria NOT", malaria, "trailing NOT is discarded"],
+  ];
+  for (const [query, expected, why] of repairs) {
+    assert.equal(await count(query), expected, `${why}: "${query}"`);
+  }
+
+  // The unclosed quote drops the phrase and searches the words loosely, so the
+  // two forms separate — the reason the fault is declined rather than sent.
+  const phrase = await count('TITLE:"heart attack"');
+  const loose = await count("TITLE:heart attack");
+  assert.ok(phrase > 0 && loose > phrase, `phrase/loose forms did not separate: ${phrase}/${loose}`);
+  assert.equal(await count('TITLE:"heart attack'), loose, "unclosed quote no longer searches as loose terms");
+
+  // The unrecognised-prefix drop the error contract names: the typo returns a
+  // count of its own, not the query's.
+  assert.equal(await count("AUTHR:Venter"), 0, "the typo'd prefix no longer drops to zero");
+  assert.ok(await count("AUTH:Venter") > 0, "the correct prefix no longer returns a set");
+
+  // The sort decline's premise: an invalid sort fails on the wire as a 5xx,
+  // which would read as an outage rather than an argument error.
+  const badSort = await fetch("https://www.ebi.ac.uk/europepmc/webservices/rest/search?"
+    + new URLSearchParams({ query: "malaria", pageSize: "1", resultType: "idlist", format: "json", sort: "bogus" }));
+  assert.equal(badSort.ok, false, "an invalid sort no longer fails on the wire — the sort decline's premise changed");
+});
