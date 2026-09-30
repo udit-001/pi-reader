@@ -157,9 +157,8 @@ const paperFiltersSchema = Type.Optional(
           },
           {
             description:
-              "Traverse from one paper — `cites:` for the works citing it, `cited_by:` " +
-              "for its references; replaces the free-text query (query may be empty when " +
-              "this drives the search).",
+              "Traverse from one paper; replaces the free-text query (query may be " +
+              "empty when this drives the search).",
           },
         ),
       ),
