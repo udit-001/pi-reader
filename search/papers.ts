@@ -534,11 +534,20 @@ export function buildOpenAlexExpressionFilter(filters: PaperFilters): string {
   return merged;
 }
 
+/** The works endpoint's own `sort` values, exhaustive over the interface's
+ *  orderings on purpose: a new key fails the build until it is mapped here, so
+ *  the vocabulary and the wire cannot drift apart in silence. */
+const OPENALEX_SORTS: Record<PaperSort, string> = {
+  citedBy: "cited_by_count:desc",
+  date: "publication_date:desc",
+  fwci: "fwci:desc",
+};
+
 /** The OpenAlex works query. per-page sized; `api_key` set only when a key
  *  resolves (never sent empty — keyless is a first-class path); `filter` set
  *  only when the caller carries constraints (search or citation walk); `sort`
- *  set only when filters ask for citation ranking (the API default is
- *  relevance). `search` is omitted when the query is empty (a walk has none).
+ *  set only when filters ask for a ranking (the API default is relevance).
+ *  `search` is omitted when the query is empty (a walk has none).
  *  Pure; exported for tests. */
 export function buildPaperParams(query: string, numResults: number, apiKey: string | null, filter = "", sort: PaperSort | undefined = undefined, cursor?: string): URLSearchParams {
   const params = new URLSearchParams({
@@ -549,8 +558,7 @@ export function buildPaperParams(query: string, numResults: number, apiKey: stri
   if (query) params.set("search", query);
   if (filter) params.set("filter", filter);
   if (apiKey) params.set("api_key", apiKey);
-  if (sort === "citedBy") params.set("sort", "cited_by_count:desc");
-  if (sort === "date") params.set("sort", "publication_date:desc");
+  if (sort !== undefined) params.set("sort", OPENALEX_SORTS[sort]);
   // Cursor paging is the works endpoint's own mechanism; `cursor=*` opens the
   // walk, and the response's `meta.next_cursor` closes the loop.
   if (cursor) params.set("cursor", cursor);
@@ -823,12 +831,15 @@ async function searchOpenAlexWalk(
     // One server-side call per walk — cited_by:W… is the seed's reference
     // list resolved by the index; no chunk loop, no OR-cap math. The agent's
     // cursor rides through untouched: a citation result set pages exactly like
-    // any other works query, and the handle is never followed here.
+    // any other works query, and the handle is never followed here. The
+    // ordering rides too — `sort` is orthogonal to `filter` on the works
+    // endpoint, and dropping it would answer "which of these is a breakout"
+    // with relevance order and no warning.
     return await fetchOpenAlexWorks(
       buildPaperParams(
         "", n, key,
         buildOpenAlexFilter(options.filters, wId, graph.direction ?? "cites"),
-        undefined,
+        options.filters?.sort,
         options.filters?.cursor,
       ),
       n,

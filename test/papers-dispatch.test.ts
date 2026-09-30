@@ -522,6 +522,18 @@ test("a citation walk carries the agent's cursor onto the works query, and never
   assert.equal(page.nextCursor, "AoJNEXT");
 });
 
+test("a citation walk carries the agent's ordering onto the works query", async () => {
+  let sent: URLSearchParams | undefined;
+  await searchPapers("", { filters: { citationGraph: { seed: "W3161425918" }, sort: "fwci" } }, depsWith({
+    openalex: { fetchWorks: async (params) => { sent = params; return [OPENALEX_WORK]; } },
+  }));
+  // `sort` is orthogonal to `filter` on the works endpoint, so a walk ranks the
+  // same way a search does. Dropping it answered "which of these is a breakout"
+  // in relevance order with no warning.
+  assert.equal(sent!.get("sort"), "fwci:desc");
+  assert.equal(sent!.get("filter"), "is_retracted:false,cites:W3161425918");
+});
+
 // ── parsePaperSeed — the shared seed grammar ─────────────────────────────────
 
 test("parsePaperSeed reads the identifier forms a papers row hands the agent", () => {

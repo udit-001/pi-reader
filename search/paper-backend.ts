@@ -334,10 +334,23 @@ export function chooseFetchableUrl(candidates: Array<string | null | undefined>)
 
 // ── Filters + citation traversal (PIWEB-16) ───────────────────────────────
 
-/** The orderings the interface offers, shared by every adapter's mapping and
- *  by the post-fetch fallback (applySort). One name, so a new key is a
- *  one-place type change rather than three literals that can drift. */
-export type PaperSort = "citedBy" | "date";
+/** The orderings the interface offers, each with the condition that earns it.
+ *  One table: the always-loaded description is composed from it in the entry,
+ *  and each adapter maps the keys it serves — so a key cannot be documented
+ *  without being served, or served without being documented. The type is
+ *  derived from the keys, so the vocabulary and the table are one thing rather
+ *  than two that can drift.
+ *
+ *  `fwci` is the one ordering not every adapter serves: Europe PMC computes no
+ *  field-normalized impact, so it declines that key in band rather than
+ *  answering it with a different ordering. */
+export const PAPER_SORTS = [
+  { key: "citedBy", condition: "descending citation count — the 'find papers on X which are highly cited' ask" },
+  { key: "date", condition: "newest first" },
+  { key: "fwci", condition: "descending field-normalized impact — the 'breakout in its own field' ask" },
+] as const;
+
+export type PaperSort = (typeof PAPER_SORTS)[number]["key"];
 
 /** The abstract's record-side cap — the on-topic judgment fits in a screen,
  *  and a list row pays context per result. */
@@ -452,7 +465,11 @@ export function parsePaperSeed(seed: string): PaperSeed | null {
 /** Order results away from relevance for the one surface whose endpoint
  *  cannot: Europe PMC's citation-walk routes take no sort (verified live — a
  *  `sort` sent there is ignored). Records without a count or year keep their
- *  order (stable sort) rather than being dropped. Pure; exported for tests. */
+ *  order (stable sort) rather than being dropped.
+ *
+ *  It orders only the keys a walk's records can carry, and `fwci` is not one —
+ *  no such metric reaches an EPMC record — so the adapter's decline has to keep
+ *  that key from arriving here. Pure; exported for tests. */
 export function applySort(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
   if (filters?.sort === "citedBy") {
     return records.toSorted((a, b) => (b.citedBy ?? -1) - (a.citedBy ?? -1));

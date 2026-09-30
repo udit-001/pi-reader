@@ -33,7 +33,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
-import { isPaperRecord, renderPaperExtras, PaperError, type PaperRecord } from "./search/paper-backend.ts";
+import { isPaperRecord, renderPaperExtras, PAPER_SORTS, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { EUROPEPMC_OPERATOR_LISTING, EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
 import { EXPRESSION_PARAM_DESCRIPTION, OPENALEX_CITATION_EDGES } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
@@ -44,6 +44,13 @@ import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.
 const CITATION_EDGE_PROSE = OPENALEX_CITATION_EDGES
   .map((e) => `'${e.token}:W…' (${e.meaning})`)
   .join(" / ");
+
+/** The ordering vocabulary as agent-facing prose, composed from the one table
+ *  that holds it so the description cannot name a key the adapters do not
+ *  forward, or omit one they do (PIWEB-24). */
+const SORT_PROSE = PAPER_SORTS
+  .map((s) => `'${s.key}' (${s.condition})`)
+  .join(", ");
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -122,8 +129,8 @@ const paperFiltersSchema = Type.Optional(
       includeRetracted: Type.Optional(Type.Boolean({
         description: "Papers provider only: include retracted works. They are excluded by default — a retraction disqualifies the work as a reading candidate; when included, the retracted key marks them.",
       })),
-      sort: Type.Optional(Type.Union([Type.Literal("citedBy"), Type.Literal("date")], {
-        description: "Rank by 'citedBy' — descending citation count, the 'find papers on X which are highly cited' ask — or 'date' for newest first. Relevance is the default. Both adapters sort the whole set at the backend; a Europe PMC citation walk is the one exception, its routes taking no sort.",
+      sort: Type.Optional(Type.Union([Type.Literal("citedBy"), Type.Literal("date"), Type.Literal("fwci")], {
+        description: "Rank by " + SORT_PROSE + ". Relevance is the default. Both adapters sort the whole set at the backend; a Europe PMC citation walk is the one exception, its routes taking no sort. 'fwci' is OpenAlex's alone — Europe PMC computes no field-normalized impact and declines it in band.",
       })),
       synonym: Type.Optional(Type.Boolean({
         description: "Europe PMC only: expand the query through the backend's synonym table — 'heart attack' also reaches 'myocardial infarction'. Recall leaps (54,785 → 755,190 on a quoted phrase) at a precision cost, so reach for it when recall is what this turn needs. OpenAlex declines it in band (the lever is Europe PMC's), and so does a Europe PMC citation walk, having no query to expand — run a search instead.",

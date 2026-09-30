@@ -28,7 +28,7 @@ import {
   type OpenAlexWork,
   type OpenAlexDeps,
 } from "../search/papers.ts";
-import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, paperPage, type PaperRecord } from "../search/paper-backend.ts";
+import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, paperPage, PAPER_SORTS, type PaperRecord } from "../search/paper-backend.ts";
 import { isPaperRecord } from "../search/paper-backend.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
 
@@ -551,6 +551,18 @@ test("paper params carry the citedBy sort server-side; relevance when sort is ab
 
 test("paper params carry the date sort server-side — newest first, across the whole index", () => {
   assert.equal(buildPaperParams("lichen", 10, null, "", "date").get("sort"), "publication_date:desc");
+});
+
+test("paper params forward every ordering the interface offers", () => {
+  // The loop is the drift guard: a key added to PAPER_SORTS with no OpenAlex
+  // mapping fails the exhaustive Record at build time, and this pins that the
+  // value actually reaches the wire rather than being dropped in silence.
+  for (const { key } of PAPER_SORTS) {
+    assert.ok(buildPaperParams("lichen", 10, null, "", key).get("sort"), `ordering "${key}" produced no sort param`);
+  }
+  // The one the epic's story is about: field-normalized impact, so a slow
+  // field's hub does not outrank a young paper's hit.
+  assert.equal(buildPaperParams("lichen", 10, null, "", "fwci").get("sort"), "fwci:desc");
 });
 
 test("paper params carry the cursor verbatim; an absent cursor stays off the wire", () => {

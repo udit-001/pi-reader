@@ -1039,6 +1039,22 @@ test("searchEuropePmc declines a sort key outside the accepted set before sendin
   );
 });
 
+test("searchEuropePmc declines the field-normalized ordering, naming the index that computes it", async () => {
+  await assert.rejects(
+    searchEuropePmc("malaria", { filters: { sort: "fwci" } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      // A key spelled correctly, not a typo — the message must not send the
+      // agent hunting for a misspelling in a word it wrote right.
+      assert.doesNotMatch(m, /unrecognised sort/);
+      assert.match(m, /Europe PMC does not compute/);
+      assert.match(m, /accepted here: citedBy, date/);
+      assert.match(m, /retry with index: "openalex"/);
+      return true;
+    },
+  );
+});
+
 test("searchEuropePmc declines the synonym lever on a walk — the route takes no query", async () => {
   await assert.rejects(
     searchEuropePmc("", { filters: { citationGraph: { seed: "32581362" }, synonym: true } }, depsWith({})),

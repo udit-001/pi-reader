@@ -39,6 +39,7 @@ import {
   paperPage,
   parsePaperSeed,
   PaperError,
+  PAPER_SORTS,
   elide,
   ABSTRACT_MAX,
   type PaperBackendStatus,
@@ -901,12 +902,19 @@ export async function searchEuropePmc(
   }
   // A sort key outside the accepted set is declined before it is sent: the
   // backend answers an invalid sort with a 503, which reads as an outage.
-  const sortValue = options.filters?.sort === undefined
-    ? undefined
-    : europePmcSortValue(options.filters.sort);
-  if (options.filters?.sort !== undefined && sortValue === null) {
-    throw new PaperError(paperError("malformed", "europepmc",
-      `unrecognised sort ${JSON.stringify(options.filters.sort)} — accepted: ${EUROPEPMC_SORTS.map((s) => s.key).join(", ")}. Europe PMC answers an invalid sort as a 503 outage-lookalike, so it is never sent`,
+  //
+  // Two different failures share this branch, and the message separates them:
+  // a key outside the interface's vocabulary is a caller bug, while `fwci` is
+  // spelled correctly and ranks by a metric this index does not compute.
+  // Calling the second "unrecognised" would send the agent hunting for a typo
+  // in a word it wrote right.
+  const sort = options.filters?.sort;
+  const sortValue = sort === undefined ? undefined : europePmcSortValue(sort);
+  if (sort !== undefined && sortValue === null) {
+    const offered = PAPER_SORTS.some((s) => s.key === sort);
+    throw new PaperError(paperError("malformed", "europepmc", offered
+      ? `sort "${sort}" ranks by a metric Europe PMC does not compute — accepted here: ${EUROPEPMC_SORTS.map((s) => s.key).join(", ")}; retry with index: "openalex" or drop it`
+      : `unrecognised sort ${JSON.stringify(sort)} — accepted: ${EUROPEPMC_SORTS.map((s) => s.key).join(", ")}. Europe PMC answers an invalid sort as a 503 outage-lookalike, so it is never sent`,
       null));
   }
   const n = options.numResults ?? DEFAULT_PAGE_SIZE;

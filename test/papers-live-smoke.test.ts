@@ -309,6 +309,25 @@ test("live: Europe PMC's silent repairs are real", { skip: !live }, async () => 
 // PIWEB-33's identifiers-only tier: the cheap page of a large enumeration. The
 // wire returns source-scoped ids only, and the tier is the search endpoint's —
 // the walk routes ignore resultType, so the adapter declines it there.
+// PIWEB-24 story 4: rank by field-normalized impact rather than raw citation
+// count, so a slow field's hub does not outrank a young paper's hit. The
+// ordering is only useful if the wire honours it, and only trustworthy if the
+// rows arrive in that order.
+test("live: the field-normalized ordering ranks by fwci, not by raw citations", { skip: !live }, async () => {
+  const { results } = await searchPapers("CRISPR", { numResults: 5, filters: { sort: "fwci" } });
+  assert.ok(results.length > 1, "the fwci ordering returned too few rows to compare");
+  const fwcis = results.map((r) => r.fwci);
+  assert.ok(fwcis.every((f) => f !== undefined), "a row carried no fwci — the projection or the sort drifted");
+  for (let i = 1; i < fwcis.length; i++) {
+    assert.ok(fwcis[i - 1]! >= fwcis[i]!, `fwci ordering broke at row ${i}: ${fwcis[i - 1]} then ${fwcis[i]}`);
+  }
+  // The point of the ordering: it is not the citation ranking. If these ever
+  // coincide, the backend started ignoring `sort=fwci:desc` and answering with
+  // the relevance page, which the descending check above cannot detect.
+  const { results: byCitations } = await searchPapers("CRISPR", { numResults: 5, filters: { sort: "citedBy" } });
+  assert.notDeepEqual(results.map((r) => r.url), byCitations.map((r) => r.url), "the fwci ordering returned the citation ordering");
+});
+
 // PIWEB-32 AC 12: a citation result set pages like any other works query. The
 // adapter used to drop `filters.cursor` on the walk leg, so a 807-row `cites:`
 // set was capped at one page with no way to ask for the next.
