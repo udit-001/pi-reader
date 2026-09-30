@@ -129,8 +129,8 @@ test("isFlagY reads only the Y flag", () => {
 });
 
 test("parseAuthors splits the comma string and drops empties", () => {
-  assert.deepEqual(parseAuthors("Winter E, Emiliani F, Cook A"), ["Winter E", "Emiliani F", "Cook A"]);
-  assert.deepEqual(parseAuthors("Liu D."), ["Liu D."]);
+  assert.deepEqual(parseAuthors("Winter E, Emiliani F, Cook A"), [{ name: "Winter E" }, { name: "Emiliani F" }, { name: "Cook A" }]);
+  assert.deepEqual(parseAuthors("Liu D."), [{ name: "Liu D." }]);
   assert.equal(parseAuthors(undefined), undefined);
   assert.equal(parseAuthors(""), undefined);
 });
@@ -167,8 +167,8 @@ test("europepmc normalizer maps the same flat keys the OpenAlex backend emits", 
       title: "BASELINE: a CRISPR base editing platform for mammalian-scale single-cell lineage tracing.",
       url: "https://europepmc.org/article/PMC13434336",
       year: 2026,
-      authors: ["Winter E", "Emiliani F", "McKenna A."],
-      venue: "Nucleic Acids Research",
+      authors: [{ name: "Winter E" }, { name: "Emiliani F" }, { name: "McKenna A." }],
+      venue: { name: "Nucleic Acids Research", type: "journal" },
       citedBy: 3,
       doi: "10.1093/nar/gkag769",
       oaUrl: "https://europepmc.org/article/PMC13434336",
@@ -215,7 +215,7 @@ test("europepmc normalizer falls back to journalTitle when journalInfo carries n
     doi: undefined,
     pmcid: undefined,
   }]);
-  assert.equal(r!.venue, "Nat Biomed Eng");
+  assert.deepEqual(r!.venue, { name: "Nat Biomed Eng", type: "journal" });
   assert.equal(r!.url, "https://europepmc.org/article/MED/42527584");
 });
 
@@ -525,7 +525,7 @@ test("an identifiers-only row carries the identifiers the wire sent and invents 
   assert.equal(recs[0]!.title, "");
   assert.equal(recs[0]!.snippet, "");
   for (const r of recs) {
-    for (const k of ["venue", "doi", "oaUrl", "type", "content", "citedBy", "venueType"] as const) {
+    for (const k of ["venue", "doi", "oaUrl", "type", "content", "citedBy"] as const) {
       assert.equal(k in r, false, `${k} was invented for a bare id row`);
     }
   }
@@ -565,9 +565,8 @@ test("the core normalizer rails the subject and provenance block onto the record
 test("the core normalizer rails authority onto the record", () => {
   const [r] = normalizeEuropePmcResults([CORE_REC]);
   // The nested journal block the lite request never sends.
-  assert.equal(r!.venue, "Nature biomedical engineering");
+  assert.deepEqual(r!.venue, { name: "Nature biomedical engineering", type: "journal" });
   assert.equal(r!.type, "Journal Article");
-  assert.equal(r!.venueType, "journal");
   assert.deepEqual(r!.orcids, ["0000-0001-6004-9664"]);
   assert.deepEqual(r!.institutions!.map((i) => i.name), ["Dept of Bioengineering, UIUC.", "Carl R. Woese Institute for Genomic Biology, UIUC."]);
   assert.equal(r!.language, "eng");
@@ -583,14 +582,14 @@ test("a retracted core record carries its notice; a preprint reads as a reposito
   assert.equal(ret!.type, "Editorial");
 
   const [pre] = normalizeEuropePmcResults([PREPRINT_CORE]);
-  assert.equal(pre!.venueType, "repository");
+  assert.equal(pre!.venue?.type, "repository");
   assert.equal(pre!.type, "Preprint");
   assert.equal(pre!.retracted, undefined);
 });
 
 test("a core record carrying no authority fields invents none", () => {
   const [r] = normalizeEuropePmcResults([{ id: "1", source: "MED", title: "bare" }]);
-  for (const k of ["institutions", "orcids", "type", "venueType", "retractionNotice", "language", "publicationStatus", "dataAvailability", "fullTextUrls", "subjects", "compounds", "funding"] as const) {
+  for (const k of ["institutions", "orcids", "type", "retractionNotice", "language", "publicationStatus", "dataAvailability", "fullTextUrls", "subjects", "compounds", "funding"] as const) {
     assert.equal(k in r!, false, `${k} was invented`);
   }
 });
@@ -1171,7 +1170,7 @@ test("searchEuropePmc walks forward from a PMID seed through the citations route
   assert.equal(seen[0]!.params.get("pageSize"), "10");
   // Walk entries normalize into the SAME shape — journalAbbreviation as venue.
   assert.equal(results.length, 2);
-  assert.equal(results[0]!.venue, "J Cell Mol Med");
+  assert.deepEqual(results[0]!.venue, { name: "J Cell Mol Med", type: "journal" });
   assert.equal(results[0]!.year, 2026);
   assert.equal(results[0]!.url, "https://europepmc.org/article/MED/42725849");
 });

@@ -89,15 +89,9 @@ const providerSchema = Type.Optional(
         "back to text search with domains: ['youtube.com'].\n" +
         "• 'papers' — scholarly literature: citeable records for a literature pass. " +
         "Find on a topic: the free-text query (the default). Walk citations from a " +
-        "paper you already hold: filters.citationGraph, or filters.expression " +
-        `${CITATION_EDGE_PROSE} on the ` +
-        "works adapter — for when the top hits missed the topic or the years, or you " +
-        "want the foundations under a hit. Look up one known paper: the identifier as " +
-        "a constraint (filters.expression 'doi:…' / 'ids.pmid:…', or inside query on " +
-        "Europe PMC), which needs none of the traversal machinery. Enumerate a " +
-        "reference or citation list to its end: filters.cursor on a search, page on a " +
-        "Europe PMC walk. Rank a topic by citations or recency: " +
-        "filters.sort.",
+        "paper you already hold: filters.citationGraph, for when the top hits missed " +
+        "the topic or the years, or you want the foundations under a hit. Look up one " +
+        "known paper by its identifier: filters.expression.",
     },
   ),
 );
@@ -106,9 +100,10 @@ const paperIndexSchema = Type.Optional(
   Type.Union([Type.Literal("openalex"), Type.Literal("europepmc")], {
     description:
       "Papers provider only: which backend to query. 'openalex' (default) — open " +
-      "scholarly metadata across all disciplines. 'europepmc' — biomedical full text: " +
-      "PubMed, PMC copies, preprints, patents. Its `query` is Europe PMC's own field " +
-      "language, written TOKEN:value: " + EUROPEPMC_OPERATOR_LISTING + ".",
+      "scholarly metadata across all disciplines; its `query` takes boolean " +
+      "`AND`/`OR`/`NOT`, quoted phrases, and `~N` for proximity or fuzzy matching. " +
+      "'europepmc' — biomedical full text: PubMed, PMC copies, preprints, patents. " +
+      "Its `query` is Europe PMC's own field language, written TOKEN:value: " + EUROPEPMC_OPERATOR_LISTING + ".",
   }),
 );
 
@@ -451,7 +446,6 @@ export default function piWeb(pi: ExtensionAPI): void {
                   ...(r.topic ? { topic: r.topic } : {}),
                   ...(r.authors?.length ? { authors: r.authors } : {}),
                   ...(r.institutions?.length ? { institutions: r.institutions } : {}),
-                  ...(r.venueType ? { venueType: r.venueType } : {}),
                   ...(r.refCount !== undefined ? { refCount: r.refCount } : {}),
                   ...(r.orcids?.length ? { orcids: r.orcids } : {}),
                   ...(r.retractionNotice ? { retractionNotice: r.retractionNotice } : {}),

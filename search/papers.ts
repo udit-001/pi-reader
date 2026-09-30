@@ -31,12 +31,15 @@ import {
   parsePaperSeed,
   elide,
   ABSTRACT_MAX,
+  type PaperAuthor,
   type PaperCitationGraph,
   type PaperFilters,
   type PaperInstitution,
   type PaperPage,
   type PaperRecord,
   type PaperSort,
+  type PaperTopic,
+  type PaperVenue,
 } from "./paper-backend.ts";
 import { searchEuropePmc, defaultEuropePmcDeps, type EuropePmcDeps } from "./europepmc.ts";
 import { loadConfig } from "../config.ts";
@@ -66,6 +69,9 @@ export interface OpenAlexWork {
   /** URL form, e.g. "https://doi.org/10.1038/s41587-020-0561-9". Null on
    *  works without a DOI — OpenAlex sends an explicit null, not a missing key. */
   doi?: string | null;
+  /** External identifiers as URL forms — the pmid/pmcid bridge to the
+   *  biomedical index. Keys for unknown ids are omitted. */
+  ids?: { pmid?: string | null; pmcid?: string | null } | null;
   title?: string;
   publication_year?: number;
   cited_by_count?: number;
@@ -73,14 +79,16 @@ export interface OpenAlexWork {
   is_retracted?: boolean | null;
   /** Work type — article, book-chapter, dataset, preprint, …. */
   type?: string | null;
-  /** Primary topic — the work's discipline, display_name is the token. */
-  primary_topic?: { display_name?: string | null } | null;
+  /** Primary topic — the work's discipline, display_name is the token, id the
+   *  bare T-id the filter vocabulary takes. */
+  primary_topic?: { id?: string | null; display_name?: string | null } | null;
   primary_location?: {
     landing_page_url?: string;
-    /** The hosting venue: its name, and its kind ("journal", "repository",
+    /** The hosting venue: its name, its kind ("journal", "repository",
      *  "conference", …) — a repository tells you the work is a preprint or
-     *  an archived copy rather than a peer-reviewed article. */
-    source?: { display_name?: string; type?: string | null } | null;
+     *  an archived copy rather than a peer-reviewed article — and its bare
+     *  S-id. */
+    source?: { id?: string | null; display_name?: string; type?: string | null } | null;
   } | null;
   open_access?: { is_oa?: boolean; oa_status?: string; oa_url?: string | null } | null;
   best_oa_location?: { landing_page_url?: string; pdf_url?: string | null } | null;
@@ -89,7 +97,7 @@ export interface OpenAlexWork {
  *  the PMC/DOAJ/repo copies are not, and they are what fetches cleanly. */
   locations?: Array<{ landing_page_url?: string | null } | null> | null;
   authorships?: Array<{
-    author?: { display_name?: string } | null;
+    author?: { id?: string | null; display_name?: string; orcid?: string | null } | null;
     /** Every institution this author claims on the work — two or more for a
      *  dual-affiliated researcher. Empty (not absent) when the API lists
      *  none. */
@@ -232,6 +240,32 @@ function bareRor(ror: string | null | undefined): string | null {
   return m?.[1] ?? null;
 }
 
+/** OpenAlex carries an author's ORCID as an https URL
+ *  ("https://orcid.org/0000-0002-1825-0097"); the record keeps the bare
+ *  identifier, the way it keeps a bare DOI. Absent or non-ORCID → null. Pure;
+ *  module-private. */
+function bareOrcid(orcid: string | null | undefined): string | null {
+  if (typeof orcid !== "string") return null;
+  const m = orcid.match(/^https?:\/\/orcid\.org\/(.+)$/i);
+  return m?.[1] ?? null;
+}
+
+/** OpenAlex's `ids` carry external identifiers as URL forms; the record keeps
+ *  the bare PMID / PMCID the way it keeps a bare DOI, so an OpenAlex row can
+ *  feed a Europe PMC walk. Absent or unrecognizable → null. Pure;
+ *  module-private. */
+function barePmid(id: string | null | undefined): string | null {
+  if (typeof id !== "string") return null;
+  const m = id.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/i) ?? id.match(/^(\d+)$/);
+  return m?.[1] ?? null;
+}
+
+function barePmcid(id: string | null | undefined): string | null {
+  if (typeof id !== "string") return null;
+  const m = id.match(/(PMC\d+)/i);
+  return m?.[1]?.toUpperCase() ?? null;
+}
+
 /** Every institution a work's authors claim, in authorship order, one entry
  *  per institution — a dual-affiliated author and a co-author at the same lab
  *  both collapse to one. The stable id dedupes when the API gives one, the
@@ -249,6 +283,8 @@ function dedupeInstitutions(authorships: OpenAlexWork["authorships"]): PaperInst
       if (seen.has(key)) continue;
       seen.add(key);
       const entry: PaperInstitution = { name };
+      const instId = bareOpenAlexId(inst?.id ?? "");
+      if (/^I\d+$/.test(instId)) entry.id = instId;
       if (typeof inst?.type === "string" && inst.type) entry.type = inst.type;
       if (typeof inst?.country_code === "string" && inst.country_code) entry.country = inst.country_code;
       const ror = bareRor(inst?.ror);
@@ -260,10 +296,12 @@ function dedupeInstitutions(authorships: OpenAlexWork["authorships"]): PaperInst
 }
 
 /** OpenAlex works → PaperRecords. year←publication_year, authors←authorships
- *  display names, venue←primary_location.source.display_name,
- *  citedBy←cited_by_count, oaUrl←chooseOaUrl (absent when closed), doi←
- *  parseDoi, url←chooseRecordUrl, retracted←is_retracted, topic←
- *  primary_topic.display_name, type←type — plus the deep-research keys:
+ *  (display name plus the bare author id and ORCID), venue←primary_location
+ *  .source (name, type, bare S-id), citedBy←cited_by_count, oaUrl←chooseOaUrl
+ *  (absent when closed), doi←parseDoi, pmid/pmcid←ids, url←chooseRecordUrl,
+ *  retracted←is_retracted, topic←primary_topic (name, bare T-id), type←type,
+ *  institutions←authorships.institutions (name, type, country, bare I-id,
+ *  ROR) — plus the deep-research keys:
  *  fwci←fwci, refs←referenced_works (capped 40), related←related_works
  *  (capped 10), openalexId←id, field←topics[0].field, keywords←the first 3
  *  keyword names, recentCitations/citationTrend←counts_by_year's last three
@@ -276,9 +314,17 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
   for (const w of works) {
     const url = chooseRecordUrl(w);
     if (url === null) continue;
-    const authors = (w.authorships ?? [])
-      .map((a) => a.author?.display_name)
-      .filter((n): n is string => typeof n === "string");
+    const authors: PaperAuthor[] = [];
+    for (const a of w.authorships ?? []) {
+      const name = a.author?.display_name;
+      if (typeof name !== "string") continue;
+      const entry: PaperAuthor = { name };
+      const id = bareOpenAlexId(a.author?.id ?? "");
+      if (/^A\d+$/.test(id)) entry.id = id;
+      const orcid = bareOrcid(a.author?.orcid);
+      if (orcid) entry.orcid = orcid;
+      authors.push(entry);
+    }
     const rec: PaperRecord = {
       title: w.title ?? "",
       url,
@@ -296,17 +342,32 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
     };
     if (w.publication_year !== undefined) rec.year = w.publication_year;
     if (authors.length > 0) rec.authors = authors;
-    const venue = w.primary_location?.source?.display_name;
-    if (venue) rec.venue = venue;
+    const source = w.primary_location?.source;
+    if (typeof source?.display_name === "string" && source.display_name) {
+      const venue: PaperVenue = { name: source.display_name };
+      if (typeof source.type === "string" && source.type) venue.type = source.type;
+      const sourceId = bareOpenAlexId(source.id ?? "");
+      if (/^S\d+$/.test(sourceId)) venue.id = sourceId;
+      rec.venue = venue;
+    }
     if (w.cited_by_count !== undefined) rec.citedBy = w.cited_by_count;
     const oaUrl = chooseOaUrl(w);
     if (oaUrl) rec.oaUrl = oaUrl;
     const doi = parseDoi(w.doi);
     if (doi) rec.doi = doi;
+    const pmid = barePmid(w.ids?.pmid);
+    if (pmid) rec.pmid = pmid;
+    const pmcid = barePmcid(w.ids?.pmcid);
+    if (pmcid) rec.pmcid = pmcid;
     if (typeof w.is_retracted === "boolean") rec.retracted = w.is_retracted;
     if (typeof w.type === "string" && w.type) rec.type = w.type;
-    const topic = w.primary_topic?.display_name;
-    if (typeof topic === "string" && topic) rec.topic = topic;
+    const topicName = w.primary_topic?.display_name;
+    if (typeof topicName === "string" && topicName) {
+      const topic: PaperTopic = { name: topicName };
+      const topicId = bareOpenAlexId(w.primary_topic?.id ?? "");
+      if (/^T\d+$/.test(topicId)) topic.id = topicId;
+      rec.topic = topic;
+    }
     if (typeof w.fwci === "number" && Number.isFinite(w.fwci)) rec.fwci = w.fwci;
     const refs = capIds(w.referenced_works, 40);
     if (refs) rec.refs = refs;
@@ -326,8 +387,6 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
     if (/^W\d+$/.test(wId)) rec.openalexId = wId;
     const institutions = dedupeInstitutions(w.authorships);
     if (institutions) rec.institutions = institutions;
-    const venueType = w.primary_location?.source?.type;
-    if (typeof venueType === "string" && venueType) rec.venueType = venueType;
     // The list is returned whole; `refs` caps at 40 for the record, but the
     // count must not follow the cap — a 451-reference work is not a
     // 40-reference work. Verified live: the length matches the API's own
@@ -392,20 +451,50 @@ export const OPENALEX_FILTER_GRAMMAR: ReadonlyArray<{ token: string; meaning: st
 export const OPENALEX_FILTER_PROBE =
   "publication_year:>2019,publication_year:<2100,type:article|preprint,type:!book,title.search:crispr,title.search.exact:crispr*";
 
-/** The field families the description names, each with one field the works API
- *  accepts today. The live smoke check asserts every field is still in the
- *  API's own catalogue, so a renamed field fails there instead of silently
- *  narrowing what the agent can ask for. */
-export const OPENALEX_FILTER_FAMILIES: ReadonlyArray<{ family: string; field: string }> = [
+/** One filter family: its name and one field the works API accepts today, plus
+ *  the closed value set where the API answers a bad value with a silent zero
+ *  rather than an error — the one case the field-catalogue escape hatch cannot
+ *  serve, so the description names the values rather than leaving the agent to
+ *  read an empty page as "no such work". */
+export interface OpenAlexFilterFamily {
+  family: string;
+  field: string;
+  values?: readonly string[];
+}
+
+/** The families the description names, composed into its one list. The live
+ *  smoke check asserts every field is still in the API's own catalogue, and
+ *  every named value still offered, so a rename fails there instead of
+ *  silently narrowing what the agent can ask for. */
+export const OPENALEX_FILTER_FAMILIES: ReadonlyArray<OpenAlexFilterFamily> = [
   { family: "impact", field: "fwci" },
-  { family: "author", field: "raw_author_name.search" },
-  { family: "institution", field: "authorships.institutions.type" },
+  { family: "author", field: "authorships.author.id" },
+  { family: "institution", field: "authorships.institutions.id" },
   { family: "venue", field: "primary_location.source.id" },
   { family: "type", field: "type" },
   { family: "topic", field: "primary_topic.id" },
+  {
+    family: "evidence",
+    field: "study_designs.id",
+    values: [
+      "randomized-controlled-trial",
+      "clinical-trial",
+      "observational-study",
+      "case-report",
+      "systematic-review",
+      "meta-analysis",
+      "study-protocol",
+    ],
+  },
   { family: "language", field: "language" },
   { family: "funder", field: "awards.funder_id" },
 ];
+
+/** The by-name route for an entity the agent holds no id for — the one
+ *  filter-based search with no `search=` equivalent. Named in the description
+ *  and checked against the API's catalogue by the live smoke, like every
+ *  family field, so a rename cannot silently strip the fallback. */
+export const OPENALEX_NAME_FALLBACK_FIELD = "raw_author_name.search";
 
 /** The citation edges in the API's own spelling — the vocabulary the
  *  description names, so the interface's invented "seed"/"walk" terms do not
@@ -427,14 +516,14 @@ export const EXPRESSION_PARAM_DESCRIPTION =
   OPENALEX_FILTER_GRAMMAR.map((g) => `${g.token} ${g.meaning}`).join("; ") + ". " +
   "For example type:article|preprint, fwci:>10, publication_year:<2000, title.search:crispr, type:!article. " +
   "The families, each with an accepted field: " +
-  OPENALEX_FILTER_FAMILIES.map((f) => `${f.family} (${f.field})`).join(", ") + ". " +
+  OPENALEX_FILTER_FAMILIES.map((f) => f.values ? `${f.family} (${f.field}: ${f.values.join("|")})` : `${f.family} (${f.field})`).join(", ") + ". " +
+  "Filter an entity family by the id a row carries. With only a name, `" + OPENALEX_NAME_FALLBACK_FIELD + "` is the route: quote it to hold it to one byline (\"jane smith\"), and `~N` allows middle initials. " +
   "Citation edges: " +
   OPENALEX_CITATION_EDGES.map((e) => `${e.token}:W… (${e.meaning})`).join(" and ") +
   ", and a pipe or-lists them across papers in one request (cites:W1|W2). " +
-  "One work from an identifier you already hold is a clause as well — doi:10.1038/… or ids.pmid:22955618 — and needs none of the traversal machinery. " +
+  "One work from an identifier you already hold is a clause as well — doi:10.1038/… or ids.pmid:22955618. " +
   "Fold year, openAccess and citationGraph into the expression. " +
-  "A field beyond these families still rides through — the API lists every field it accepts in the error it returns for an unknown one (https://api.openalex.org/works?filter=unknown:1). " +
-  "Works adapter only; Europe PMC declines the syntax in band, naming `query` as the place for the constraint, with an identifier in its own form (DOI:\"…\", EXT_ID:…, PMCID:…).";
+  "Any other field rides through; the live field list is at https://api.openalex.org/works?filter=unknown:1.";
 
 /** Split a filter expression on its own clause separator (a comma, except
  *  inside a quoted value). Null when the text is not a filter expression:
@@ -543,7 +632,7 @@ const OPENALEX_SORTS: Record<PaperSort, string> = {
   fwci: "fwci:desc",
 };
 
-/** The OpenAlex works query. per-page sized; `api_key` set only when a key
+/** The OpenAlex works query. `per_page`-sized; `api_key` set only when a key
  *  resolves (never sent empty — keyless is a first-class path); `filter` set
  *  only when the caller carries constraints (search or citation walk); `sort`
  *  set only when filters ask for a ranking (the API default is relevance).
@@ -551,7 +640,9 @@ const OPENALEX_SORTS: Record<PaperSort, string> = {
  *  Pure; exported for tests. */
 export function buildPaperParams(query: string, numResults: number, apiKey: string | null, filter = "", sort: PaperSort | undefined = undefined, cursor?: string): URLSearchParams {
   const params = new URLSearchParams({
-    "per-page": String(numResults),
+    // The API's documented snake_case spelling; the legacy `per-page` alias
+    // still answers but is not the form its docs name.
+    "per_page": String(numResults),
     // Lean payloads: one shared projection on every works-list call.
     "select": OPENALEX_SELECT,
   });

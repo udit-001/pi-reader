@@ -54,6 +54,8 @@ import {
   type PaperSubject,
   type PaperInstitution,
   type PaperFullTextUrl,
+  type PaperAuthor,
+  type PaperVenue,
 } from "./paper-backend.ts";
 
 const TIMEOUT_MS = 25_000;
@@ -574,12 +576,15 @@ export function chooseOaUrl(r: EuropePmcResult): string | null {
 }
 
 /** authors — split authorString on commas, trimmed; the API already carries
- *  one canonical order. Empty/absent → undefined (no empty array). Pure. */
-export function parseAuthors(authorString: string | undefined): string[] | undefined {
+ *  one canonical order. Names only: Europe PMC's wire carries no per-author
+ *  identifier, so every entry is `{ name }`. Empty/absent → undefined (no
+ *  empty array). Pure. */
+export function parseAuthors(authorString: string | undefined): PaperAuthor[] | undefined {
   const authors = (authorString ?? "")
     .split(",")
     .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+    .filter((s) => s.length > 0)
+    .map((name) => ({ name }));
   return authors.length > 0 ? authors : undefined;
 }
 
@@ -622,12 +627,12 @@ export function normalizeEuropePmcResults(
     }
     const types = pubTypes(r);
     const retracted = types.some((t) => isRetractedPubType(t));
-    const venue = r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation;
+    const venueName = r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation;
     const rec: PaperRecord = {
       title: r.title ?? "",
       url,
       snippet: buildPaperSnippet({
-        venue,
+        venue: venueName,
         year: parsePubYear(r.pubYear),
         citedBy: r.citedByCount,
         authors: parseAuthors(r.authorString),
@@ -645,7 +650,6 @@ export function normalizeEuropePmcResults(
     if (year !== undefined) rec.year = year;
     const authors = parseAuthors(r.authorString);
     if (authors) rec.authors = authors;
-    if (venue) rec.venue = venue;
     if (r.citedByCount !== undefined) rec.citedBy = r.citedByCount;
     const oaUrl = chooseOaUrl(r);
     if (oaUrl) rec.oaUrl = oaUrl;
@@ -655,8 +659,11 @@ export function normalizeEuropePmcResults(
     // source, the ORCIDs, and the retraction notice where one exists.
     const type = primaryPubType(types);
     if (type) rec.type = type;
+    const venue: PaperVenue = {};
+    if (venueName) venue.name = venueName;
     const venueType = europePmcVenueType(r, types);
-    if (venueType) rec.venueType = venueType;
+    if (venueType) venue.type = venueType;
+    if (venue.name !== undefined || venue.type !== undefined) rec.venue = venue;
     const institutions = parseAffiliations(r);
     if (institutions) rec.institutions = institutions;
     const orcids = parseOrcids(r);

@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { searchPapers, OPENALEX_FILTER_FAMILIES, OPENALEX_CITATION_EDGES, OPENALEX_FILTER_PROBE } from "../search/papers.ts";
+import { searchPapers, OPENALEX_FILTER_FAMILIES, OPENALEX_NAME_FALLBACK_FIELD, OPENALEX_CITATION_EDGES, OPENALEX_FILTER_PROBE } from "../search/papers.ts";
 
 const live = process.env.PIWEB_LIVE_SMOKE === "1";
 
@@ -40,12 +40,12 @@ test("live: searchPapers returns the deep-research keys the agent reads off a pl
   // Authority (PIWEB-27): the same guard for the fields that make a company lab
   // distinguishable from a university. A renamed wire field empties every
   // record silently, so the presence check has to live here.
-  for (const key of ["institutions", "venueType", "refCount"] as const) {
+  for (const key of ["institutions", "venue", "refCount"] as const) {
     assert.notEqual(r[key], undefined, `authority key ${key} missing — projection or normalizer drifted`);
   }
   assert.ok((r.institutions?.length ?? 0) > 0, "institutions empty — authorships.institutions lost");
   const inst = r.institutions![0]!;
-  for (const k of ["name", "type", "country", "ror"] as const) {
+  for (const k of ["name", "id", "type", "country", "ror"] as const) {
     assert.notEqual(inst[k], undefined, `institution missing ${k} — the authority mapping drifted`);
   }
   // Dedupe is the invariant that cannot drift falsely: the anchor's raw
@@ -53,6 +53,14 @@ test("live: searchPapers returns the deep-research keys the agent reads off a pl
   const names = r.institutions!.map((x) => x.name);
   assert.equal(new Set(names).size, names.length, "institutions came back duplicated — dedupe drifted");
   assert.ok((r.refCount ?? 0) > 0, "refCount empty — referenced_works lost");
+
+  // The entity ids — the two-step filter vocabulary. Each must reach the
+  // agent, so a projection or normalizer drop fails here rather than silently
+  // narrowing what the agent can filter on.
+  assert.notEqual(r.authors?.[0]?.id, undefined, "author id missing — authorships.author.id dropped");
+  assert.notEqual(r.institutions?.[0]?.id, undefined, "institution id missing — authorships.institutions.id dropped");
+  assert.notEqual(r.venue?.id, undefined, "venue id missing — primary_location.source.id dropped");
+  assert.notEqual(r.topic?.id, undefined, "topic id missing — primary_topic.id dropped");
 
   // Abstracts are genuinely absent for many works in the REST index — the
   // contract is absent-tolerant, so absence here is correct, not drift.
@@ -132,7 +140,7 @@ test("live: every filter field the description names is one the API still accept
   // source of truth for all 214 it accepts, and the description points at that
   // catalogue rather than copying it. A renamed field would silently narrow
   // what the agent can ask for — this is where that drift fails.
-  const res = await fetch("https://api.openalex.org/works?filter=unknown:1&per-page=1");
+  const res = await fetch("https://api.openalex.org/works?filter=unknown:1&per_page=1");
   const body = (await res.json()) as { message?: string };
   const tail = (body.message ?? "").split("versions of: ")[1] ?? "";
   const catalogue = new Set(tail.split(", ").map((f) => f.trim()));
@@ -140,8 +148,23 @@ test("live: every filter field the description names is one the API still accept
   for (const { family, field } of OPENALEX_FILTER_FAMILIES) {
     assert.ok(catalogue.has(field), `family ${family} names ${field}, which the API no longer accepts`);
   }
+  assert.ok(catalogue.has(OPENALEX_NAME_FALLBACK_FIELD), `the by-name fallback ${OPENALEX_NAME_FALLBACK_FIELD} is no longer a filter field`);
   for (const { token } of OPENALEX_CITATION_EDGES) {
     assert.ok(catalogue.has(token), `citation edge ${token} is no longer a filter field`);
+  }
+});
+
+test("live: every study design the description names is one the API still offers", { skip: !live }, async () => {
+  // A wrong `study_designs.id` value answers a silent zero, not an error, so
+  // the named vocabulary is the only guard: a renamed design would turn the
+  // filter into an empty result the agent reads as "no such evidence".
+  const evidence = OPENALEX_FILTER_FAMILIES.find((f) => f.family === "evidence");
+  assert.ok(evidence && evidence.values && evidence.values.length > 0, "the evidence family lost its value set");
+  const res = await fetch("https://api.openalex.org/study-designs?per_page=50");
+  const body = (await res.json()) as { results?: Array<{ id?: string }> };
+  const offered = new Set((body.results ?? []).map((r) => (r.id ?? "").split("/").pop() ?? ""));
+  for (const design of evidence.values) {
+    assert.ok(offered.has(design), `study design ${design} is no longer offered`);
   }
 });
 
@@ -387,9 +410,9 @@ test("live: Europe PMC core records carry the authority fields", { skip: !live }
     "an affiliation entry arrived with no name",
   );
   assert.ok(results.some((r) => r.type !== undefined), "no record carried a work type — pubTypeList drifted");
-  assert.ok(results.some((r) => r.venueType !== undefined), "no venue kind arrived — europePmcVenueType drifted");
+  assert.ok(results.some((r) => r.venue?.type !== undefined), "no venue kind arrived — europePmcVenueType drifted");
   assert.ok(results.some((r) => typeof r.content === "string" && r.content.length > 0), "no abstract arrived — abstractText drifted or the request went back to lite");
-  assert.ok(results.some((r) => (r.venue ?? "").length > 0), "no venue arrived — journalInfo.journal.title stopped parsing");
+  assert.ok(results.some((r) => (r.venue?.name ?? "").length > 0), "no venue arrived — journalInfo.journal.title stopped parsing");
 });
 
 // PIWEB-37: the subject and provenance block rides the same core record. MeSH

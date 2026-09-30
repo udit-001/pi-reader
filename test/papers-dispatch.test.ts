@@ -610,7 +610,7 @@ test("applySort orders newest-first when date is asked; yearless records keep po
 test("the authority block groups work type, venue kind, retraction notice, affiliations and ORCIDs", () => {
   const rec: PaperRecord = {
     title: "t", url: "u", snippet: "s",
-    type: "Journal Article", venueType: "journal",
+    type: "Journal Article", venue: { name: "Nature", type: "journal" },
     retracted: true, retractionNotice: "https://europepmc.org/article/MED/42715445",
     institutions: [{ name: "Dept of Bioengineering, UIUC." }],
     orcids: ["0000-0001-6004-9664"],
@@ -619,6 +619,21 @@ test("the authority block groups work type, venue kind, retraction notice, affil
   assert.match(lines, /Authority: Type: Journal Article · Venue type: journal · Retracted — notice https:\/\/europepmc\.org\/article\/MED\/42715445/);
   assert.match(lines, /Institutions: Dept of Bioengineering, UIUC\./);
   assert.match(lines, /ORCIDs: 0000-0001-6004-9664/);
+});
+
+test("renderPaperExtras prints each entity id beside its name — the filter handles", () => {
+  const rec: PaperRecord = {
+    title: "t", url: "u", snippet: "s",
+    authors: [{ name: "Anzalone", id: "A5035249241", orcid: "0000-0002-1825-0097" }, { name: "Liu" }],
+    venue: { name: "Nature Biotechnology", id: "S106963461" },
+    topic: { name: "Biotechnology", id: "T11636" },
+    institutions: [{ name: "Broad Institute", id: "I107606265", ror: "05a0ya142" }],
+  };
+  const lines = renderPaperExtras(rec, false).join("\n");
+  assert.match(lines, /Venue: Nature Biotechnology \[S106963461\]/);
+  assert.match(lines, /Topic: Biotechnology \[T11636\]/);
+  assert.match(lines, /Authors: Anzalone \[A5035249241, orcid:0000-0002-1825-0097\], Liu/);
+  assert.match(lines, /Institutions: Broad Institute \[I107606265, ror:05a0ya142\]/);
 });
 
 test("branch-narrow fields print on a single-record page and stay off a list row", () => {
@@ -684,7 +699,7 @@ test("a Europe PMC search reaches the caller with the authority block railed on"
   assert.deepEqual(r.institutions, [{ name: "Dept of Genetics, Harvard." }]);
   assert.deepEqual(r.orcids, ["0000-0002-1825-0097"]);
   assert.equal(r.type, "Journal Article");
-  assert.equal(r.venue, "Nucleic Acids Research");
+  assert.deepEqual(r.venue, { name: "Nucleic Acids Research", type: "journal" });
   assert.equal(r.language, "eng");
 });
 

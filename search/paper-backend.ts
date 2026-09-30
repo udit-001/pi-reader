@@ -23,10 +23,11 @@ import type { SearchResult, PaperIndexName } from "./search.ts";
 export interface PaperRecord extends SearchResult {
   /** Publication year. */
   year?: number;
-  /** Author display names, in the API's order. */
-  authors?: string[];
-  /** Hosting venue — journal, repository, or preprint server. */
-  venue?: string;
+  /** The work's authors, in the API's order — each with the identifiers the
+   *  backend carries. */
+  authors?: PaperAuthor[];
+  /** The hosting venue — name plus its kind and OpenAlex source id. */
+  venue?: PaperVenue;
   /** Total citation count. */
   citedBy?: number;
   /** Best reachable open-access URL; absent when the work is closed. */
@@ -36,9 +37,8 @@ export interface PaperRecord extends SearchResult {
   /** Retraction flag — true when the index knows the work is retracted.
    *  Absent when the API doesn't provide the field; never invented. */
   retracted?: boolean;
-  /** Primary topic display name — the work's discipline. Absent when the API
-   *  doesn't provide the field; never invented. */
-  topic?: string;
+  /** The work's primary topic — its name and OpenAlex topic id. */
+  topic?: PaperTopic;
   /** Work type, in the backend's own vocabulary — OpenAlex's enum (article,
    *  review, preprint, …) or Europe PMC's publication-type string ("Journal
    *  Article", "Editorial", …). Absent when the API doesn't provide the
@@ -92,11 +92,6 @@ export interface PaperRecord extends SearchResult {
    *  university. OpenAlex fills type/country/ROR per entry; Europe PMC
    *  supplies the author affiliation string as the name. */
   institutions?: PaperInstitution[];
-  /** The hosting venue's kind — "journal" for a peer-reviewed venue,
-   *  "repository" for a preprint server or archive, also "conference",
-   *  "ebook platform", "book series". Reads beside `venue`, which carries
-   *  only the name. */
-  venueType?: string;
   /** How many references the work lists — a bibliography of hundreds reads
    *  differently from a footnote of five, and `refs` is capped at 40.
    *  OpenAlex only. */
@@ -166,11 +161,24 @@ export interface PaperFullTextUrl {
   availability?: string;
 }
 
+/** One author on a work — the name plus the identifiers the backend carries.
+ *  OpenAlex fills id and orcid; Europe PMC's wire carries no per-author
+ *  identifier, so both stay absent there. Never invented. */
+export interface PaperAuthor {
+  name: string;
+  /** Bare OpenAlex author id ("A5035249241"). OpenAlex only. */
+  id?: string;
+  /** Bare ORCID ("0000-0002-1825-0097"). OpenAlex only. */
+  orcid?: string;
+}
+
 /** One institution a work's authors claim. Every key but the name is
- *  absent-tolerant — the API leaves type, country, and ROR off some records,
- *  and an absent field is never invented. */
+ *  absent-tolerant — the API leaves id, type, country, and ROR off some
+ *  records, and an absent field is never invented. */
 export interface PaperInstitution {
   name: string;
+  /** Bare OpenAlex institution id ("I4210129232"). OpenAlex only. */
+  id?: string;
   /** education | company | government | healthcare | nonprofit | facility |
    *  archive | other (OpenAlex's institution vocabulary). */
   type?: string;
@@ -178,6 +186,29 @@ export interface PaperInstitution {
   country?: string;
   /** Bare ROR identifier ("05a0ya142"), not the ror.org URL form. */
   ror?: string;
+}
+
+/** The hosting venue — its name plus the identity and kind the backend
+ *  carries. OpenAlex fills type ("journal", "repository", …) and the bare
+ *  source id; Europe PMC fills the name and the type it derives. Every key
+ *  but the name is absent-tolerant. */
+export interface PaperVenue {
+  /** The venue's name; absent when the wire names none — a bare preprint
+   *  source still contributes its kind. */
+  name?: string;
+  /** journal | repository | conference | ebook platform | book series |
+   *  book. Tells a peer-reviewed venue from a preprint server. */
+  type?: string;
+  /** Bare OpenAlex source id ("S106963461"). OpenAlex only. */
+  id?: string;
+}
+
+/** The work's primary topic — its name and the OpenAlex topic id the filter
+ *  vocabulary and the hierarchy read from. OpenAlex only beyond the name. */
+export interface PaperTopic {
+  name: string;
+  /** Bare OpenAlex topic id ("T10878"). OpenAlex only. */
+  id?: string;
 }
 // The work's abstract rides the inherited `content` key (truncated to
 // ~300 chars by the OpenAlex normalizer) — the on-topic judgment is the
@@ -192,7 +223,7 @@ export function isPaperRecord(r: SearchResult): r is PaperRecord {
     || "retracted" in r || "topic" in r || "type" in r
     || "fwci" in r || "refs" in r || "related" in r || "field" in r
     || "openalexId" in r || "keywords" in r || "citationTrend" in r
-    || "institutions" in r || "venueType" in r || "refCount" in r
+    || "institutions" in r || "refCount" in r
     || "subjects" in r || "compounds" in r || "funding" in r
     || "europepmcId" in r || "europepmcSource" in r || "pmid" in r || "pmcid" in r
     || Array.isArray((r as PaperRecord).authors);
@@ -253,9 +284,9 @@ export interface PaperSnippetMeta {
   venue?: string;
   year?: number;
   citedBy?: number;
-  /** Author display names, in the API's order; only the first (plus count)
+  /** The work's authors, in the API's order; only the first (plus count)
    *  reaches the snippet. */
-  authors?: string[];
+  authors?: PaperAuthor[];
   /** Open-access badge the backend already classified ("closed", "green",
    *  "open"); absent → no token. */
   oaToken?: string;
@@ -282,7 +313,7 @@ export function buildPaperSnippet(meta: PaperSnippetMeta): string {
   if (meta.retracted === true) tokens.push("retracted");
   if (meta.oaToken) tokens.push(meta.oaToken);
   if (meta.topic) tokens.push(meta.topic);
-  const first = meta.authors?.[0];
+  const first = meta.authors?.[0]?.name;
   if (first !== undefined) {
     tokens.push((meta.authors?.length ?? 1) === 1 ? first : `${first} et al.`);
   }
@@ -531,12 +562,12 @@ export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
   const lines: string[] = [];
   const meta: string[] = [];
   if (r.year !== undefined) meta.push(`Year: ${r.year}`);
-  if (r.venue) meta.push(`Venue: ${r.venue}`);
+  if (r.venue?.name) meta.push(`Venue: ${r.venue.name}${r.venue.id ? ` [${r.venue.id}]` : ""}`);
   if (r.citedBy !== undefined) meta.push(r.fwci !== undefined ? `Cited by: ${r.citedBy} (fwci ${r.fwci} field-normalized)` : `Cited by: ${r.citedBy}`);
   if (r.refCount !== undefined) meta.push(`References: ${r.refCount}`);
   if (r.doi) meta.push(`DOI: ${r.doi}`);
   if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
-  if (r.topic) meta.push(`Topic: ${r.topic}`);
+  if (r.topic) meta.push(`Topic: ${r.topic.name}${r.topic.id ? ` [${r.topic.id}]` : ""}`);
   if (r.field) meta.push(`Field: ${r.field}`);
   if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
 
@@ -556,17 +587,22 @@ export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
   // The authority block: what the work is and who stands behind it.
   const authority: string[] = [];
   if (r.type) authority.push(`Type: ${r.type}`);
-  if (r.venueType) authority.push(`Venue type: ${r.venueType}`);
+  if (r.venue?.type) authority.push(`Venue type: ${r.venue.type}`);
   if (r.retracted === true) authority.push(r.retractionNotice ? `Retracted — notice ${r.retractionNotice}` : "Retracted");
   if (authority.length > 0) lines.push(`   Authority: ${authority.join(" · ")}`);
 
-  if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
+  if (r.authors?.length) {
+    lines.push(`   Authors: ${r.authors.map((a) => {
+      const detail = [a.id, a.orcid ? `orcid:${a.orcid}` : undefined].filter(Boolean).join(", ");
+      return detail ? `${a.name} [${detail}]` : a.name;
+    }).join(", ")}`);
+  }
   // The provenance set: institution type tells industry from academia, country
   // and ROR disambiguate institutions of the same name. Brackets, not parens —
   // OpenAlex's own names carry parens. Absent parts are simply not printed.
   if (r.institutions?.length) {
     lines.push(`   Institutions: ${r.institutions.map((i) => {
-      const detail = [i.type, i.country, i.ror ? `ror:${i.ror}` : undefined].filter(Boolean).join(", ");
+      const detail = [i.type, i.country, i.id, i.ror ? `ror:${i.ror}` : undefined].filter(Boolean).join(", ");
       return detail ? `${i.name} [${detail}]` : i.name;
     }).join(" · ")}`);
   }

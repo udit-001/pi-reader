@@ -19,8 +19,10 @@ import {
   mergeRetractionClause,
   OPENALEX_FILTER_GRAMMAR,
   OPENALEX_FILTER_FAMILIES,
+  OPENALEX_NAME_FALLBACK_FIELD,
   OPENALEX_FILTER_PROBE,
   OPENALEX_SELECT,
+  EXPRESSION_PARAM_DESCRIPTION,
   resolveOpenAlexKey,
   openAlexErrorDetail,
   OpenAlexHttpError,
@@ -171,8 +173,8 @@ test("papers normalizer maps the flat keys: year, authors, venue, citedBy, doi b
       title: "Genome editing with CRISPR–Cas nucleases, base editors, transposases and prime editors",
       url: "https://doi.org/10.1038/s41587-020-0561-9",
       year: 2020,
-      authors: ["Andrew V. Anzalone", "Luke W. Koblan", "David R. Liu"],
-      venue: "Nature Biotechnology",
+      authors: [{ name: "Andrew V. Anzalone" }, { name: "Luke W. Koblan" }, { name: "David R. Liu" }],
+      venue: { name: "Nature Biotechnology" },
       citedBy: 2387,
       doi: "10.1038/s41587-020-0561-9",
     },
@@ -206,13 +208,13 @@ const ENRICHED_WORK: OpenAlexWork = {
   ...NATURE_WORK,
   is_retracted: true,
   type: "article",
-  primary_topic: { display_name: "Biotechnology" },
+  primary_topic: { id: "https://openalex.org/T11636", display_name: "Biotechnology" },
 };
 
 test("papers normalizer maps retracted, topic, and type onto the flat keys when the API provides them", () => {
   const [r] = normalizePaperResults([ENRICHED_WORK]);
   assert.equal(r!.retracted, true);
-  assert.equal(r!.topic, "Biotechnology");
+  assert.deepEqual(r!.topic, { name: "Biotechnology", id: "T11636" });
   assert.equal(r!.type, "article");
   // The retracted badge precedes the OA badge in the rendered snippet.
   assert.match(r!.snippet, /2387 citations · retracted · closed ·/);
@@ -266,16 +268,16 @@ const AUTHORITY_WORK: OpenAlexWork = {
 test("papers normalizer surfaces every institution once with its type, country and stable id — a dual-affiliated author shows both", () => {
   const [r] = normalizePaperResults([AUTHORITY_WORK]);
   assert.deepEqual(r!.institutions, [
-    { name: "Broad Institute", type: "nonprofit", country: "US", ror: "05a0ya142" },
-    { name: "Harvard University", type: "education", country: "US", ror: "03vek6s52" },
-    { name: "Microsoft (United States)", type: "company", country: "US", ror: "00d0nc645" },
+    { name: "Broad Institute", id: "I107606265", type: "nonprofit", country: "US", ror: "05a0ya142" },
+    { name: "Harvard University", id: "I136199984", type: "education", country: "US", ror: "03vek6s52" },
+    { name: "Microsoft (United States)", id: "I4210090666", type: "company", country: "US", ror: "00d0nc645" },
   ]);
 });
 
 test("papers normalizer omits authority keys the API did not supply — never invented", () => {
   const [r] = normalizePaperResults([NATURE_WORK]);
   assert.equal("institutions" in r!, false);
-  assert.equal("venueType" in r!, false);
+  assert.equal(r!.venue?.type, undefined);
   assert.equal("refCount" in r!, false);
 });
 
@@ -299,7 +301,7 @@ test("an empty bibliography reports zero references rather than dropping the cou
 });
 
 test("isPaperRecord recognises a row carrying only an authority key", () => {
-  assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", venueType: "repository" }), true);
+  assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", venue: { name: "bioRxiv", type: "repository" } }), true);
   assert.equal(isPaperRecord({ title: "t", url: "u", snippet: "", refCount: 2 }), true);
 });
 
@@ -336,13 +338,13 @@ test("paperPage carries the index's match count when the adapter reported one, a
 test("buildPaperSnippet joins tokens and tolerates absent fields — the shared shape", () => {
   assert.equal(buildPaperSnippet({ venue: "V", year: 2020 }), "V · 2020");
   assert.equal(buildPaperSnippet({}), "");
-  assert.equal(buildPaperSnippet({ authors: ["Solo Author"] }), "Solo Author");
-  assert.equal(buildPaperSnippet({ authors: ["A", "B"] }), "A et al.");
+  assert.equal(buildPaperSnippet({ authors: [{ name: "Solo Author" }] }), "Solo Author");
+  assert.equal(buildPaperSnippet({ authors: [{ name: "A" }, { name: "B" }] }), "A et al.");
 });
 
 test("buildPaperSnippet places the retracted badge before the OA badge — reading order weights it first", () => {
   assert.equal(
-    buildPaperSnippet({ venue: "Nature Biotechnology", year: 2020, citedBy: 2387, retracted: true, oaToken: "closed", authors: ["Anzalone"] }),
+    buildPaperSnippet({ venue: "Nature Biotechnology", year: 2020, citedBy: 2387, retracted: true, oaToken: "closed", authors: [{ name: "Anzalone" }] }),
     "Nature Biotechnology · 2020 · 2387 citations · retracted · closed · Anzalone",
   );
   // retracted: false renders nothing — only the flag, never a "clean" token.
@@ -519,12 +521,12 @@ test("isPaperRecord detects the flat paper keys on generic result rows", () => {
   assert.equal(isPaperRecord(normalizePaperResults([OA_WORK])[0] as unknown as SearchResult), true);
 });
 
-// ── buildPaperParams — search, per-page, api_key only when a key resolves ────
+// ── buildPaperParams — search, per_page, api_key only when a key resolves ────
 
-test("paper params carry the search query, per-page, the shared select= projection, and omit api_key when keyless", () => {
+test("paper params carry the search query, per_page, the shared select= projection, and omit api_key when keyless", () => {
   const p = buildPaperParams("CRISPR base editing", 10, null);
   assert.equal(p.get("search"), "CRISPR base editing");
-  assert.equal(p.get("per-page"), "10");
+  assert.equal(p.get("per_page"), "10");
   assert.equal(p.get("api_key"), null);
   // Lean payloads: every works-list call projects the same field list.
   assert.equal(p.get("select"), OPENALEX_SELECT);
@@ -537,7 +539,7 @@ test("paper params carry the search query, per-page, the shared select= projecti
 test("paper params carry api_key when a key resolves; mailto never appears", () => {
   const p = buildPaperParams("q", 15, "oa-key-123");
   assert.equal(p.get("api_key"), "oa-key-123");
-  assert.equal(p.get("per-page"), "15");
+  assert.equal(p.get("per_page"), "15");
   // The retired politeness param is dead on every built shape.
   assert.equal(p.get("mailto"), null);
 });
@@ -666,7 +668,7 @@ test("paper params carry the filter and omit search when the walk leaves it empt
   const p = buildPaperParams("", 10, null, "cites:W3161425918");
   assert.equal(p.get("search"), null);
   assert.equal(p.get("filter"), "cites:W3161425918");
-  assert.equal(p.get("per-page"), "10");
+  assert.equal(p.get("per_page"), "10");
 });
 
 // ── Expression door (PIWEB-26): the retraction merge rule, pure ─────────────
@@ -740,6 +742,23 @@ test("every family field the description names is forwarded, not rewritten or re
       `${family} (${field}) was rewritten or rejected`,
     );
   }
+  // The by-name fallback the description names rides the same path.
+  assert.equal(
+    buildOpenAlexExpressionFilter({ expression: `${OPENALEX_NAME_FALLBACK_FIELD}:"jane smith"` }),
+    `${OPENALEX_NAME_FALLBACK_FIELD}:"jane smith",is_retracted:false`,
+  );
+});
+
+test("the description names every value of a family whose bad value is a silent zero", () => {
+  const evidence = OPENALEX_FILTER_FAMILIES.find((f) => f.family === "evidence");
+  assert.ok(evidence && evidence.values && evidence.values.length > 0, "the evidence family lost its value set");
+  for (const design of evidence.values) {
+    assert.ok(EXPRESSION_PARAM_DESCRIPTION.includes(design), `description omits study design ${design}`);
+    assert.equal(
+      buildOpenAlexExpressionFilter({ expression: `${evidence.field}:${design}` }),
+      `${evidence.field}:${design},is_retracted:false`,
+    );
+  }
 });
 
 // ── searchPapers — deps flow, slicing, error shaping ──────────────────────────
@@ -790,7 +809,7 @@ test("searchPapers carries the deep-research keys through the dispatch — the a
 test("searchPapers carries institutions, venue type and reference count through the dispatch", async () => {
   const { results } = await searchPapers("q", {}, depsWith({ fetchWorks: async () => [AUTHORITY_WORK] }));
   const [r] = results;
-  assert.equal(r!.venueType, "repository");
+  assert.equal(r!.venue?.type, "repository");
   assert.equal(r!.refCount, 133);
   assert.deepEqual(
     r!.institutions?.map((i) => i.name),
@@ -809,7 +828,7 @@ test("searchPapers passes the query, numResults, and signal through to the fetch
     },
   }));
   assert.equal(seen[0]!.params.get("search"), "prime editing");
-  assert.equal(seen[0]!.params.get("per-page"), "7");
+  assert.equal(seen[0]!.params.get("per_page"), "7");
   assert.equal(seen[0]!.signal, signal);
 });
 
