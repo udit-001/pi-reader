@@ -14,6 +14,7 @@ import {
   abstractFromInvertedIndex,
   normalizePaperResults,
   buildPaperParams,
+  openAlexHeaders,
   buildOpenAlexFilter,
   buildOpenAlexExpressionFilter,
   mergeRetractionClause,
@@ -521,12 +522,13 @@ test("isPaperRecord detects the flat paper keys on generic result rows", () => {
   assert.equal(isPaperRecord(normalizePaperResults([OA_WORK])[0] as unknown as SearchResult), true);
 });
 
-// ── buildPaperParams — search, per_page, api_key only when a key resolves ────
+// ── buildPaperParams — search, per_page, the select= projection ─────────────
 
-test("paper params carry the search query, per_page, the shared select= projection, and omit api_key when keyless", () => {
-  const p = buildPaperParams("CRISPR base editing", 10, null);
+test("paper params carry the search query, per_page and the shared select= projection — never a credential", () => {
+  const p = buildPaperParams("CRISPR base editing", 10);
   assert.equal(p.get("search"), "CRISPR base editing");
   assert.equal(p.get("per_page"), "10");
+  // The key rides the Authorization header, never the URL.
   assert.equal(p.get("api_key"), null);
   // Lean payloads: every works-list call projects the same field list.
   assert.equal(p.get("select"), OPENALEX_SELECT);
@@ -536,23 +538,23 @@ test("paper params carry the search query, per_page, the shared select= projecti
   assert.match(OPENALEX_SELECT, /open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids,fwci,referenced_works,related_works,counts_by_year,topics,keywords,abstract_inverted_index$/);
 });
 
-test("paper params carry api_key when a key resolves; mailto never appears", () => {
-  const p = buildPaperParams("q", 15, "oa-key-123");
-  assert.equal(p.get("api_key"), "oa-key-123");
+test("paper params carry no credential and no retired politeness param", () => {
+  const p = buildPaperParams("q", 15);
+  assert.equal(p.get("api_key"), null);
   assert.equal(p.get("per_page"), "15");
   // The retired politeness param is dead on every built shape.
   assert.equal(p.get("mailto"), null);
 });
 
 test("paper params carry the citedBy sort server-side; relevance when sort is absent", () => {
-  const sorted = buildPaperParams("lichen", 10, null, "", "citedBy");
+  const sorted = buildPaperParams("lichen", 10, "", "citedBy");
   assert.equal(sorted.get("sort"), "cited_by_count:desc");
-  const unsorted = buildPaperParams("lichen", 10, null);
+  const unsorted = buildPaperParams("lichen", 10);
   assert.equal(unsorted.get("sort"), null);
 });
 
 test("paper params carry the date sort server-side — newest first, across the whole index", () => {
-  assert.equal(buildPaperParams("lichen", 10, null, "", "date").get("sort"), "publication_date:desc");
+  assert.equal(buildPaperParams("lichen", 10, "", "date").get("sort"), "publication_date:desc");
 });
 
 test("paper params forward every ordering the interface offers", () => {
@@ -560,18 +562,26 @@ test("paper params forward every ordering the interface offers", () => {
   // mapping fails the exhaustive Record at build time, and this pins that the
   // value actually reaches the wire rather than being dropped in silence.
   for (const { key } of PAPER_SORTS) {
-    assert.ok(buildPaperParams("lichen", 10, null, "", key).get("sort"), `ordering "${key}" produced no sort param`);
+    assert.ok(buildPaperParams("lichen", 10, "", key).get("sort"), `ordering "${key}" produced no sort param`);
   }
   // The one the epic's story is about: field-normalized impact, so a slow
   // field's hub does not outrank a young paper's hit.
-  assert.equal(buildPaperParams("lichen", 10, null, "", "fwci").get("sort"), "fwci:desc");
+  assert.equal(buildPaperParams("lichen", 10, "", "fwci").get("sort"), "fwci:desc");
 });
 
 test("paper params carry the cursor verbatim; an absent cursor stays off the wire", () => {
-  const p = buildPaperParams("q", 10, null, "", undefined, "IlsxNzQ4");
+  const p = buildPaperParams("q", 10, "", undefined, "IlsxNzQ4");
   assert.equal(p.get("cursor"), "IlsxNzQ4");
   // Today's behaviour: no cursor, no param — the first page is unfiltered.
-  assert.equal(buildPaperParams("q", 10, null).get("cursor"), null);
+  assert.equal(buildPaperParams("q", 10).get("cursor"), null);
+});
+
+test("openAlexHeaders turns a key into a bearer token and keeps keyless anonymous", () => {
+  assert.deepEqual(openAlexHeaders("oa-key-123"), { Accept: "application/json", Authorization: "Bearer oa-key-123" });
+  // No key, no header — an empty key must read as anonymous, not as a bad key.
+  assert.deepEqual(openAlexHeaders(null), { Accept: "application/json" });
+  assert.deepEqual(openAlexHeaders(undefined), { Accept: "application/json" });
+  assert.deepEqual(openAlexHeaders(""), { Accept: "application/json" });
 });
 
 // ── resolveOpenAlexKey — config wins, env fallback, keyless tolerated ─────────
@@ -665,7 +675,7 @@ test("openalex filter string carries the walk legs in the same list — cites:W 
 });
 
 test("paper params carry the filter and omit search when the walk leaves it empty", () => {
-  const p = buildPaperParams("", 10, null, "cites:W3161425918");
+  const p = buildPaperParams("", 10, "cites:W3161425918");
   assert.equal(p.get("search"), null);
   assert.equal(p.get("filter"), "cites:W3161425918");
   assert.equal(p.get("per_page"), "10");
@@ -775,8 +785,8 @@ function depsWith(overrides: Partial<OpenAlexDeps>): Parameters<typeof searchPap
     openalex: {
       fetchRecord: async () => { throw new Error("OpenAlex record fetch must not run outside walk tests"); },
       ...overrides,
-      fetchWorks: async (params, signal) => {
-        const out = await fetchWorks(params, signal);
+      fetchWorks: async (params, signal, apiKey) => {
+        const out = await fetchWorks(params, signal, apiKey);
         return Array.isArray(out) ? { works: out } : out;
       },
     },
@@ -1027,20 +1037,24 @@ test("searchPapers wraps fetch failures as the in-band contract — backend name
   );
 });
 
-test("searchPapers carries api_key on the built params when a key resolves; keyless omits it", async () => {
-  const seen: URLSearchParams[] = [];
+test("searchPapers hands the resolved key to the transport seam, never to the params", async () => {
+  const seenParams: URLSearchParams[] = [];
+  const seenKeys: Array<string | null | undefined> = [];
   await searchPapers("q", {}, depsWith({
     resolveKey: () => "secret-oa-key",
-    fetchWorks: async (params) => { seen.push(params); return [NATURE_WORK]; },
+    fetchWorks: async (params, _signal, apiKey) => { seenParams.push(params); seenKeys.push(apiKey); return [NATURE_WORK]; },
   }));
-  assert.equal(seen[0]!.get("api_key"), "secret-oa-key");
-  assert.equal(seen[0]!.get("mailto"), null);
-  seen.length = 0;
+  assert.equal(seenKeys[0], "secret-oa-key");
+  assert.equal(seenParams[0]!.get("api_key"), null);
+  assert.equal(seenParams[0]!.get("mailto"), null);
+  seenParams.length = 0;
+  seenKeys.length = 0;
   await searchPapers("q", {}, depsWith({
     resolveKey: () => null,
-    fetchWorks: async (params) => { seen.push(params); return [NATURE_WORK]; },
+    fetchWorks: async (params, _signal, apiKey) => { seenParams.push(params); seenKeys.push(apiKey); return [NATURE_WORK]; },
   }));
-  assert.equal(seen[0]!.get("api_key"), null);
+  assert.equal(seenKeys[0], null);
+  assert.equal(seenParams[0]!.get("api_key"), null);
 });
 
 test("a metered 429 (zero remaining) surfaces the credits-exhausted text — keyed vs keyless", async () => {

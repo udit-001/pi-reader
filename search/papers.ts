@@ -7,8 +7,8 @@
 // Two backends behind one call (PIWEB-14 OpenAlex, PIWEB-15 Europe PMC),
 // selected with `index` (default "openalex"):
 //   openalex  — OpenAlex: open scholarly metadata across all disciplines,
-//               ~250M works, optional free key sent as `api_key=` (the
-//               mailto politeness param is retired).
+//               ~250M works, optional free key sent as an Authorization
+//               bearer header (the mailto politeness param is retired).
 //   europepmc — Europe PMC: biomedical full text — PubMed abstracts, PMC
 //               copies, preprints, patents; the DOI, PMC URL, and OA tag
 //               reach the agent, not just the abstract page.
@@ -632,13 +632,13 @@ const OPENALEX_SORTS: Record<PaperSort, string> = {
   fwci: "fwci:desc",
 };
 
-/** The OpenAlex works query. `per_page`-sized; `api_key` set only when a key
- *  resolves (never sent empty — keyless is a first-class path); `filter` set
- *  only when the caller carries constraints (search or citation walk); `sort`
- *  set only when filters ask for a ranking (the API default is relevance).
- *  `search` is omitted when the query is empty (a walk has none).
- *  Pure; exported for tests. */
-export function buildPaperParams(query: string, numResults: number, apiKey: string | null, filter = "", sort: PaperSort | undefined = undefined, cursor?: string): URLSearchParams {
+/** The OpenAlex works query — what to ask, never how to authenticate: the key
+ *  rides the Authorization header at the transport seam (openAlexHeaders), so
+ *  it never enters the URL. `per_page`-sized; `filter` set only when the caller
+ *  carries constraints (search or citation walk); `sort` set only when filters
+ *  ask for a ranking (the API default is relevance); `search` omitted when the
+ *  query is empty (a walk has none). Pure; exported for tests. */
+export function buildPaperParams(query: string, numResults: number, filter = "", sort: PaperSort | undefined = undefined, cursor?: string): URLSearchParams {
   const params = new URLSearchParams({
     // The API's documented snake_case spelling; the legacy `per-page` alias
     // still answers but is not the form its docs name.
@@ -648,7 +648,6 @@ export function buildPaperParams(query: string, numResults: number, apiKey: stri
   });
   if (query) params.set("search", query);
   if (filter) params.set("filter", filter);
-  if (apiKey) params.set("api_key", apiKey);
   if (sort !== undefined) params.set("sort", OPENALEX_SORTS[sort]);
   // Cursor paging is the works endpoint's own mechanism; `cursor=*` opens the
   // walk, and the response's `meta.next_cursor` closes the loop.
@@ -804,13 +803,14 @@ function openAlexBackendDown(err: unknown, keyed: boolean): PaperError {
 export interface OpenAlexDeps {
   /** Fetch the works endpoint with these params; return its results array
    *  together with the pagination cursor and match count the response
-   *  carried. */
-  fetchWorks: (params: URLSearchParams, signal?: AbortSignal) => Promise<OpenAlexWorksPage>;
+   *  carried. apiKey rides the Authorization header when present. */
+  fetchWorks: (params: URLSearchParams, signal?: AbortSignal, apiKey?: string | null) => Promise<OpenAlexWorksPage>;
   /** Fetch a single work record by lookup ("doi:10.…" or "W…"); null when
    *  the record is absent. Used by the citation walk's seed resolution and
-   *  the identifier lookup. apiKey rides the URL as api_key= when present. */
+   *  the identifier lookup. apiKey rides the Authorization header when
+   *  present. */
   fetchRecord: (lookup: string, signal?: AbortSignal, apiKey?: string | null) => Promise<OpenAlexWork | null>;
-  /** Resolve the api_key credential (config → env → null). Defaults to the
+  /** Resolve the OpenAlex credential (config → env → null). Defaults to the
    *  live read; tests inject a stub instead of touching config or env. */
   resolveKey?: () => string | null;
 }
@@ -828,9 +828,20 @@ export interface OpenAlexWorksPage {
   total?: number;
 }
 
-async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
+/** The one place the api_key becomes an Authorization bearer token. The header
+ *  keeps the credential off the URL — where it would ride request logs, caches,
+ *  and the `x_query` echo the API returns — and leaves the URL its full room
+ *  for a long boolean query. Every OpenAlex request wants JSON, so Accept rides
+ *  here too. Exported: the setup wizard crosses the same seam. */
+export function openAlexHeaders(apiKey?: string | null): Record<string, string> {
+  return apiKey
+    ? { Accept: "application/json", Authorization: `Bearer ${apiKey}` }
+    : { Accept: "application/json" };
+}
+
+async function fetchJson(url: string, signal?: AbortSignal, apiKey?: string | null): Promise<unknown> {
   const res = await fetch(url, {
-    headers: { Accept: "application/json" },
+    headers: openAlexHeaders(apiKey),
     signal: AbortSignal.any(
       signal ? [AbortSignal.timeout(TIMEOUT_MS), signal] : [AbortSignal.timeout(TIMEOUT_MS)],
     ),
@@ -844,11 +855,9 @@ async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
 
 export const defaultOpenAlexDeps: OpenAlexDeps = {
   async fetchRecord(lookup, signal, apiKey) {
-    const url = apiKey
-      ? `https://api.openalex.org/works/${lookup}?${new URLSearchParams({ api_key: apiKey })}`
-      : `https://api.openalex.org/works/${lookup}`;
+    const url = `https://api.openalex.org/works/${lookup}`;
     const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+      headers: openAlexHeaders(apiKey),
       signal: AbortSignal.any(
         signal ? [AbortSignal.timeout(TIMEOUT_MS), signal] : [AbortSignal.timeout(TIMEOUT_MS)],
       ),
@@ -860,9 +869,9 @@ export const defaultOpenAlexDeps: OpenAlexDeps = {
     }
     return (await res.json()) as OpenAlexWork;
   },
-  async fetchWorks(params, signal) {
+  async fetchWorks(params, signal, apiKey) {
     const url = `https://api.openalex.org/works?${params}`;
-    const body = await fetchJson(url, signal);
+    const body = await fetchJson(url, signal, apiKey);
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
       throw new Error("OpenAlex response is not an object");
     }
@@ -928,7 +937,7 @@ async function searchOpenAlexWalk(
     // with relevance order and no warning.
     return await fetchOpenAlexWorks(
       buildPaperParams(
-        "", n, key,
+        "", n,
         buildOpenAlexFilter(options.filters, wId, graph.direction ?? "cites"),
         options.filters?.sort,
         options.filters?.cursor,
@@ -936,7 +945,7 @@ async function searchOpenAlexWalk(
       n,
       options,
       deps,
-      keyed,
+      key,
     );
   } catch (err) {
     if (err instanceof PaperError) throw err;
@@ -946,25 +955,25 @@ async function searchOpenAlexWalk(
 
 /** One works-list fetch → normalized records plus the response's cursor;
  *  failure shaped as the contract error. Shared by the search and walk paths.
- *  `keyed` feeds the metering classification (429 exhausted text differs for
- *  keyed vs keyless callers). */
+ *  `key` rides the Authorization header and feeds the metering classification
+ *  (429 exhausted text differs for keyed vs keyless callers). */
 async function fetchOpenAlexWorks(
   params: URLSearchParams,
   n: number,
   options: SearchOptions,
   deps: OpenAlexDeps,
-  keyed: boolean,
+  key: string | null,
 ): Promise<PaperPage> {
   let results: PaperRecord[];
   let nextCursor: string | undefined;
   let total: number | undefined;
   try {
-    const page = await deps.fetchWorks(params, options.signal);
+    const page = await deps.fetchWorks(params, options.signal, key);
     results = normalizePaperResults(page.works);
     nextCursor = page.nextCursor ?? undefined;
     total = page.total;
   } catch (err) {
-    throw openAlexBackendDown(err, keyed);
+    throw openAlexBackendDown(err, key !== null);
   }
   if (results.length === 0) {
     throw new PaperError(paperError("no-results", "openalex"));
@@ -1015,11 +1024,11 @@ async function searchOpenAlex(
   const graph = filters?.citationGraph;
   if (graph) return searchOpenAlexWalk(graph, n, options, deps, key);
   const params = buildPaperParams(
-    query, n, key,
+    query, n,
     expressionFilter ?? buildOpenAlexFilter(options.filters),
     options.filters?.sort, options.filters?.cursor,
   );
-  return fetchOpenAlexWorks(params, n, options, deps, key !== null);
+  return fetchOpenAlexWorks(params, n, options, deps, key);
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

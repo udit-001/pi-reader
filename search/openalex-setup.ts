@@ -24,7 +24,7 @@ import {
   type KeySetupSpec,
   type ValidationResult,
 } from "./key-setup.ts";
-import { openAlexErrorDetail, parseOpenAlexRateLimitHeaders, resolveOpenAlexKey } from "./papers.ts";
+import { openAlexErrorDetail, openAlexHeaders, parseOpenAlexRateLimitHeaders, resolveOpenAlexKey } from "./papers.ts";
 import { configPath, loadConfig, saveConfig, type PiWebConfig } from "../config.ts";
 
 const DASHBOARD_URL = "https://openalex.org/settings/api";
@@ -55,9 +55,9 @@ export function classifyOpenAlexValidation(
 
 export async function validateOpenAlexKey(key: string, signal?: AbortSignal): Promise<ValidationResult> {
   try {
-    const url = `https://api.openalex.org/works/${PROBE_WORK}?${new URLSearchParams({ api_key: key })}`;
+    const url = `https://api.openalex.org/works/${PROBE_WORK}`;
     const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+      headers: openAlexHeaders(key),
       signal: AbortSignal.any(
         signal ? [AbortSignal.timeout(VALIDATE_TIMEOUT_MS), signal] : [AbortSignal.timeout(VALIDATE_TIMEOUT_MS)],
       ),
@@ -76,9 +76,8 @@ export async function validateOpenAlexKey(key: string, signal?: AbortSignal): Pr
  *  key is redacted from anything that could echo it. */
 export async function openAlexBudgetLines(key: string): Promise<string[]> {
   try {
-    const url = `${RATE_LIMIT_URL}?${new URLSearchParams({ api_key: key })}`;
-    const res = await fetch(url, {
-      headers: { Accept: "application/json" },
+    const res = await fetch(RATE_LIMIT_URL, {
+      headers: openAlexHeaders(key),
       signal: AbortSignal.timeout(VALIDATE_TIMEOUT_MS),
     });
     if (!res.ok) {
