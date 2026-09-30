@@ -631,7 +631,13 @@ export function normalizeEuropePmcResults(
         citedBy: r.citedByCount,
         authors: parseAuthors(r.authorString),
         retracted: retracted ? true : undefined,
-        oaToken: isFlagY(r.isOpenAccess) ? "open" : "closed",
+        // The badge is a claim about access, so it is emitted only when the wire
+        // classified the work: walk entries carry no `isOpenAccess` at all, and
+        // reading that absence as "closed" asserted a paywall the index never
+        // reported. An explicit "N" still reads closed.
+        oaToken: r.isOpenAccess === undefined
+          ? undefined
+          : (isFlagY(r.isOpenAccess) ? "open" : "closed"),
       }),
     };
     const year = parsePubYear(r.pubYear);

@@ -192,6 +192,22 @@ test("europepmc normalizer builds the snippet from the shared builder — venue 
   assert.equal(patent!.snippet, "2025 · 0 citations · open · Liu D.");
 });
 
+test("the open-access badge is emitted only when the wire classified the work", () => {
+  // Walk entries carry no `isOpenAccess` at all (verified live: 25 of 25
+  // sampled /references records), so reading the absence as "closed" put a
+  // paywall claim on every row of every citation walk. The three states of the
+  // flag are one rule, so they are pinned together; the real-fixture "N" case
+  // rides the snippet test above.
+  const [unclassified, closed, open] = normalizeEuropePmcResults([
+    WALK_REC,
+    { ...WALK_REC, isOpenAccess: "N" },
+    { ...WALK_REC, isOpenAccess: "Y" },
+  ]);
+  assert.equal(unclassified!.snippet, "J Cell Mol Med · 2026 · 0 citations · Stolarek I et al.");
+  assert.equal(closed!.snippet, "J Cell Mol Med · 2026 · 0 citations · closed · Stolarek I et al.");
+  assert.equal(open!.snippet, "J Cell Mol Med · 2026 · 0 citations · open · Stolarek I et al.");
+});
+
 test("europepmc normalizer falls back to journalTitle when journalInfo carries no title", () => {
   const [r] = normalizeEuropePmcResults([{
     ...PUBMED_REC,
