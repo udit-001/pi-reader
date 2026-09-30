@@ -104,8 +104,46 @@ export interface PaperRecord extends SearchResult {
    *  "supplementary", "pdf"). Europe PMC only. */
   dataAvailability?: string[];
   /** Ranked full-text copies the backend offers — the read-the-paper branch
-   *  picks from these. Europe PMC only. */
+   *  picks from these, and the record's own `url` is chosen from their free
+   *  half. Europe PMC only. */
   fullTextUrls?: PaperFullTextUrl[];
+  /** Subject tags from the backend's controlled vocabulary, in wire order —
+   *  the curated counterpart of `topic`/`field`, which one adapter's
+   *  algorithmic topic model fills. Europe PMC's MeSH headings. */
+  subjects?: PaperSubject[];
+  /** The compounds the work studies, with registry numbers. Europe PMC
+   *  only. */
+  compounds?: PaperCompound[];
+  /** The agencies and grants behind the work. Europe PMC only. */
+  funding?: PaperGrant[];
+}
+
+/** One subject tag from a controlled vocabulary, with the vocabulary's own
+ *  major-topic flag — the reading-order question is "is this on my topic",
+ *  and a starred term answers it without the agent knowing the vocabulary's
+ *  conventions. */
+export interface PaperSubject {
+  term: string;
+  /** The paper is *about* this term rather than merely indexed under it.
+   *  Absent when the wire carries no flag; never invented. */
+  major?: boolean;
+}
+
+/** One compound a work studies. The registry number is absent-tolerant: a
+ *  backend that carries none leaves the key off rather than shipping its own
+ *  sentinel. */
+export interface PaperCompound {
+  name: string;
+  /** The registry number (CAS) the backend carries, e.g. "7440-57-5". */
+  registry?: string;
+}
+
+/** One funding grant. Agency is the anchor; a grant may carry neither an
+ *  identifier nor an acronym, and an absent key is never invented. */
+export interface PaperGrant {
+  agency: string;
+  grantId?: string;
+  acronym?: string;
 }
 
 /** One full-text copy a backend offers, ranked by the backend. */
@@ -142,6 +180,7 @@ export function isPaperRecord(r: SearchResult): r is PaperRecord {
     || "fwci" in r || "refs" in r || "related" in r || "field" in r
     || "openalexId" in r || "keywords" in r || "citationTrend" in r
     || "institutions" in r || "venueType" in r || "refCount" in r
+    || "subjects" in r || "compounds" in r || "funding" in r
     || Array.isArray((r as PaperRecord).authors);
 }
 
@@ -440,12 +479,13 @@ export function filtersCacheKey(f?: PaperFilters): string {
   return parts.some((p) => p !== "") ? parts.join("|") : "";
 }
 
-/** The paper-specific row lines for the tool envelope. The authority signals
- *  sit under one heading — work type, venue kind, retraction and its notice —
- *  with the affiliation set and ORCIDs beside them; the branch-narrow fields
- *  (language, publication status, evidence availability, full-text copies)
- *  print only when the page is a single record, the lookup shape. Pure;
- *  exported for tests. */
+/** The paper-specific row lines for the tool envelope. The subject tags print
+ *  on every row, before the authority block — the topic question is asked of
+ *  every result. The authority signals sit under one heading — work type,
+ *  venue kind, retraction and its notice — with the affiliation set and ORCIDs
+ *  beside them; the branch-narrow fields (funding, compounds, language,
+ *  publication status, evidence availability, full-text copies) print only when
+ *  the page is a single record, the lookup shape. Pure; exported for tests. */
 export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
   const lines: string[] = [];
   const meta: string[] = [];
@@ -458,6 +498,19 @@ export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
   if (r.topic) meta.push(`Topic: ${r.topic}`);
   if (r.field) meta.push(`Field: ${r.field}`);
   if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
+
+  // The subject vocabulary, above the authority block: what the work is about,
+  // then what it is. Majors print first and each carries its mark, because "is
+  // this on my topic" is asked of every result and a starred term is the
+  // answer. Brackets, not parens — a vocabulary term can carry its own parens.
+  if (r.subjects?.length) {
+    const majors = r.subjects.filter((s) => s.major === true);
+    const rest = r.subjects.filter((s) => s.major !== true);
+    lines.push(`   Subjects: ${[
+      ...majors.map((s) => `${s.term} [major]`),
+      ...rest.map((s) => s.term),
+    ].join(" · ")}`);
+  }
 
   // The authority block: what the work is and who stands behind it.
   const authority: string[] = [];
@@ -491,6 +544,8 @@ export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
     if (r.publicationStatus) narrow.push(`Status: ${r.publicationStatus}`);
     if (r.dataAvailability?.length) narrow.push(`Availability: ${r.dataAvailability.join(", ")}`);
     if (narrow.length > 0) lines.push(`   ${narrow.join(" · ")}`);
+    if (r.funding?.length) lines.push(`   Funding: ${r.funding.map((g) => [g.agency, g.acronym ? `[${g.acronym}]` : undefined, g.grantId].filter(Boolean).join(" ")).join(" · ")}`);
+    if (r.compounds?.length) lines.push(`   Compounds: ${r.compounds.map((c) => (c.registry ? `${c.name} [${c.registry}]` : c.name)).join(" · ")}`);
     if (r.fullTextUrls?.length) lines.push(`   Full text: ${r.fullTextUrls.map((u) => `${u.site} ${u.url}`).join(" · ")}`);
   }
   return lines;

@@ -323,3 +323,25 @@ test("live: Europe PMC core records carry the authority fields", { skip: !live }
   assert.ok(results.some((r) => typeof r.content === "string" && r.content.length > 0), "no abstract arrived — abstractText drifted or the request went back to lite");
   assert.ok(results.some((r) => (r.venue ?? "").length > 0), "no venue arrived — journalInfo.journal.title stopped parsing");
 });
+
+// PIWEB-37: the subject and provenance block rides the same core record. MeSH
+// headings, compounds and a funding list are absent on plenty of records
+// (patents, preprints, editorials), so the anchor is a paper that carries all
+// three — and a renamed wire field empties every record silently, which is the
+// drift this guards.
+test("live: Europe PMC core records carry the subject and provenance block", { skip: !live }, async () => {
+  const { results } = await searchPapers('DOI:"10.1038/nature12373"', { index: "europepmc", numResults: 1 });
+  assert.equal(results.length, 1, "the anchored record did not come back");
+  const r = results[0]!;
+  assert.ok((r.subjects?.length ?? 0) > 0, "no subject tags — meshHeadingList drifted or the request went back to lite");
+  assert.ok(r.subjects!.some((s) => s.major === true), "no subject carried the major flag — the meshHeadingList flags drifted");
+  assert.ok(r.subjects!.every((s) => s.term.length > 0), "a subject tag arrived with no term");
+  const terms = r.subjects!.map((s) => s.term);
+  assert.equal(new Set(terms).size, terms.length, "subject tags came back duplicated — dedupe drifted");
+  assert.ok((r.compounds?.length ?? 0) > 0, "no compounds — chemicalList drifted");
+  assert.ok((r.funding?.length ?? 0) > 0, "no funding — grantsList drifted");
+  assert.ok(r.funding!.every((g) => g.agency.length > 0), "a grant arrived with no agency");
+  // The full-text candidates now choose the row's URL, so a record with a free
+  // PMC copy must point at that copy rather than at the doi.org resolution.
+  assert.equal(r.url, "https://europepmc.org/article/PMC4221854", "the free PMC copy no longer wins the URL choice");
+});

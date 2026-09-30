@@ -32,6 +32,10 @@ import {
   retractionNoticeUrl,
   parseDataAvailability,
   parseFullTextUrls,
+  parseSubjects,
+  parseCompounds,
+  parseFunding,
+  isFreeFullTextCopy,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
@@ -274,6 +278,47 @@ const PREPRINT_CORE: EuropePmcResult = {
   isOpenAccess: "Y",
 };
 
+// The subject/provenance block: MeSH headings (a heading-level major, a
+// qualifier-starred one, and incidental ones), compounds with a registry
+// number and the backend's "0" sentinel, and the funding block. Trimmed live
+// capture (2026-09-30, DOI:"10.1038/nature12373").
+const SUBJECT_CORE: EuropePmcResult = {
+  id: "24553135",
+  source: "MED",
+  pmid: "24553135",
+  pmcid: "PMC4221854",
+  doi: "10.1038/nature12373",
+  title: "Nanometre-scale thermometry in a living cell.",
+  journalTitle: "Nature",
+  pubYear: "2013",
+  meshHeadingList: { meshHeading: [
+    { majorTopic_YN: "N", descriptorName: "Fibroblasts", meshQualifierList: { meshQualifier: [{ majorTopic_YN: "Y", qualifierName: "cytology" }] } },
+    { majorTopic_YN: "N", descriptorName: "Humans" },
+    { majorTopic_YN: "Y", descriptorName: "Thermometers" },
+    { majorTopic_YN: "N", descriptorName: "Nanodiamonds", meshQualifierList: { meshQualifier: [{ majorTopic_YN: "Y", qualifierName: "chemistry" }] } },
+    { majorTopic_YN: "N", descriptorName: "Humans" },
+  ] },
+  chemicalList: { chemical: [
+    { name: "Gold", registryNumber: "7440-57-5" },
+    { name: "Nanodiamonds", registryNumber: "0" },
+    { name: "Nitrogen", registryNumber: "N762921K75" },
+  ] },
+  grantsList: { grant: [
+    { agency: "Swiss National Science Foundation", grantId: "143918", orderIn: 0 },
+    { agency: "NIH HHS", acronym: "OD", grantId: "5DP1OD003893-03", orderIn: 0 },
+    { agency: "NIH HHS", acronym: "OD", grantId: "5DP1OD003893-03", orderIn: 1 },
+    { agency: "NIH HHS", acronym: "HG" },
+  ] },
+  fullTextUrlList: { fullTextUrl: [
+    { site: "DOI", url: "https://doi.org/10.1038/nature12373", availability: "Subscription required" },
+    { site: "Europe_PMC", url: "https://europepmc.org/articles/PMC4221854", availability: "Free" },
+  ] },
+  isOpenAccess: "Y",
+  inEPMC: "Y",
+  inPMC: "Y",
+  citedByCount: 3859,
+};
+
 test("pubTypes reads the core list and the lite string alike", () => {
   assert.deepEqual(pubTypes({ pubTypeList: { pubType: ["Journal Article", "Editorial"] } }), ["Journal Article", "Editorial"]);
   assert.deepEqual(pubTypes({ pubType: "journal article; editorial" }), ["journal article", "editorial"]);
@@ -333,6 +378,82 @@ test("parseDataAvailability and parseFullTextUrls read the core evidence fields"
   assert.equal(parseFullTextUrls({}), undefined);
 });
 
+test("europepmc chooseRecordUrl ranks the backend's free full-text copies, never a paywalled one", () => {
+  // The backend's own ranked free copy wins when there is no PMC copy to
+  // synthesize — the improvement the ranking buys.
+  assert.equal(
+    chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "Publisher", url: "https://example.org/paper", availability: "Free" }] } }),
+    "https://example.org/paper",
+  );
+  // A "Subscription required" entry is not a copy the fetch chain can read, so
+  // it must not take the publisher tier and outrank the Europe PMC record page.
+  assert.equal(
+    chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "Publisher", url: "https://paywall.example.org/paper", availability: "Subscription required" }] } }),
+    "https://europepmc.org/article/MED/1",
+  );
+  // The synthesized PMC copy keeps the top tier over a free publisher copy.
+  assert.equal(
+    chooseRecordUrl({ id: "1", source: "MED", pmcid: "PMC1", fullTextUrlList: { fullTextUrl: [{ site: "Europe_PMC", url: "https://europepmc.org/articles/PMC1", availability: "Open access" }] } }),
+    "https://europepmc.org/article/PMC1",
+  );
+  // The live record's shape: a free copy beside a subscription DOI.
+  assert.equal(chooseRecordUrl(SUBJECT_CORE), "https://europepmc.org/article/PMC4221854");
+});
+
+test("isFreeFullTextCopy vouches only for a copy the backend marked readable", () => {
+  // Verified live 2026-09-30: all 75 entries in a sampled page carried a
+  // marker, so an unmarked entry is not the backend saying "free".
+  assert.equal(isFreeFullTextCopy({ site: "Europe_PMC", url: "https://europepmc.org/articles/PMC1", availability: "Free" }), true);
+  assert.equal(isFreeFullTextCopy({ site: "Europe_PMC", url: "https://europepmc.org/articles/PMC1", availability: "Open access" }), true);
+  assert.equal(isFreeFullTextCopy({ site: "DOI", url: "https://doi.org/10.1/x", availability: "Subscription required" }), false);
+  assert.equal(isFreeFullTextCopy({ site: "Publisher", url: "https://example.org/x" }), false);
+});
+
+test("parseSubjects reads the curated vocabulary, starring a heading when it or a qualifier says major", () => {
+  assert.deepEqual(parseSubjects(SUBJECT_CORE), [
+    // Wire order preserved and the duplicated "Humans" collapsed. The star sits
+    // on the descriptor for one heading and on the qualifier for another, and
+    // PubMed sends both shapes — either one makes the term major.
+    { term: "Fibroblasts", major: true },
+    { term: "Humans" },
+    { term: "Thermometers", major: true },
+    { term: "Nanodiamonds", major: true },
+  ]);
+  assert.equal(parseSubjects({}), undefined);
+  assert.equal(parseSubjects({ meshHeadingList: { meshHeading: [{ descriptorName: "  " }, { majorTopic_YN: "Y" }] } }), undefined);
+});
+
+test("parseCompounds reads names with registry numbers, dropping the backend's \"0\" sentinel", () => {
+  assert.deepEqual(parseCompounds(SUBJECT_CORE), [
+    { name: "Gold", registry: "7440-57-5" },
+    { name: "Nanodiamonds" },
+    { name: "Nitrogen", registry: "N762921K75" },
+  ]);
+  assert.equal(parseCompounds({}), undefined);
+  assert.equal(parseCompounds({ chemicalList: { chemical: [{ registryNumber: "1" }] } }), undefined);
+});
+
+test("parseFunding dedupes the grant list and tolerates a missing identifier or acronym", () => {
+  assert.deepEqual(parseFunding(SUBJECT_CORE), [
+    { agency: "Swiss National Science Foundation", grantId: "143918" },
+    // The same agency legitimately repeats for a different grant, so the dedup
+    // key is the whole agency/acronym/grant triple, not the agency.
+    { agency: "NIH HHS", grantId: "5DP1OD003893-03", acronym: "OD" },
+    { agency: "NIH HHS", acronym: "HG" },
+  ]);
+  assert.equal(parseFunding({}), undefined);
+  // An entry with no agency has nothing to anchor to.
+  assert.equal(parseFunding({ grantsList: { grant: [{ grantId: "1" }] } }), undefined);
+});
+
+test("the core normalizer rails the subject and provenance block onto the record", () => {
+  const [r] = normalizeEuropePmcResults([SUBJECT_CORE]);
+  assert.deepEqual(r!.subjects!.filter((s) => s.major === true).map((s) => s.term), ["Fibroblasts", "Thermometers", "Nanodiamonds"]);
+  assert.equal(r!.subjects!.length, 4);
+  assert.deepEqual(r!.compounds!.map((c) => c.registry), ["7440-57-5", undefined, "N762921K75"]);
+  assert.deepEqual(r!.funding!.map((g) => g.agency), ["Swiss National Science Foundation", "NIH HHS", "NIH HHS"]);
+});
+
 test("the core normalizer rails authority onto the record", () => {
   const [r] = normalizeEuropePmcResults([CORE_REC]);
   // The nested journal block the lite request never sends.
@@ -361,7 +482,7 @@ test("a retracted core record carries its notice; a preprint reads as a reposito
 
 test("a core record carrying no authority fields invents none", () => {
   const [r] = normalizeEuropePmcResults([{ id: "1", source: "MED", title: "bare" }]);
-  for (const k of ["institutions", "orcids", "type", "venueType", "retractionNotice", "language", "publicationStatus", "dataAvailability", "fullTextUrls"] as const) {
+  for (const k of ["institutions", "orcids", "type", "venueType", "retractionNotice", "language", "publicationStatus", "dataAvailability", "fullTextUrls", "subjects", "compounds", "funding"] as const) {
     assert.equal(k in r!, false, `${k} was invented`);
   }
 });

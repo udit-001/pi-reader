@@ -12,13 +12,19 @@
 //   venue       ← journalInfo.journal.title, else journalTitle
 //   citedBy     ← citedByCount
 //   doi         ← the bare doi field (Europe PMC ships it bare already)
-//   url         ← the most fetchable copy (shared chooseFetchableUrl):
-//                 the PMC article page when a PMCID exists, else the
-//                 doi.org resolution, else the Europe PMC record page
+//   url         ← the most fetchable copy (shared chooseFetchableUrl): the
+//                 backend's ranked free copies first, then the PMC article
+//                 page when a PMCID exists, else the doi.org resolution, else
+//                 the Europe PMC record page
 //   oaUrl       ← inEPMC === "Y" or inPMC === "Y" → the PMC article URL
 //                 Europe PMC's own inEPMC record is the full-text body
 //   snippet     ← buildPaperSnippet (shared): venue · year · citations ·
 //                 open/closed badge · first author et al.
+//   subjects    ← meshHeadingList (curated subject vocabulary, major-topic
+//                 flag from the heading or a starred qualifier)
+//   compounds   ← chemicalList (name + registry number; "0" is the backend's
+//                 "none")
+//   funding     ← grantsList (agency + grant id + acronym)
 //
 // Records with no record URL at all are dropped — no url, no action.
 
@@ -37,11 +43,14 @@ import {
   ABSTRACT_MAX,
   type PaperBackendStatus,
   type PaperCitationGraph,
+  type PaperCompound,
   type PaperFilters,
+  type PaperGrant,
   type PaperPage,
   type PaperRecord,
   type PaperSeed,
   type PaperSort,
+  type PaperSubject,
   type PaperInstitution,
   type PaperFullTextUrl,
 } from "./paper-backend.ts";
@@ -242,6 +251,20 @@ export interface EuropePmcResult {
   } | null;
   /** Abstract body — the lite form omits it. */
   abstractText?: string;
+  /** MeSH subject headings — the curated vocabulary, with each heading's own
+   *  major-topic flag and its qualifiers' flags. */
+  meshHeadingList?: {
+    meshHeading?: Array<{
+      descriptorName?: string;
+      majorTopic_YN?: string;
+      meshQualifierList?: { meshQualifier?: Array<{ qualifierName?: string; majorTopic_YN?: string }> } | null;
+    }>;
+  } | null;
+  /** The compounds the paper studies; `registryNumber` is the backend's "0"
+   *  when it has no number to give. */
+  chemicalList?: { chemical?: Array<{ name?: string; registryNumber?: string }> } | null;
+  /** The funding behind the work, one entry per agency/grant/acronym. */
+  grantsList?: { grant?: Array<{ agency?: string; grantId?: string; acronym?: string }> } | null;
   /** Three-letter language code. */
   language?: string;
   /** "ppublish" | "epublish" | "aheadofprint" | …. */
@@ -382,6 +405,71 @@ export function parseOrcids(r: EuropePmcResult): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/** The record's MeSH subject tags — the curated vocabulary, deduped in wire
+ *  order. `major` is set from the heading's own flag or any starred qualifier
+ *  (a heading can arrive with its flag N beside a starred `chemistry` —
+ *  verified live 2026-09-30). Qualifier names are dropped; the descriptor is
+ *  the tag. Pure; exported for tests. */
+export function parseSubjects(r: EuropePmcResult): PaperSubject[] | undefined {
+  const headings = Array.isArray(r.meshHeadingList?.meshHeading) ? r.meshHeadingList.meshHeading : [];
+  const seen = new Set<string>();
+  const out: PaperSubject[] = [];
+  for (const h of headings) {
+    const term = typeof h?.descriptorName === "string" ? h.descriptorName.trim() : "";
+    if (term === "") continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const qualifiers = Array.isArray(h?.meshQualifierList?.meshQualifier) ? h.meshQualifierList.meshQualifier : [];
+    const major = isFlagY(h?.majorTopic_YN) || qualifiers.some((q) => isFlagY(q?.majorTopic_YN));
+    out.push(major ? { term, major: true } : { term });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** The compounds a work studies, in wire order, deduped by name. A
+ *  `registryNumber` of "0" is the backend's own "none", so it is dropped
+ *  rather than carried as a literal. Pure; exported for tests. */
+export function parseCompounds(r: EuropePmcResult): PaperCompound[] | undefined {
+  const chemicals = Array.isArray(r.chemicalList?.chemical) ? r.chemicalList.chemical : [];
+  const seen = new Set<string>();
+  const out: PaperCompound[] = [];
+  for (const c of chemicals) {
+    const name = typeof c?.name === "string" ? c.name.trim() : "";
+    if (name === "") continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const registry = typeof c?.registryNumber === "string" ? c.registryNumber.trim() : "";
+    out.push(registry !== "" && registry !== "0" ? { name, registry } : { name });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** The funding behind the work, in wire order, deduped on the whole
+ *  agency/acronym/grant triple. An entry with no agency is skipped — it anchors
+ *  nothing a reader can act on. Pure; exported for tests. */
+export function parseFunding(r: EuropePmcResult): PaperGrant[] | undefined {
+  const grants = Array.isArray(r.grantsList?.grant) ? r.grantsList.grant : [];
+  const seen = new Set<string>();
+  const out: PaperGrant[] = [];
+  for (const g of grants) {
+    const agency = typeof g?.agency === "string" ? g.agency.trim() : "";
+    if (agency === "") continue;
+    const grantId = typeof g?.grantId === "string" ? g.grantId.trim() : "";
+    const acronym = typeof g?.acronym === "string" ? g.acronym.trim() : "";
+    const key = [agency, acronym, grantId].join("\u0000").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      agency,
+      ...(grantId !== "" ? { grantId } : {}),
+      ...(acronym !== "" ? { acronym } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** The venue's kind in the shared vocabulary: "repository" for a preprint
  *  server (source PPR, or a Preprint publication type), "journal" when the
  *  record names a journal, absent when the wire says neither. Pure. */
@@ -434,12 +522,23 @@ export function parseFullTextUrls(
   return out.length > 0 ? out : undefined;
 }
 
+/** Is this ranked copy one the fetch chain can actually read? The backend
+ *  names its paywalled copies ("Subscription required") and marks the rest
+ *  free or open access; an entry it left unmarked is not assumed readable, so
+ *  the URL ladder only ever gains a copy the backend vouched for. Pure;
+ *  exported for tests. */
+export function isFreeFullTextCopy(u: PaperFullTextUrl): boolean {
+  return /free|open/i.test(u.availability ?? "");
+}
+
 /** `url` — the most fetchable copy, through the shared policy
- *  (chooseFetchableUrl): the PMC copy page first (Europe PMC serves its full
- *  text keyless), then the doi.org resolution, then the record page by
- *  source+id. Pure; exported. */
+ *  (chooseFetchableUrl): the backend's own ranked free copies first, then the
+ *  PMC copy page (Europe PMC serves its full text keyless), the doi.org
+ *  resolution, then the record page by source+id. Pure; exported. */
 export function chooseRecordUrl(r: EuropePmcResult): string | null {
+  const free = (parseFullTextUrls(r) ?? []).filter(isFreeFullTextCopy);
   return chooseFetchableUrl([
+    ...free.map((u) => u.url),
     r.pmcid ? `https://europepmc.org/article/${r.pmcid}` : undefined,
     r.doi ? `https://doi.org/${r.doi}` : undefined,
     r.id && r.source ? `https://europepmc.org/article/${r.source}/${r.id}` : undefined,
@@ -514,8 +613,16 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
     if (orcids) rec.orcids = orcids;
     const notice = retracted ? retractionNoticeUrl(r) : undefined;
     if (notice) rec.retractionNotice = notice;
+    // The subject vocabulary rides every row, beside the authority block: the
+    // topic question is asked of every result.
+    const subjects = parseSubjects(r);
+    if (subjects) rec.subjects = subjects;
     // Branch-narrow fields: carried on every record, printed only on a
     // single-record page (see renderPaperExtras).
+    const compounds = parseCompounds(r);
+    if (compounds) rec.compounds = compounds;
+    const funding = parseFunding(r);
+    if (funding) rec.funding = funding;
     if (r.abstractText) rec.content = elide(r.abstractText, ABSTRACT_MAX);
     if (r.language) rec.language = r.language;
     if (r.publicationStatus) rec.publicationStatus = r.publicationStatus;

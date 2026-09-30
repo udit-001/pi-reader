@@ -592,6 +592,29 @@ test("branch-narrow fields print on a single-record page and stay off a list row
   assert.match(one, /Full text: DOI https:\/\/doi\.org\/x/);
 });
 
+test("the subject tags print on every row — majors first, each marked, the incidental ones after", () => {
+  const rec: PaperRecord = {
+    title: "t", url: "u", snippet: "s",
+    subjects: [{ term: "Fibroblasts", major: true }, { term: "Humans" }, { term: "Thermometers", major: true }],
+  };
+  // The topic question is asked of every result, so this is a list-row line.
+  assert.match(renderPaperExtras(rec, false).join("\n"), /Subjects: Fibroblasts \[major\] · Thermometers \[major\] · Humans/);
+});
+
+test("funding and compounds are branch-narrow — on a single-record page, off a list row", () => {
+  const rec: PaperRecord = {
+    title: "t", url: "u", snippet: "s",
+    funding: [{ agency: "NIH HHS", grantId: "DP1 OD003893", acronym: "OD" }, { agency: "NSF" }],
+    compounds: [{ name: "Gold", registry: "7440-57-5" }, { name: "Nanodiamonds" }],
+  };
+  const list = renderPaperExtras(rec, false).join("\n");
+  assert.doesNotMatch(list, /Funding:/);
+  assert.doesNotMatch(list, /Compounds:/);
+  const one = renderPaperExtras(rec, true).join("\n");
+  assert.match(one, /Funding: NIH HHS \[OD\] DP1 OD003893 · NSF/);
+  assert.match(one, /Compounds: Gold \[7440-57-5\] · Nanodiamonds/);
+});
+
 test("renderPaperExtras invents nothing for a bare record", () => {
   assert.deepEqual(renderPaperExtras({ title: "t", url: "u", snippet: "s" }, true), []);
 });
@@ -620,6 +643,28 @@ test("a Europe PMC search reaches the caller with the authority block railed on"
   assert.equal(r.type, "Journal Article");
   assert.equal(r.venue, "Nucleic Acids Research");
   assert.equal(r.language, "eng");
+});
+
+// PIWEB-37: the subject and provenance block reaches the caller through the
+// public interface, not only through the adapter's pure seams.
+test("a Europe PMC search reaches the caller with the subject and provenance block railed on", async () => {
+  const page = await searchPapers("nanoscale thermometry", { index: "europepmc" }, depsWith({
+    europepmc: {
+      fetchResults: async () => ({
+        hitCount: 1,
+        resultList: { result: [{
+          ...EPMC_RESULT,
+          meshHeadingList: { meshHeading: [{ descriptorName: "Thermometers", majorTopic_YN: "Y" }, { descriptorName: "Humans", majorTopic_YN: "N" }] },
+          chemicalList: { chemical: [{ name: "Gold", registryNumber: "7440-57-5" }] },
+          grantsList: { grant: [{ agency: "NIH HHS", grantId: "5DP1OD003893-03", acronym: "OD" }] },
+        }] },
+      }),
+    },
+  }));
+  const r = page.results[0]!;
+  assert.deepEqual(r.subjects, [{ term: "Thermometers", major: true }, { term: "Humans" }]);
+  assert.deepEqual(r.compounds, [{ name: "Gold", registry: "7440-57-5" }]);
+  assert.deepEqual(r.funding, [{ agency: "NIH HHS", grantId: "5DP1OD003893-03", acronym: "OD" }]);
 });
 
 // ── a paper already identified — the retired lookup's replacement ────────────
