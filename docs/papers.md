@@ -26,7 +26,7 @@ What a citation-aware research pass needs **without extra calls**. All OpenAlex-
 - `recentCitations` + `citationTrend` — `counts_by_year` distilled: the sum over the last three *complete* publication years (the current year is always partial and would read as a crash) plus `rising`/`steady`/`fading`. A 2012 paper still scoring 8k/year reads as active, not legacy.
 - `field`, `keywords` — the topic hierarchy's field-level name (26 fields, the granularity a resultset cluster-check runs at) and up to 3 literal keyword tokens for presenting the list.
 - `openalexId` — the bare W-id, the seed vocabulary for citation walks and the graph math on `refs`/`related`.
-- `content` — the abstract, rebuilt from OpenAlex's token-position inverted index (`abstractFromInvertedIndex`) and truncated to 300 chars. It rides the inherited `content` key rather than a new one: the entry's body-preview branch already renders it, and ~300 chars is cheap enough to include by default — the on-topic judgment is the one thing tokens can't carry (verified live: the official OpenAlex MCP ships truncated abstracts in every list row).
+- `content` — the abstract: `abstractFromInvertedIndex` rebuilds OpenAlex's token-position index, Europe PMC's `abstractText` arrives whole, and both cap at 300 chars (`ABSTRACT_MAX`). It rides the inherited `content` key rather than a new one: the entry's body-preview branch already renders it, and ~300 chars is cheap enough to include by default — the on-topic judgment is the one thing tokens can't carry (verified live: the official OpenAlex MCP ships truncated abstracts in every list row).
 
 The projection (`OPENALEX_SELECT`) carries the sources for all of this (`fwci`, `referenced_works`, `related_works`, `counts_by_year`, `topics`, `keywords`, `abstract_inverted_index`). It is one shared list, but no longer lean: the abstract's inverted index alone is ~15 KB per row on the wire. Accepted because OpenAlex meters per request, not per byte — the budget doesn't move, and the truncation keeps the agent-facing tokens flat. If bandwidth ever matters, `abstract_inverted_index` is the single name to pull back out.
 
@@ -34,9 +34,9 @@ Retracted works are **excluded by default through each adapter's own server-side
 
 ## Authority: who and where
 
-Three signals the projection already carried and normalization discarded. All OpenAlex-only and absent-tolerant, like the deep-research keys and for the same reason.
+Signals the projection already carried and normalization discarded. Absent-tolerant, like the deep-research keys and for the same reason; Europe PMC sets `institutions` and `venueType` too, from its core record.
 
-- `institutions` — every institution the authorships claim, deduped to one entry per institution in authorship order, so a dual-affiliated author and a co-author at the same lab collapse to one. Each entry carries `type` (`education`/`company`/`government`/`healthcare`/`nonprofit`/`facility`/`archive`/`other`), the institution's `country`, and `ror` normalized to the bare identifier the way `doi` is. The deduped set is the deliberate shape: the question the agent actually asks — is this industry work? — reads off the set, while a per-author nesting would spend tokens mapping authors that question never needs. Absent when no authorship lists an institution.
+- `institutions` — every institution the authorships claim, deduped to one entry per institution in authorship order, so a dual-affiliated author and a co-author at the same lab collapse to one. OpenAlex's entries carry `type` (`education`/`company`/`government`/`healthcare`/`nonprofit`/`facility`/`archive`/`other`), the institution's `country`, and `ror` normalized to the bare identifier the way `doi` is; Europe PMC's carry the author affiliation string as the name and nothing else. The deduped set is the deliberate shape: the question the agent actually asks — is this industry work? — reads off the set, while a per-author nesting would spend tokens mapping authors that question never needs. Absent when no authorship lists an institution.
 - `venueType` — the venue's kind beside its name: `journal` is peer-reviewed, `repository` a preprint server or archive, plus `conference`/`ebook platform`/`book series`. `venue` alone cannot tell a bioRxiv row from a Nature one, which is the difference between an unreviewed claim and an established one.
 - `refCount` — the length of the wire's `referenced_works`, which arrives whole while `refs` caps at 40, so the count never follows the cap: a 451-reference work reads as a bibliography where a five-reference one reads as a footnote. Verified live: the length matches the API's own `referenced_works_count` on every sampled work, so the second field is never requested.
 
@@ -113,6 +113,19 @@ Two levers ride the same query, both verified live 2026-09-30:
 
 - **`filters.synonym`** sets `synonym=true`, expanding the query through the backend's synonym table, so a colloquial phrase also reaches the formal term. It is opt-in because the recall gain costs precision, and the trade is stated where the option is offered — the parameter's own description. The works adapter has no synonym table, so it declines `synonym` in band, naming the biomedical index.
 - **`filters.sort`** is the backend's own ordering — see below.
+
+## Europe PMC's full record
+
+The search request asks for `resultType=core`, the full record, because the authority signals live only there: every author's affiliations (all institutions of a multi-affiliated author, not just the corresponding author's), the ORCID list, the complete publication-type list, the language, the abstract, the evidence flags, and the ranked full-text copies. The lite default carried none of them, and one branch in the parser could never fire because of it — the venue read `journalInfo.journal.title`, a block only the full record sends, so it fell through to the flat abbreviation. Core revives it.
+
+Core is a bandwidth cost, paid in bytes per response; the rendered row pays context only for what it prints. The branching test places the fields:
+
+- **Every row** — the authority block: work type, preprint-versus-indexed source (a `PPR` source or a Preprint type reads as a `repository` venue), the retraction marker with its notice link, the affiliation set, and the ORCIDs. A trust question is asked of every result.
+- **A single-record page** — language, publication status, evidence availability, and the full-text copies. A list row pays per result; one record pays once, so the narrow fields ride the record and print where a branch reaches for them.
+
+The wire's ORCID list is aggregate: Europe PMC links no identifier to a specific author, so the record carries the set rather than a per-author map the wire cannot support. The retraction notice is a `commentCorrection` of the "Retraction in" kind — the notice's own Europe PMC record when source and id arrive, else a DOI lifted from the reference.
+
+The citation-walk routes (`/references`, `/citations`) serve their own compact entry shape and take no `resultType`, so a walk row carries no authority block; these fields are the search record's.
 
 ## Ordering: the backend sorts the set
 

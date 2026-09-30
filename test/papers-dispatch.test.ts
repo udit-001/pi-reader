@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { searchPapers, type OpenAlexWork } from "../search/papers.ts";
-import { parsePaperSeed, filtersCacheKey, applySort } from "../search/paper-backend.ts";
+import { parsePaperSeed, filtersCacheKey, applySort, renderPaperExtras } from "../search/paper-backend.ts";
 import { paperError, otherIndex, PaperError, type PaperRecord } from "../search/paper-backend.ts";
 import type { EuropePmcResult, EuropePmcResponse } from "../search/europepmc.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
@@ -560,6 +560,66 @@ test("applySort orders newest-first when date is asked; yearless records keep po
     { title: "unknown", url: "u3", snippet: "s" },
   ];
   assert.deepEqual(applySort(records, { sort: "date" }).map((r) => r.title), ["new", "old", "unknown"]);
+});
+
+// ── renderPaperExtras — the authority block and the single-record tier ────────
+
+test("the authority block groups work type, venue kind, retraction notice, affiliations and ORCIDs", () => {
+  const rec: PaperRecord = {
+    title: "t", url: "u", snippet: "s",
+    type: "Journal Article", venueType: "journal",
+    retracted: true, retractionNotice: "https://europepmc.org/article/MED/42715445",
+    institutions: [{ name: "Dept of Bioengineering, UIUC." }],
+    orcids: ["0000-0001-6004-9664"],
+  };
+  const lines = renderPaperExtras(rec, false).join("\n");
+  assert.match(lines, /Authority: Type: Journal Article · Venue type: journal · Retracted — notice https:\/\/europepmc\.org\/article\/MED\/42715445/);
+  assert.match(lines, /Institutions: Dept of Bioengineering, UIUC\./);
+  assert.match(lines, /ORCIDs: 0000-0001-6004-9664/);
+});
+
+test("branch-narrow fields print on a single-record page and stay off a list row", () => {
+  const rec: PaperRecord = {
+    title: "t", url: "u", snippet: "s",
+    language: "eng", publicationStatus: "aheadofprint", dataAvailability: ["data"],
+    fullTextUrls: [{ site: "DOI", url: "https://doi.org/x" }],
+  };
+  const list = renderPaperExtras(rec, false).join("\n");
+  assert.doesNotMatch(list, /Language:/);
+  assert.doesNotMatch(list, /Full text:/);
+  const one = renderPaperExtras(rec, true).join("\n");
+  assert.match(one, /Language: eng · Status: aheadofprint · Availability: data/);
+  assert.match(one, /Full text: DOI https:\/\/doi\.org\/x/);
+});
+
+test("renderPaperExtras invents nothing for a bare record", () => {
+  assert.deepEqual(renderPaperExtras({ title: "t", url: "u", snippet: "s" }, true), []);
+});
+
+// ── the public interface carries the authority block (PIWEB-36) ───────────────
+
+test("a Europe PMC search reaches the caller with the authority block railed on", async () => {
+  const page = await searchPapers("malaria", { index: "europepmc" }, depsWith({
+    europepmc: {
+      fetchResults: async () => ({
+        hitCount: 1,
+        resultList: { result: [{
+          ...EPMC_RESULT,
+          pubTypeList: { pubType: ["Journal Article"] },
+          journalInfo: { journal: { title: "Nucleic Acids Research" } },
+          authorList: { author: [{ fullName: "Winter E", authorAffiliationDetailsList: { authorAffiliation: [{ affiliation: "Dept of Genetics, Harvard." }] } }] },
+          authorIdList: { authorId: [{ type: "ORCID", value: "0000-0002-1825-0097" }] },
+          language: "eng",
+        }] },
+      }),
+    },
+  }));
+  const r = page.results[0]!;
+  assert.deepEqual(r.institutions, [{ name: "Dept of Genetics, Harvard." }]);
+  assert.deepEqual(r.orcids, ["0000-0002-1825-0097"]);
+  assert.equal(r.type, "Journal Article");
+  assert.equal(r.venue, "Nucleic Acids Research");
+  assert.equal(r.language, "eng");
 });
 
 // ── a paper already identified — the retired lookup's replacement ────────────

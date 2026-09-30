@@ -39,8 +39,10 @@ export interface PaperRecord extends SearchResult {
   /** Primary topic display name — the work's discipline. Absent when the API
    *  doesn't provide the field; never invented. */
   topic?: string;
-  /** Work type — article, book chapter, dataset, preprint, …. Absent when
-   *  the API doesn't provide the field; never invented. */
+  /** Work type, in the backend's own vocabulary — OpenAlex's enum (article,
+   *  review, preprint, …) or Europe PMC's publication-type string ("Journal
+   *  Article", "Editorial", …). Absent when the API doesn't provide the
+   *  field; never invented. */
   type?: string;
   /** Field-weighted citation impact — citations ÷ the median for the
  *  work's topic, publication year, and type (1.0 = exactly
@@ -74,17 +76,43 @@ export interface PaperRecord extends SearchResult {
   /** The work's institutions, one entry per institution in authorship order
    *  (a dual-affiliated author and a co-author at the same lab collapse to
    *  one) — the provenance signal: a company lab reads differently from a
-   *  university. OpenAlex only. */
+   *  university. OpenAlex fills type/country/ROR per entry; Europe PMC
+   *  supplies the author affiliation string as the name. */
   institutions?: PaperInstitution[];
   /** The hosting venue's kind — "journal" for a peer-reviewed venue,
    *  "repository" for a preprint server or archive, also "conference",
    *  "ebook platform", "book series". Reads beside `venue`, which carries
-   *  only the name. OpenAlex only. */
+   *  only the name. */
   venueType?: string;
   /** How many references the work lists — a bibliography of hundreds reads
    *  differently from a footnote of five, and `refs` is capped at 40.
    *  OpenAlex only. */
   refCount?: number;
+  /** The record's ORCID identifiers, where the backend provides them. Europe
+   *  PMC carries an aggregate list, so these are not linked to a specific
+   *  author. Absent when the wire names none. */
+  orcids?: string[];
+  /** Link to the retraction notice a retracted record points at. Europe PMC
+   *  only; absent when the wire carries no notice. */
+  retractionNotice?: string;
+  /** Three-letter language code ("eng"). Europe PMC only. */
+  language?: string;
+  /** Publication status — "ppublish", "epublish", "aheadofprint", ….
+   *  Europe PMC only. */
+  publicationStatus?: string;
+  /** Evidence-availability markers the backend reports ("data",
+   *  "supplementary", "pdf"). Europe PMC only. */
+  dataAvailability?: string[];
+  /** Ranked full-text copies the backend offers — the read-the-paper branch
+   *  picks from these. Europe PMC only. */
+  fullTextUrls?: PaperFullTextUrl[];
+}
+
+/** One full-text copy a backend offers, ranked by the backend. */
+export interface PaperFullTextUrl {
+  site: string;
+  url: string;
+  availability?: string;
 }
 
 /** One institution a work's authors claim. Every key but the name is
@@ -258,6 +286,17 @@ export function chooseFetchableUrl(candidates: Array<string | null | undefined>)
  *  one-place type change rather than three literals that can drift. */
 export type PaperSort = "citedBy" | "date";
 
+/** The abstract's record-side cap — the on-topic judgment fits in a screen,
+ *  and a list row pays context per result. */
+export const ABSTRACT_MAX = 300;
+
+/** Truncate to `max` characters with a visible ellipsis — the one place that
+ *  decides what a cut-off looks like, so an abstract preview and a backend's
+ *  complaint read the same way. Pure; exported for tests. */
+export function elide(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 /** Constrain a papers search, or turn it into a citation walk. Shared across
  *  backends so PIWEB-15's same-shape normalizers stay the only fork point. */
 export interface PaperFilters {
@@ -399,6 +438,62 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.citationGraph?.direction ?? "",
   ];
   return parts.some((p) => p !== "") ? parts.join("|") : "";
+}
+
+/** The paper-specific row lines for the tool envelope. The authority signals
+ *  sit under one heading — work type, venue kind, retraction and its notice —
+ *  with the affiliation set and ORCIDs beside them; the branch-narrow fields
+ *  (language, publication status, evidence availability, full-text copies)
+ *  print only when the page is a single record, the lookup shape. Pure;
+ *  exported for tests. */
+export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
+  const lines: string[] = [];
+  const meta: string[] = [];
+  if (r.year !== undefined) meta.push(`Year: ${r.year}`);
+  if (r.venue) meta.push(`Venue: ${r.venue}`);
+  if (r.citedBy !== undefined) meta.push(r.fwci !== undefined ? `Cited by: ${r.citedBy} (fwci ${r.fwci} field-normalized)` : `Cited by: ${r.citedBy}`);
+  if (r.refCount !== undefined) meta.push(`References: ${r.refCount}`);
+  if (r.doi) meta.push(`DOI: ${r.doi}`);
+  if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
+  if (r.topic) meta.push(`Topic: ${r.topic}`);
+  if (r.field) meta.push(`Field: ${r.field}`);
+  if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
+
+  // The authority block: what the work is and who stands behind it.
+  const authority: string[] = [];
+  if (r.type) authority.push(`Type: ${r.type}`);
+  if (r.venueType) authority.push(`Venue type: ${r.venueType}`);
+  if (r.retracted === true) authority.push(r.retractionNotice ? `Retracted — notice ${r.retractionNotice}` : "Retracted");
+  if (authority.length > 0) lines.push(`   Authority: ${authority.join(" · ")}`);
+
+  if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
+  // The provenance set: institution type tells industry from academia, country
+  // and ROR disambiguate institutions of the same name. Brackets, not parens —
+  // OpenAlex's own names carry parens. Absent parts are simply not printed.
+  if (r.institutions?.length) {
+    lines.push(`   Institutions: ${r.institutions.map((i) => {
+      const detail = [i.type, i.country, i.ror ? `ror:${i.ror}` : undefined].filter(Boolean).join(", ");
+      return detail ? `${i.name} [${detail}]` : i.name;
+    }).join(" · ")}`);
+  }
+  if (r.orcids?.length) lines.push(`   ORCIDs: ${r.orcids.join(" · ")}`);
+  if (r.keywords?.length) lines.push(`   Keywords: ${r.keywords.join(", ")}`);
+  if (r.recentCitations !== undefined) lines.push(`   Recent citations (last 3 complete years): ${r.recentCitations}${r.citationTrend ? ` (${r.citationTrend})` : ""}`);
+  // The correlation atom, in-band: bare W-ids, each a seed for a citation
+  // query in filters.expression.
+  if (r.refs?.length) lines.push(`   Refs (W-ids): ${r.refs.join(", ")}`);
+  if (r.related?.length) lines.push(`   Related (W-ids): ${r.related.join(", ")}`);
+
+  // Branch-narrow: only the single-record page pays for these.
+  if (single) {
+    const narrow: string[] = [];
+    if (r.language) narrow.push(`Language: ${r.language}`);
+    if (r.publicationStatus) narrow.push(`Status: ${r.publicationStatus}`);
+    if (r.dataAvailability?.length) narrow.push(`Availability: ${r.dataAvailability.join(", ")}`);
+    if (narrow.length > 0) lines.push(`   ${narrow.join(" · ")}`);
+    if (r.fullTextUrls?.length) lines.push(`   Full text: ${r.fullTextUrls.map((u) => `${u.site} ${u.url}`).join(" · ")}`);
+  }
+  return lines;
 }
 
 // ── In-band error contract ───────────────────────────────────────────────────

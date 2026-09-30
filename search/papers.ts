@@ -29,6 +29,8 @@ import {
   chooseFetchableUrl,
   paperPage,
   parsePaperSeed,
+  elide,
+  ABSTRACT_MAX,
   type PaperCitationGraph,
   type PaperFilters,
   type PaperInstitution,
@@ -173,7 +175,7 @@ export function abstractFromInvertedIndex(idx: Record<string, number[]> | null |
   }
   const text = slots.filter((w): w is string => w !== undefined).join(" ").trim();
   if (!text) return undefined;
-  return elide(text, 300);
+  return elide(text, ABSTRACT_MAX);
 }
 
 /** OpenAlex carries the DOI as an https URL ("https://doi.org/10.1038/…");
@@ -671,13 +673,6 @@ export function openAlexErrorDetail(
       : "daily credits exhausted — budget resets at midnight UTC";
   }
   return "daily credits exhausted (the keyless daily budget is spent) — a free API key raises the budget 10×: get one at openalex.org/settings/api or run /openalex-setup";
-}
-
-/** Truncate to `max` characters with a visible ellipsis — the one place that
- *  decides what a cut-off looks like, so an abstract preview and a backend's
- *  complaint read the same way. Pure; module-private. */
-function elide(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /** How much of a rejected request's complaint reaches the agent. An unknown

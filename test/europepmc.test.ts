@@ -24,6 +24,14 @@ import {
   europePmcSortValue,
   unrecognisedEuropePmcOperators,
   europePmcQueryFaults,
+  pubTypes,
+  primaryPubType,
+  parseAffiliations,
+  parseOrcids,
+  europePmcVenueType,
+  retractionNoticeUrl,
+  parseDataAvailability,
+  parseFullTextUrls,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
@@ -202,6 +210,165 @@ test("europepmc normalizer drops records with no record URL — no url, no actio
 
 test("europepmc normalizer returns an empty array for empty input", () => {
   assert.deepEqual(normalizeEuropePmcResults([]), []);
+});
+
+// ── authority fields (PIWEB-36) — resultType=core ─────────────────────────────
+
+// A core record: every author's affiliations, an aggregate ORCID list, the
+// publication-type list, the nested journal block, language, status, abstract,
+// evidence flags, and full-text copies. Trimmed live capture (2026-09-30).
+const CORE_REC: EuropePmcResult = {
+  id: "42527584",
+  source: "MED",
+  pmid: "42527584",
+  doi: "10.1038/s41551-026-01747-y",
+  title: "In vivo CRISPR base editing for treatment of Huntington's disease.",
+  authorString: "Shirguppe S, Gapinske M, Swami D.",
+  journalInfo: { journal: { title: "Nature biomedical engineering" } },
+  journalTitle: "Nat Biomed Eng",
+  pubYear: "2026",
+  pubTypeList: { pubType: ["Journal Article"] },
+  authorList: {
+    author: [
+      { fullName: "Shirguppe S", authorAffiliationDetailsList: { authorAffiliation: [{ affiliation: "Dept of Bioengineering, UIUC." }] } },
+      { fullName: "Gapinske M", authorAffiliationDetailsList: { authorAffiliation: [
+        { affiliation: "Dept of Bioengineering, UIUC." },
+        { affiliation: "Carl R. Woese Institute for Genomic Biology, UIUC." },
+      ] } },
+    ],
+  },
+  authorIdList: { authorId: [
+    { type: "ORCID", value: "0000-0001-6004-9664" },
+    { type: "ORCID", value: "0000-0001-6004-9664" },
+    { type: "Other", value: "not-an-orcid" },
+  ] },
+  language: "eng",
+  publicationStatus: "aheadofprint",
+  abstractText: "Huntington's disease is a fatal neurodegenerative disorder.",
+  hasData: "N",
+  hasSuppl: "Y",
+  hasPDF: "Y",
+  fullTextUrlList: { fullTextUrl: [{ site: "DOI", url: "https://doi.org/10.1038/s41551-026-01747-y", availability: "Subscription required" }] },
+  isOpenAccess: "N",
+  inEPMC: "N",
+  citedByCount: 0,
+};
+
+const RETRACTED_CORE: EuropePmcResult = {
+  id: "42550576",
+  source: "MED",
+  title: "Retracted trial.",
+  authorString: "Doe J.",
+  pubYear: "2026",
+  pubTypeList: { pubType: ["Retracted Publication", "Editorial"] },
+  commentCorrectionList: { commentCorrection: [{ type: "Retraction in", source: "MED", id: "42715445", reference: "J Psychosoc Nurs. doi: 10.3928/02793695-20260817-01." }] },
+};
+
+const PREPRINT_CORE: EuropePmcResult = {
+  id: "PPR123456",
+  source: "PPR",
+  title: "Preprint: base editing.",
+  authorString: "Roe R.",
+  pubYear: "2025",
+  pubTypeList: { pubType: ["Preprint"] },
+  isOpenAccess: "Y",
+};
+
+test("pubTypes reads the core list and the lite string alike", () => {
+  assert.deepEqual(pubTypes({ pubTypeList: { pubType: ["Journal Article", "Editorial"] } }), ["Journal Article", "Editorial"]);
+  assert.deepEqual(pubTypes({ pubType: "journal article; editorial" }), ["journal article", "editorial"]);
+  assert.deepEqual(pubTypes({}), []);
+});
+
+test("primaryPubType picks the work type, not the retraction marker", () => {
+  assert.equal(primaryPubType(["Retracted Publication", "Editorial"]), "Editorial");
+  assert.equal(primaryPubType(["Journal Article"]), "Journal Article");
+  assert.equal(primaryPubType([]), undefined);
+});
+
+test("parseAffiliations lists every author's institutions, deduped, both of a dual-affiliated author", () => {
+  assert.deepEqual(parseAffiliations(CORE_REC)!.map((i) => i.name), [
+    "Dept of Bioengineering, UIUC.",
+    "Carl R. Woese Institute for Genomic Biology, UIUC.",
+  ]);
+  // The fallback: no author list, the flat corresponding-author affiliation.
+  assert.deepEqual(parseAffiliations({ affiliation: "Harvard Medical School." }), [{ name: "Harvard Medical School." }]);
+  assert.equal(parseAffiliations({}), undefined);
+});
+
+test("parseOrcids keeps ORCID identifiers only, deduped", () => {
+  assert.deepEqual(parseOrcids(CORE_REC), ["0000-0001-6004-9664"]);
+  assert.equal(parseOrcids({}), undefined);
+});
+
+test("europePmcVenueType: preprints are repositories, a journal is a journal, neither is absent", () => {
+  assert.equal(europePmcVenueType({ source: "PPR" }, []), "repository");
+  assert.equal(europePmcVenueType({}, ["Preprint"]), "repository");
+  assert.equal(europePmcVenueType({ journalTitle: "Nature" }, ["Journal Article"]), "journal");
+  assert.equal(europePmcVenueType({ source: "PAT" }, ["Patent"]), undefined);
+});
+
+test("retractionNoticeUrl prefers the notice record, then a DOI in the reference", () => {
+  assert.equal(
+    retractionNoticeUrl({ commentCorrectionList: { commentCorrection: [{ type: "Retraction in", source: "MED", id: "42715445" }] } }),
+    "https://europepmc.org/article/MED/42715445",
+  );
+  assert.equal(
+    retractionNoticeUrl({ commentCorrectionList: { commentCorrection: [{ type: "Retraction in", reference: "10.1016/j.jse.2026.06.002" }] } }),
+    "https://doi.org/10.1016/j.jse.2026.06.002",
+  );
+  assert.equal(retractionNoticeUrl({}), undefined);
+  // The reference is a citation string, so sentence punctuation must not ride
+  // into the DOI.
+  assert.equal(
+    retractionNoticeUrl({ commentCorrectionList: { commentCorrection: [{ type: "Retraction in", reference: "J Psychosoc Nurs. doi: 10.3928/02793695-20260817-01." }] } }),
+    "https://doi.org/10.3928/02793695-20260817-01",
+  );
+});
+
+test("parseDataAvailability and parseFullTextUrls read the core evidence fields", () => {
+  assert.deepEqual(parseDataAvailability(CORE_REC), ["supplementary", "pdf"]);
+  assert.deepEqual(parseFullTextUrls(CORE_REC), [{ site: "DOI", url: "https://doi.org/10.1038/s41551-026-01747-y", availability: "Subscription required" }]);
+  assert.equal(parseDataAvailability({}), undefined);
+  assert.equal(parseFullTextUrls({}), undefined);
+});
+
+test("the core normalizer rails authority onto the record", () => {
+  const [r] = normalizeEuropePmcResults([CORE_REC]);
+  // The nested journal block the lite request never sends.
+  assert.equal(r!.venue, "Nature biomedical engineering");
+  assert.equal(r!.type, "Journal Article");
+  assert.equal(r!.venueType, "journal");
+  assert.deepEqual(r!.orcids, ["0000-0001-6004-9664"]);
+  assert.deepEqual(r!.institutions!.map((i) => i.name), ["Dept of Bioengineering, UIUC.", "Carl R. Woese Institute for Genomic Biology, UIUC."]);
+  assert.equal(r!.language, "eng");
+  assert.equal(r!.publicationStatus, "aheadofprint");
+  assert.deepEqual(r!.dataAvailability, ["supplementary", "pdf"]);
+  assert.equal(r!.content, "Huntington's disease is a fatal neurodegenerative disorder.");
+});
+
+test("a retracted core record carries its notice; a preprint reads as a repository", () => {
+  const [ret] = normalizeEuropePmcResults([RETRACTED_CORE]);
+  assert.equal(ret!.retracted, true);
+  assert.equal(ret!.retractionNotice, "https://europepmc.org/article/MED/42715445");
+  assert.equal(ret!.type, "Editorial");
+
+  const [pre] = normalizeEuropePmcResults([PREPRINT_CORE]);
+  assert.equal(pre!.venueType, "repository");
+  assert.equal(pre!.type, "Preprint");
+  assert.equal(pre!.retracted, undefined);
+});
+
+test("a core record carrying no authority fields invents none", () => {
+  const [r] = normalizeEuropePmcResults([{ id: "1", source: "MED", title: "bare" }]);
+  for (const k of ["institutions", "orcids", "type", "venueType", "retractionNotice", "language", "publicationStatus", "dataAvailability", "fullTextUrls"] as const) {
+    assert.equal(k in r!, false, `${k} was invented`);
+  }
+});
+
+test("the search request rides resultType=core; the walk and the page builder default to lite", () => {
+  assert.equal(buildEuropePmcParams("q", 10, {}, { resultType: "core" }).get("resultType"), "core");
+  assert.equal(buildEuropePmcParams("q", 10).get("resultType"), null);
 });
 
 // ── buildEuropePmcParams — query, format, pageSize ────────────────────────────
@@ -550,6 +717,17 @@ test("searchEuropePmc asks the backend for synonym expansion and the whole-set s
   }));
   assert.equal(seen[0]!.get("synonym"), "true");
   assert.equal(seen[0]!.get("sort"), "P_PDATE_D desc");
+});
+
+test("searchEuropePmc asks for the full record — resultType=core", async () => {
+  const seen: URLSearchParams[] = [];
+  await searchEuropePmc("malaria", {}, depsWith({
+    fetchResults: async (params) => {
+      seen.push(params);
+      return { hitCount: 1, resultList: { result: [CORE_REC] } };
+    },
+  }));
+  assert.equal(seen[0]!.get("resultType"), "core");
 });
 
 test("searchEuropePmc declines an unrecognised query field in band, naming it — never a silent free-text search", async () => {

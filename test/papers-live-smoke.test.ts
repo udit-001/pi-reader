@@ -305,3 +305,21 @@ test("live: Europe PMC's silent repairs are real", { skip: !live }, async () => 
     + new URLSearchParams({ query: "malaria", pageSize: "1", resultType: "idlist", format: "json", sort: "bogus" }));
   assert.equal(badSort.ok, false, "an invalid sort no longer fails on the wire — the sort decline's premise changed");
 });
+
+// PIWEB-36: the core request is what supplies affiliations, ORCIDs, the work
+// type and the abstract — the lite form carried none of them. A renamed wire
+// field empties every record silently, so the presence check lives here.
+test("live: Europe PMC core records carry the authority fields", { skip: !live }, async () => {
+  const { results } = await searchPapers("CRISPR base editing", { index: "europepmc", numResults: 5 });
+  assert.ok(results.length > 0, "no Europe PMC rows");
+  const withAffiliations = results.find((r) => (r.institutions?.length ?? 0) > 0);
+  assert.ok(withAffiliations, "no record carried affiliations — the core request or the authorList mapping drifted");
+  assert.ok(
+    withAffiliations!.institutions!.every((i) => i.name.length > 0),
+    "an affiliation entry arrived with no name",
+  );
+  assert.ok(results.some((r) => r.type !== undefined), "no record carried a work type — pubTypeList drifted");
+  assert.ok(results.some((r) => r.venueType !== undefined), "no venue kind arrived — europePmcVenueType drifted");
+  assert.ok(results.some((r) => typeof r.content === "string" && r.content.length > 0), "no abstract arrived — abstractText drifted or the request went back to lite");
+  assert.ok(results.some((r) => (r.venue ?? "").length > 0), "no venue arrived — journalInfo.journal.title stopped parsing");
+});

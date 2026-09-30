@@ -33,6 +33,8 @@ import {
   paperPage,
   parsePaperSeed,
   PaperError,
+  elide,
+  ABSTRACT_MAX,
   type PaperBackendStatus,
   type PaperCitationGraph,
   type PaperFilters,
@@ -40,6 +42,8 @@ import {
   type PaperRecord,
   type PaperSeed,
   type PaperSort,
+  type PaperInstitution,
+  type PaperFullTextUrl,
 } from "./paper-backend.ts";
 
 const TIMEOUT_MS = 25_000;
@@ -212,6 +216,40 @@ export interface EuropePmcResult {
   inPMC?: string;
   /** "Y"/"N" — open-access classification (public access tag). */
   isOpenAccess?: string;
+  // ── Core-only fields (resultType=core; the lite form omits them) ──
+  /** The publication-type list ("Journal Article", "Preprint", "Retracted
+   *  Publication", …). The lite form carries the ";"-separated `pubType`
+   *  string instead. */
+  pubTypeList?: { pubType?: string[] } | null;
+  /** Every author with the full affiliation list — all institutions of a
+   *  multi-affiliated author, not just the corresponding author's. */
+  authorList?: {
+    author?: Array<{
+      fullName?: string;
+      authorAffiliationDetailsList?: { authorAffiliation?: Array<{ affiliation?: string }> } | null;
+    }>;
+  } | null;
+  /** The record's identifiers, ORCIDs included. Aggregate — the wire does not
+   *  link an identifier to a specific author. */
+  authorIdList?: { authorId?: Array<{ type?: string; value?: string }> } | null;
+  /** Comments and corrections; a retraction notice rides here. */
+  commentCorrectionList?: {
+    commentCorrection?: Array<{ type?: string; source?: string; id?: string; reference?: string }>;
+  } | null;
+  /** Ranked full-text copies the backend offers. */
+  fullTextUrlList?: {
+    fullTextUrl?: Array<{ site?: string; url?: string; availability?: string }>;
+  } | null;
+  /** Abstract body — the lite form omits it. */
+  abstractText?: string;
+  /** Three-letter language code. */
+  language?: string;
+  /** "ppublish" | "epublish" | "aheadofprint" | …. */
+  publicationStatus?: string;
+  /** Evidence-availability flags, "Y"/"N". */
+  hasData?: string;
+  hasSuppl?: string;
+  hasPDF?: string;
   [key: string]: unknown;
 }
 
@@ -248,6 +286,11 @@ export function isFlagY(v: string | undefined): boolean {
  *  source the marker check and the exclusion clause share. */
 const RETRACTED_PUB_TYPE = "Retracted Publication";
 
+/** The comment-correction type that names a retraction notice ("Retraction
+ *  in" / "Retraction of") — the notice vocabulary, distinct from the
+ *  publication-type marker above. */
+const RETRACTION_NOTICE_TYPE = /retract/i;
+
 /** The backend's own retraction-exclusion clause — a query-language condition
  *  Europe PMC evaluates server-side, so the reported count already reflects
  *  it (no post-fetch removal). Pure; exported for tests. */
@@ -275,6 +318,120 @@ export function mergeRetractionClause(query: string, includeRetracted?: boolean)
   if (/PUB_TYPE\s*:\s*["']?retracted publication["']?/i.test(query)) return query;
   const trimmed = query.trim();
   return trimmed === "" ? RETRACTION_EXCLUSION_CLAUSE : `${trimmed} AND ${RETRACTION_EXCLUSION_CLAUSE}`;
+}
+
+/** A record's publication types from either wire shape: the core
+ *  `pubTypeList.pubType[]`, or the lite/walk `pubType` ";"-separated string.
+ *  Pure; exported for tests. */
+export function pubTypes(r: EuropePmcResult): string[] {
+  const list = r.pubTypeList?.pubType;
+  if (Array.isArray(list) && list.length > 0) {
+    return list.filter((t): t is string => typeof t === "string" && t !== "");
+  }
+  return typeof r.pubType === "string" && r.pubType !== ""
+    ? r.pubType.split(";").map((t) => t.trim()).filter(Boolean)
+    : [];
+}
+
+/** The primary work type — the first publication type that is not the
+ *  retraction marker, which `retracted` carries on its own. Pure. */
+export function primaryPubType(types: string[]): string | undefined {
+  return types.find((t) => !isRetractedPubType(t)) ?? types[0];
+}
+
+/** The record's affiliations, deduped in authorship order, from every author's
+ *  full affiliation list — a dual-affiliated author contributes both. The flat
+ *  corresponding-author `affiliation` is the fallback when the wire sends no
+ *  author list. Pure; exported for tests. */
+export function parseAffiliations(r: EuropePmcResult): PaperInstitution[] | undefined {
+  const seen = new Set<string>();
+  const out: PaperInstitution[] = [];
+  const authors = Array.isArray(r.authorList?.author) ? r.authorList.author : [];
+  for (const a of authors) {
+    const affiliations = Array.isArray(a?.authorAffiliationDetailsList?.authorAffiliation)
+      ? a.authorAffiliationDetailsList.authorAffiliation
+      : [];
+    for (const aff of affiliations) {
+      const name = typeof aff?.affiliation === "string" ? aff.affiliation.trim() : "";
+      if (name === "") continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name });
+    }
+  }
+  if (out.length === 0 && typeof r.affiliation === "string" && r.affiliation.trim() !== "") {
+    out.push({ name: r.affiliation.trim() });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** The record's ORCID identifiers, deduped. The wire carries them as an
+ *  aggregate list, not linked to individual authors. Pure; exported. */
+export function parseOrcids(r: EuropePmcResult): string[] | undefined {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const ids = Array.isArray(r.authorIdList?.authorId) ? r.authorIdList.authorId : [];
+  for (const id of ids) {
+    if (typeof id?.type !== "string" || id.type.toUpperCase() !== "ORCID") continue;
+    const value = typeof id?.value === "string" ? id.value.trim() : "";
+    if (value === "" || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** The venue's kind in the shared vocabulary: "repository" for a preprint
+ *  server (source PPR, or a Preprint publication type), "journal" when the
+ *  record names a journal, absent when the wire says neither. Pure. */
+export function europePmcVenueType(r: EuropePmcResult, types: string[]): string | undefined {
+  if (r.source === "PPR" || types.some((t) => /preprint/i.test(t))) return "repository";
+  if (r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation) return "journal";
+  return undefined;
+}
+
+/** The retraction notice a retracted record points at: the Europe PMC page for
+ *  the notice when the wire carries its source+id, else a DOI lifted from the
+ *  reference string, else nothing. Pure; exported. */
+export function retractionNoticeUrl(r: EuropePmcResult): string | undefined {
+  const corrections = Array.isArray(r.commentCorrectionList?.commentCorrection)
+    ? r.commentCorrectionList.commentCorrection
+    : [];
+  const notice = corrections.find(
+    (c) => typeof c?.type === "string" && RETRACTION_NOTICE_TYPE.test(c.type),
+  );
+  if (!notice) return undefined;
+  if (notice.source && notice.id) return `https://europepmc.org/article/${notice.source}/${notice.id}`;
+  // The reference is a citation string ("J Psychosoc Nurs. doi: 10.3928/…-01."),
+  // so the DOI match takes trailing sentence punctuation with it unless it is
+  // trimmed.
+  const doi = typeof notice.reference === "string"
+    ? notice.reference.match(/10\.\d{4,}\S+/)?.[0].replace(/[.,;)]+$/, "")
+    : undefined;
+  return doi ? `https://doi.org/${doi}` : undefined;
+}
+
+/** Evidence-availability markers the backend reports. Pure; exported. */
+export function parseDataAvailability(r: EuropePmcResult): string[] | undefined {
+  const out: string[] = [];
+  if (isFlagY(r.hasData)) out.push("data");
+  if (isFlagY(r.hasSuppl)) out.push("supplementary");
+  if (isFlagY(r.hasPDF)) out.push("pdf");
+  return out.length > 0 ? out : undefined;
+}
+
+/** Ranked full-text copies the backend offers. Pure; exported. */
+export function parseFullTextUrls(
+  r: EuropePmcResult,
+): PaperFullTextUrl[] | undefined {
+  const out: PaperFullTextUrl[] = [];
+  const urls = Array.isArray(r.fullTextUrlList?.fullTextUrl) ? r.fullTextUrlList.fullTextUrl : [];
+  for (const u of urls) {
+    if (typeof u?.site !== "string" || u.site === "" || typeof u?.url !== "string" || u.url === "") continue;
+    out.push({ site: u.site, url: u.url, ...(typeof u.availability === "string" ? { availability: u.availability } : {}) });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** `url` — the most fetchable copy, through the shared policy
@@ -320,12 +477,14 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
   for (const r of results) {
     const url = chooseRecordUrl(r);
     if (url === null) continue;
-    const retracted = isRetractedPubType(r.pubType);
+    const types = pubTypes(r);
+    const retracted = types.some((t) => isRetractedPubType(t));
+    const venue = r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation;
     const rec: PaperRecord = {
       title: r.title ?? "",
       url,
       snippet: buildPaperSnippet({
-        venue: r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation,
+        venue,
         year: parsePubYear(r.pubYear),
         citedBy: r.citedByCount,
         authors: parseAuthors(r.authorString),
@@ -337,13 +496,33 @@ export function normalizeEuropePmcResults(results: EuropePmcResult[]): PaperReco
     if (year !== undefined) rec.year = year;
     const authors = parseAuthors(r.authorString);
     if (authors) rec.authors = authors;
-    const venue = r.journalInfo?.journal?.title ?? r.journalTitle ?? r.journalAbbreviation;
     if (venue) rec.venue = venue;
     if (r.citedByCount !== undefined) rec.citedBy = r.citedByCount;
     const oaUrl = chooseOaUrl(r);
     if (oaUrl) rec.oaUrl = oaUrl;
     if (r.doi) rec.doi = r.doi;
     if (retracted) rec.retracted = true;
+    // Authority: every author's affiliations, the work type, the preprint
+    // source, the ORCIDs, and the retraction notice where one exists.
+    const type = primaryPubType(types);
+    if (type) rec.type = type;
+    const venueType = europePmcVenueType(r, types);
+    if (venueType) rec.venueType = venueType;
+    const institutions = parseAffiliations(r);
+    if (institutions) rec.institutions = institutions;
+    const orcids = parseOrcids(r);
+    if (orcids) rec.orcids = orcids;
+    const notice = retracted ? retractionNoticeUrl(r) : undefined;
+    if (notice) rec.retractionNotice = notice;
+    // Branch-narrow fields: carried on every record, printed only on a
+    // single-record page (see renderPaperExtras).
+    if (r.abstractText) rec.content = elide(r.abstractText, ABSTRACT_MAX);
+    if (r.language) rec.language = r.language;
+    if (r.publicationStatus) rec.publicationStatus = r.publicationStatus;
+    const availability = parseDataAvailability(r);
+    if (availability) rec.dataAvailability = availability;
+    const fullText = parseFullTextUrls(r);
+    if (fullText) rec.fullTextUrls = fullText;
     records.push(rec);
   }
   return records;
@@ -364,7 +543,7 @@ export function buildEuropePmcParams(
   query: string,
   numResults: number,
   paging: { page?: number; cursor?: string } = {},
-  options: { synonym?: boolean; sort?: string } = {},
+  options: { synonym?: boolean; sort?: string; resultType?: string } = {},
 ): URLSearchParams {
   const params = new URLSearchParams({
     format: "json",
@@ -376,6 +555,9 @@ export function buildEuropePmcParams(
   // The two recall/ordering levers the backend evaluates across the whole set.
   if (options.synonym === true) params.set("synonym", "true");
   if (options.sort !== undefined) params.set("sort", options.sort);
+  // `core` is the full record — affiliations, ORCIDs, work types, language,
+  // abstract, full-text copies. The default `lite` omits them.
+  if (options.resultType !== undefined) params.set("resultType", options.resultType);
   return params;
 }
 
@@ -611,6 +793,7 @@ export async function searchEuropePmc(
   }, {
     synonym: options.filters?.synonym,
     sort: sortValue ?? undefined,
+    resultType: "core",
   });
   let body: EuropePmcResponse;
   try {

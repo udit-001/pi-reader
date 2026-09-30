@@ -33,7 +33,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
-import { isPaperRecord, PaperError, type PaperRecord } from "./search/paper-backend.ts";
+import { isPaperRecord, renderPaperExtras, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { EUROPEPMC_OPERATOR_LISTING, EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
 import { EXPRESSION_PARAM_DESCRIPTION, OPENALEX_CITATION_EDGES } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
@@ -401,6 +401,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           }
         }
         lines.push("", response.answer, "", "Results:");
+        const singleRecord = response.results.length === 1;
         for (let i = 0; i < response.results.length; i++) {
           const r = response.results[i]!;
           const hasContent = typeof r.content === "string" && r.content;
@@ -409,38 +410,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           if (r.publishedDate) lines.push(`   Published: ${r.publishedDate}`);
           if (r.author) lines.push(`   By: ${r.author}`);
           if (isPaperRecord(r)) {
-            const meta: string[] = [];
-            if (r.year !== undefined) meta.push(`Year: ${r.year}`);
-            if (r.venue) meta.push(`Venue: ${r.venue}`);
-            if (r.venueType) meta.push(`Venue type: ${r.venueType}`);
-            if (r.citedBy !== undefined) meta.push(r.fwci !== undefined ? `Cited by: ${r.citedBy} (fwci ${r.fwci} field-normalized)` : `Cited by: ${r.citedBy}`);
-            if (r.refCount !== undefined) meta.push(`References: ${r.refCount}`);
-            if (r.doi) meta.push(`DOI: ${r.doi}`);
-            if (r.oaUrl) meta.push(`OA: ${r.oaUrl}`);
-            if (r.retracted === true) meta.push("Retracted: yes");
-            if (r.type) meta.push(`Type: ${r.type}`);
-            if (r.topic) meta.push(`Topic: ${r.topic}`);
-            if (r.field) meta.push(`Field: ${r.field}`);
-            if (meta.length > 0) lines.push(`   ${meta.join(" · ")}`);
-            if (r.authors?.length) lines.push(`   Authors: ${r.authors.join(", ")}`);
-            // The provenance set: institution type tells industry from
-            // academia, country and ROR disambiguate institutions of the
-            // same name. Absent parts are simply not printed.
-            if (r.institutions?.length) {
-              lines.push(`   Institutions: ${r.institutions.map((i) => {
-                // Brackets, not parens: OpenAlex's own names carry parens
-                // ("Microsoft (United States)"), and nested parens read as one
-                // ambiguous token.
-                const detail = [i.type, i.country, i.ror ? `ror:${i.ror}` : undefined].filter(Boolean).join(", ");
-                return detail ? `${i.name} [${detail}]` : i.name;
-              }).join(" · ")}`);
-            }
-            if (r.keywords?.length) lines.push(`   Keywords: ${r.keywords.join(", ")}`);
-            if (r.recentCitations !== undefined) lines.push(`   Recent citations (last 3 complete years): ${r.recentCitations}${r.citationTrend ? ` (${r.citationTrend})` : ""}`);
-            // The correlation atom, in-band: bare W-ids, each a seed for a
-            // citation query in filters.expression.
-            if (r.refs?.length) lines.push(`   Refs (W-ids): ${r.refs.join(", ")}`);
-            if (r.related?.length) lines.push(`   Related (W-ids): ${r.related.join(", ")}`);
+            lines.push(...renderPaperExtras(r, singleRecord));
           }
           if (hasContent) lines.push(`   ${r.content!.replace(/\s+/g, " ").trim().slice(0, 400)}`);
         }
@@ -474,6 +444,12 @@ export default function piWeb(pi: ExtensionAPI): void {
                   ...(r.institutions?.length ? { institutions: r.institutions } : {}),
                   ...(r.venueType ? { venueType: r.venueType } : {}),
                   ...(r.refCount !== undefined ? { refCount: r.refCount } : {}),
+                  ...(r.orcids?.length ? { orcids: r.orcids } : {}),
+                  ...(r.retractionNotice ? { retractionNotice: r.retractionNotice } : {}),
+                  ...(r.language ? { language: r.language } : {}),
+                  ...(r.publicationStatus ? { publicationStatus: r.publicationStatus } : {}),
+                  ...(r.dataAvailability?.length ? { dataAvailability: r.dataAvailability } : {}),
+                  ...(r.fullTextUrls?.length ? { fullTextUrls: r.fullTextUrls } : {}),
                   ...(r.fwci !== undefined ? { fwci: r.fwci } : {}),
                   ...(r.refs?.length ? { refs: r.refs } : {}),
                   ...(r.related?.length ? { related: r.related } : {}),
