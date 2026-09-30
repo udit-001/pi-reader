@@ -383,6 +383,23 @@ export const PAPER_SORTS = [
 
 export type PaperSort = (typeof PAPER_SORTS)[number]["key"];
 
+/** The matchers the interface offers for the free-text query, each with the
+ *  condition that earns it. One table: the always-loaded description is
+ *  composed from it in the entry, and each adapter maps the keys it serves — so
+ *  a key cannot be documented without being served, or served without being
+ *  documented. The type is derived from the keys, so the vocabulary and the
+ *  table are one thing.
+ *
+ *  The default — OpenAlex's stemmed keyword search — is deliberately absent: it
+ *  is the absence of the parameter, and a value for it would be a no-op the
+ *  agent has to learn. The description names it in prose instead. */
+export const PAPER_SEARCH_MODES = [
+  { key: "exact", condition: "matches literally and unstemmed — the mode wildcards (`*`, `?`) require" },
+  { key: "semantic", condition: "matches by meaning from an embedding — give it a paragraph, not a word or two; caps at 50 results" },
+] as const;
+
+export type PaperSearchMode = (typeof PAPER_SEARCH_MODES)[number]["key"];
+
 /** The abstract's record-side cap — the on-topic judgment fits in a screen,
  *  and a list row pays context per result. */
 export const ABSTRACT_MAX = 300;
@@ -413,6 +430,13 @@ export interface PaperFilters {
    *  citation walk is the one exception — its routes take no sort, so the
    *  ordering applies to the page the endpoint returns (see applySort). */
   sort?: PaperSort;
+  /** Which matcher the free-text `query` uses, away from the default stemmed
+   *  keyword search — `exact` for literal text and the wildcards only it
+   *  accepts, `semantic` for a paragraph that should match by meaning. OpenAlex
+   *  only: Europe PMC has no such switch and declines it in band. Rides the
+   *  cache key like every other filter, or a semantic call and a keyword call
+   *  with the same query would answer from each other's entry. */
+  searchMode?: PaperSearchMode;
   /** Europe PMC only: expand the query with the backend's synonym table —
    *  "heart attack" also reaches "myocardial infarction". Multiplies recall
    *  (verified live: 54,785 → 755,190 on a quoted phrase) and costs precision,
@@ -540,6 +564,7 @@ export function filtersCacheKey(f?: PaperFilters): string {
     f.yearRange?.[1] ?? "",
     f.openAccess === true ? "y" : "",
     f.sort ?? "",
+    f.searchMode ?? "",
     f.synonym === true ? "y" : "",
     f.idsOnly === true ? "ids" : "",
     f.cursor ?? "",

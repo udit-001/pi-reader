@@ -436,3 +436,22 @@ test("live: Europe PMC core records carry the subject and provenance block", { s
   // PMC copy must point at that copy rather than at the doi.org resolution.
   assert.equal(r.url, "https://europepmc.org/article/PMC4221854", "the free PMC copy no longer wins the URL choice");
 });
+
+// The matcher table names two wire parameters, each with a signature that
+// survives a rename check: a wildcard is accepted only by `search.exact`, and
+// the 50-result cap belongs to `search.semantic` alone. A rename would silently
+// fall back to the stemmed default and answer both wrongly.
+test("live: both search matchers the table names reach the wire", { skip: !live }, async () => {
+  const exact = await searchPapers("machin*", { filters: { searchMode: "exact" } });
+  assert.ok(exact.results.length > 0, "search.exact returned nothing — the matcher drifted");
+  await assert.rejects(
+    searchPapers("machin*", {}),
+    (err: unknown) => /exact|stemmed/i.test((err as Error).message),
+    "a wildcard outside exact mode was not rejected — the default matcher drifted",
+  );
+  await assert.rejects(
+    searchPapers("drug toxicity prediction", { numResults: 100, filters: { searchMode: "semantic" } }),
+    (err: unknown) => /50/.test((err as Error).message),
+    "semantic's result cap did not answer — the matcher drifted to the stemmed default",
+  );
+});

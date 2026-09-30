@@ -37,6 +37,7 @@ import {
   type PaperInstitution,
   type PaperPage,
   type PaperRecord,
+  type PaperSearchMode,
   type PaperSort,
   type PaperTopic,
   type PaperVenue,
@@ -632,13 +633,36 @@ const OPENALEX_SORTS: Record<PaperSort, string> = {
   fwci: "fwci:desc",
 };
 
+/** The works endpoint's own search parameter per matcher — an exhaustive Record
+ *  on purpose: a new mode fails the build until it is mapped here. The default
+ *  (no mode) is the plain `search`. */
+const OPENALEX_SEARCH_PARAMS: Record<PaperSearchMode, string> = {
+  exact: "search.exact",
+  semantic: "search.semantic",
+};
+
+/** The constraint options for one works query — everything but the query text
+ *  and the page size. One object rather than a positional tail: the fields are
+ *  optional and independent, so a caller that wants only the cursor should not
+ *  have to spell `undefined` for the three it skips. */
+export interface PaperParamsOptions {
+  filter?: string;
+  sort?: PaperSort;
+  cursor?: string;
+  /** The matcher for the free-text `query`; absent → the stemmed keyword
+   *  search. */
+  searchMode?: PaperSearchMode;
+}
+
 /** The OpenAlex works query — what to ask, never how to authenticate: the key
  *  rides the Authorization header at the transport seam (openAlexHeaders), so
- *  it never enters the URL. `per_page`-sized; `filter` set only when the caller
- *  carries constraints (search or citation walk); `sort` set only when filters
- *  ask for a ranking (the API default is relevance); `search` omitted when the
- *  query is empty (a walk has none). Pure; exported for tests. */
-export function buildPaperParams(query: string, numResults: number, filter = "", sort: PaperSort | undefined = undefined, cursor?: string): URLSearchParams {
+ *  it never enters the URL. `per_page`-sized; `searchMode` picks the search
+ *  parameter (absent → `search`); `filter` set only when the caller carries
+ *  constraints (search or citation walk); `sort` set only when filters ask for
+ *  a ranking (the API default is relevance); `search` omitted when the query is
+ *  empty (a walk has none). Pure; exported for tests. */
+export function buildPaperParams(query: string, numResults: number, options: PaperParamsOptions = {}): URLSearchParams {
+  const { filter, sort, cursor, searchMode } = options;
   const params = new URLSearchParams({
     // The API's documented snake_case spelling; the legacy `per-page` alias
     // still answers but is not the form its docs name.
@@ -646,7 +670,7 @@ export function buildPaperParams(query: string, numResults: number, filter = "",
     // Lean payloads: one shared projection on every works-list call.
     "select": OPENALEX_SELECT,
   });
-  if (query) params.set("search", query);
+  if (query) params.set(searchMode === undefined ? "search" : OPENALEX_SEARCH_PARAMS[searchMode], query);
   if (filter) params.set("filter", filter);
   if (sort !== undefined) params.set("sort", OPENALEX_SORTS[sort]);
   // Cursor paging is the works endpoint's own mechanism; `cursor=*` opens the
@@ -936,12 +960,11 @@ async function searchOpenAlexWalk(
     // endpoint, and dropping it would answer "which of these is a breakout"
     // with relevance order and no warning.
     return await fetchOpenAlexWorks(
-      buildPaperParams(
-        "", n,
-        buildOpenAlexFilter(options.filters, wId, graph.direction ?? "cites"),
-        options.filters?.sort,
-        options.filters?.cursor,
-      ),
+      buildPaperParams("", n, {
+        filter: buildOpenAlexFilter(options.filters, wId, graph.direction ?? "cites"),
+        sort: options.filters?.sort,
+        cursor: options.filters?.cursor,
+      }),
       n,
       options,
       deps,
@@ -1014,6 +1037,12 @@ async function searchOpenAlex(
     throw new PaperError(paperError("malformed", "openalex",
       "OpenAlex's works endpoint pages by cursor, not page number — pass filters.cursor: \"*\" to open the enumeration, then each response's Next cursor to continue it"));
   }
+  // A citation walk has no free-text query, so the matcher has nothing to
+  // shape: forwarding it would let the agent believe its choice took effect.
+  if (options.filters?.citationGraph !== undefined && options.filters?.searchMode !== undefined) {
+    throw new PaperError(paperError("malformed", "openalex",
+      "filters.searchMode picks the matcher for a free-text query — a citation walk has none; drop it or run a search instead"));
+  }
   // The expression door: the agent's own filter list, validated and merged.
   // Computed before the walk branch so an expression riding with a walk leg
   // is refused rather than half-applied.
@@ -1023,11 +1052,12 @@ async function searchOpenAlex(
     : undefined;
   const graph = filters?.citationGraph;
   if (graph) return searchOpenAlexWalk(graph, n, options, deps, key);
-  const params = buildPaperParams(
-    query, n,
-    expressionFilter ?? buildOpenAlexFilter(options.filters),
-    options.filters?.sort, options.filters?.cursor,
-  );
+  const params = buildPaperParams(query, n, {
+    filter: expressionFilter ?? buildOpenAlexFilter(options.filters),
+    sort: options.filters?.sort,
+    cursor: options.filters?.cursor,
+    searchMode: options.filters?.searchMode,
+  });
   return fetchOpenAlexWorks(params, n, options, deps, key);
 }
 

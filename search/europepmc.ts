@@ -907,6 +907,13 @@ export async function searchEuropePmc(
     throw new PaperError(paperError("malformed", "europepmc",
       "filters.expression is OpenAlex's filter list — write the constraint into the query instead, e.g. PUB_YEAR:\"2020\", OPEN_ACCESS:y, SRC:MED; an identifier goes there too, e.g. DOI:\"10.…\", EXT_ID:22955618, PMCID:PMC…"));
   }
+  // The matcher switch is the works adapter's: Europe PMC has no exact or
+  // semantic mode, so ignoring the parameter would let the agent believe its
+  // choice took effect.
+  if (options.filters?.searchMode !== undefined) {
+    throw new PaperError(paperError("malformed", "europepmc",
+      "filters.searchMode is OpenAlex's matcher switch — Europe PMC has no exact or semantic mode; drop it or retry with index: \"openalex\""));
+  }
   // A sort key outside the accepted set is declined before it is sent: the
   // backend answers an invalid sort with a 503, which reads as an outage.
   //

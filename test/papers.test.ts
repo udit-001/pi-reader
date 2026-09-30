@@ -31,7 +31,7 @@ import {
   type OpenAlexWork,
   type OpenAlexDeps,
 } from "../search/papers.ts";
-import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, paperPage, PAPER_SORTS, type PaperRecord } from "../search/paper-backend.ts";
+import { buildPaperSnippet, chooseFetchableUrl, applySort, filtersCacheKey, paperPage, PAPER_SEARCH_MODES, PAPER_SORTS, type PaperRecord } from "../search/paper-backend.ts";
 import { isPaperRecord } from "../search/paper-backend.ts";
 import type { SearchOptions, SearchResult } from "../search/search.ts";
 
@@ -547,14 +547,14 @@ test("paper params carry no credential and no retired politeness param", () => {
 });
 
 test("paper params carry the citedBy sort server-side; relevance when sort is absent", () => {
-  const sorted = buildPaperParams("lichen", 10, "", "citedBy");
+  const sorted = buildPaperParams("lichen", 10, { sort: "citedBy" });
   assert.equal(sorted.get("sort"), "cited_by_count:desc");
   const unsorted = buildPaperParams("lichen", 10);
   assert.equal(unsorted.get("sort"), null);
 });
 
 test("paper params carry the date sort server-side — newest first, across the whole index", () => {
-  assert.equal(buildPaperParams("lichen", 10, "", "date").get("sort"), "publication_date:desc");
+  assert.equal(buildPaperParams("lichen", 10, { sort: "date" }).get("sort"), "publication_date:desc");
 });
 
 test("paper params forward every ordering the interface offers", () => {
@@ -562,15 +562,15 @@ test("paper params forward every ordering the interface offers", () => {
   // mapping fails the exhaustive Record at build time, and this pins that the
   // value actually reaches the wire rather than being dropped in silence.
   for (const { key } of PAPER_SORTS) {
-    assert.ok(buildPaperParams("lichen", 10, "", key).get("sort"), `ordering "${key}" produced no sort param`);
+    assert.ok(buildPaperParams("lichen", 10, { sort: key }).get("sort"), `ordering "${key}" produced no sort param`);
   }
   // The one the epic's story is about: field-normalized impact, so a slow
   // field's hub does not outrank a young paper's hit.
-  assert.equal(buildPaperParams("lichen", 10, "", "fwci").get("sort"), "fwci:desc");
+  assert.equal(buildPaperParams("lichen", 10, { sort: "fwci" }).get("sort"), "fwci:desc");
 });
 
 test("paper params carry the cursor verbatim; an absent cursor stays off the wire", () => {
-  const p = buildPaperParams("q", 10, "", undefined, "IlsxNzQ4");
+  const p = buildPaperParams("q", 10, { cursor: "IlsxNzQ4" });
   assert.equal(p.get("cursor"), "IlsxNzQ4");
   // Today's behaviour: no cursor, no param — the first page is unfiltered.
   assert.equal(buildPaperParams("q", 10).get("cursor"), null);
@@ -582,6 +582,23 @@ test("openAlexHeaders turns a key into a bearer token and keeps keyless anonymou
   assert.deepEqual(openAlexHeaders(null), { Accept: "application/json" });
   assert.deepEqual(openAlexHeaders(undefined), { Accept: "application/json" });
   assert.deepEqual(openAlexHeaders(""), { Accept: "application/json" });
+});
+
+test("searchMode sets exactly one works search parameter; absent leaves the stemmed default", () => {
+  assert.equal(buildPaperParams("q", 10).get("search"), "q");
+  assert.equal(buildPaperParams("q", 10).get("search.exact"), null);
+  const exact = buildPaperParams("q", 10, { searchMode: "exact" });
+  assert.equal(exact.get("search.exact"), "q");
+  assert.equal(exact.get("search"), null);
+  const semantic = buildPaperParams("q", 10, { searchMode: "semantic" });
+  assert.equal(semantic.get("search.semantic"), "q");
+  assert.equal(semantic.get("search"), null);
+  // The API takes exactly one search parameter per request (verified live: two
+  // answer a 400), so every mode the table offers sets its own and only its own.
+  for (const { key } of PAPER_SEARCH_MODES) {
+    const p = buildPaperParams("q", 10, { searchMode: key });
+    assert.equal([...p.keys()].filter((k) => k.startsWith("search")).length, 1, `${key} set more than one search parameter`);
+  }
 });
 
 // ── resolveOpenAlexKey — config wins, env fallback, keyless tolerated ─────────
@@ -675,7 +692,7 @@ test("openalex filter string carries the walk legs in the same list — cites:W 
 });
 
 test("paper params carry the filter and omit search when the walk leaves it empty", () => {
-  const p = buildPaperParams("", 10, "cites:W3161425918");
+  const p = buildPaperParams("", 10, { filter: "cites:W3161425918" });
   assert.equal(p.get("search"), null);
   assert.equal(p.get("filter"), "cites:W3161425918");
   assert.equal(p.get("per_page"), "10");
@@ -951,6 +968,13 @@ test("an expression riding with a citation walk is refused rather than half-appl
   );
 });
 
+test("a search matcher riding with a citation walk is refused — the walk has no query to shape", async () => {
+  await assert.rejects(
+    searchPapers("", { filters: { searchMode: "semantic", citationGraph: { seed: "W1" } } }, depsWith({})),
+    (err: unknown) => /a citation walk has none/.test((err as Error).message),
+  );
+});
+
 test("selecting Europe PMC with an expression declines in band, naming the adapter that serves it", async () => {
   await assert.rejects(
     searchPapers("malaria", { index: "europepmc", filters: { expression: "type:article" } }, depsWith({})),
@@ -961,6 +985,18 @@ test("selecting Europe PMC with an expression declines in band, naming the adapt
       // The retired lookup's destination on this adapter is named too.
       assert.match(m, /DOI:"10\.…"/);
       assert.match(m, /EXT_ID:22955618/);
+      assert.match(m, /index: "openalex"/);
+      return true;
+    },
+  );
+});
+
+test("selecting Europe PMC with a search matcher declines in band, naming the adapter that serves it", async () => {
+  await assert.rejects(
+    searchPapers("malaria", { index: "europepmc", filters: { searchMode: "semantic" } }, depsWith({})),
+    (err: unknown) => {
+      const m = (err as Error).message;
+      assert.match(m, /filters\.searchMode is OpenAlex's matcher switch/);
       assert.match(m, /index: "openalex"/);
       return true;
     },

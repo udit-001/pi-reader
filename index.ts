@@ -33,7 +33,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
-import { isPaperRecord, renderPaperExtras, PAPER_SORTS, PaperError, type PaperRecord } from "./search/paper-backend.ts";
+import { isPaperRecord, renderPaperExtras, PAPER_SEARCH_MODES, PAPER_SORTS, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { EUROPEPMC_OPERATOR_LISTING, EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
 import { EXPRESSION_PARAM_DESCRIPTION, OPENALEX_CITATION_EDGES } from "./search/papers.ts";
 import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.ts";
@@ -50,6 +50,14 @@ const CITATION_EDGE_PROSE = OPENALEX_CITATION_EDGES
  *  forward, or omit one they do (PIWEB-24). */
 const SORT_PROSE = PAPER_SORTS
   .map((s) => `'${s.key}' (${s.condition})`)
+  .join(", ");
+
+/** The matcher vocabulary as agent-facing prose, composed from the one table
+ *  that holds it so the description cannot name a key the adapters do not
+ *  forward, or omit one they do. The default — the stemmed keyword search — is
+ *  named in the sentence, not the table: it is the absence of the parameter. */
+const SEARCH_MODE_PROSE = PAPER_SEARCH_MODES
+  .map((m) => `'${m.key}' (${m.condition})`)
   .join(", ");
 
 // ── Schemas ──────────────────────────────────────────────────────────────────
@@ -126,6 +134,9 @@ const paperFiltersSchema = Type.Optional(
       })),
       sort: Type.Optional(Type.Union([Type.Literal("citedBy"), Type.Literal("date"), Type.Literal("fwci")], {
         description: "Rank by " + SORT_PROSE + ". Relevance is the default; ranking replaces it, so give it a subject to rank: add a filter in the same call (filters.expression: \"title.search:…\") when the query is a word or two. Both adapters sort the whole set at the backend; a Europe PMC citation walk is the one exception, its routes taking no sort. 'fwci' is OpenAlex's alone — Europe PMC computes no field-normalized impact and declines it in band.",
+      })),
+      searchMode: Type.Optional(Type.Union([Type.Literal("exact"), Type.Literal("semantic")], {
+        description: "Papers provider only: pick a matcher other than the default stemmed keyword search — " + SEARCH_MODE_PROSE + ". OpenAlex only; Europe PMC declines it.",
       })),
       synonym: Type.Optional(Type.Boolean({
         description: "Europe PMC only: expand the query through the backend's synonym table — 'heart attack' also reaches 'myocardial infarction'. Recall leaps (54,785 → 755,190 on a quoted phrase) at a precision cost, so reach for it when recall is what this turn needs. OpenAlex declines it in band (the lever is Europe PMC's), and so does a Europe PMC citation walk, having no query to expand — run a search instead.",
