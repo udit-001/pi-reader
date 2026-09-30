@@ -35,7 +35,7 @@ import {
   parseSubjects,
   parseCompounds,
   parseFunding,
-  isFreeFullTextCopy,
+  isUsableFullTextCopy,
   planEuropePmcWalk,
   searchEuropePmc,
   type EuropePmcResult,
@@ -85,7 +85,9 @@ const PMC_REC: EuropePmcResult = {
 };
 
 // A patent-style record: no doi, no journal — Europe PMC record page by
-// source+id is the only URL.
+// source+id is the only real anchor. Its ranked copies are Espacenet and
+// SureChEMBL endpoints, so they must NOT take the publisher tier and displace
+// that page. Trimmed live capture (2026-09-30).
 const PATENT_REC: EuropePmcResult = {
   id: "3540589",
   source: "PAT",
@@ -95,6 +97,10 @@ const PATENT_REC: EuropePmcResult = {
   isOpenAccess: "Y",
   inEPMC: "Y",
   citedByCount: 0,
+  fullTextUrlList: { fullTextUrl: [
+    { site: "EPO", url: "http://v3.espacenet.com/textdoc?DB=EPODOC&IDX=CN101548780", availability: "Free" },
+    { site: "SureChembl", url: "https://www.surechembl.org/document/CN-101548780-A", availability: "Free" },
+  ] },
 };
 
 // A citation-walk entry (what /citations and /references return): abbreviated
@@ -378,17 +384,29 @@ test("parseDataAvailability and parseFullTextUrls read the core evidence fields"
   assert.equal(parseFullTextUrls({}), undefined);
 });
 
-test("europepmc chooseRecordUrl ranks the backend's free full-text copies, never a paywalled one", () => {
-  // The backend's own ranked free copy wins when there is no PMC copy to
-  // synthesize — the improvement the ranking buys.
+test("europepmc chooseRecordUrl ranks the backend's usable full-text copies, never a paywalled or machine endpoint", () => {
+  // A document page the backend vouches for wins when there is no PMC copy to
+  // synthesize — the improvement the ranking buys. NCBI Bookshelf is a real
+  // free full-text site in the observed vocabulary (HTTP 200, verified live).
   assert.equal(
-    chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "Publisher", url: "https://example.org/paper", availability: "Free" }] } }),
-    "https://example.org/paper",
+    chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "NCBI_Bookshelf", url: "https://www.ncbi.nlm.nih.gov/books/NBK538333", availability: "Free" }] } }),
+    "https://www.ncbi.nlm.nih.gov/books/NBK538333",
   );
   // A "Subscription required" entry is not a copy the fetch chain can read, so
   // it must not take the publisher tier and outrank the Europe PMC record page.
   assert.equal(
     chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "Publisher", url: "https://paywall.example.org/paper", availability: "Subscription required" }] } }),
+    "https://europepmc.org/article/MED/1",
+  );
+  // A site that serves a registry or machine endpoint is not a document page,
+  // however free the backend calls it — and an unknown site is not assumed
+  // readable either.
+  assert.equal(
+    chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "EPO", url: "http://v3.espacenet.com/textdoc?DB=EPODOC&IDX=CN1", availability: "Free" }] } }),
+    "https://europepmc.org/article/MED/1",
+  );
+  assert.equal(
+    chooseRecordUrl({ id: "1", source: "MED", fullTextUrlList: { fullTextUrl: [{ site: "SomeRegistry", url: "https://registry.example.org/x", availability: "Free" }] } }),
     "https://europepmc.org/article/MED/1",
   );
   // The synthesized PMC copy keeps the top tier over a free publisher copy.
@@ -400,13 +418,16 @@ test("europepmc chooseRecordUrl ranks the backend's free full-text copies, never
   assert.equal(chooseRecordUrl(SUBJECT_CORE), "https://europepmc.org/article/PMC4221854");
 });
 
-test("isFreeFullTextCopy vouches only for a copy the backend marked readable", () => {
+test("isUsableFullTextCopy vouches only for a readable copy from a document site", () => {
   // Verified live 2026-09-30: all 75 entries in a sampled page carried a
   // marker, so an unmarked entry is not the backend saying "free".
-  assert.equal(isFreeFullTextCopy({ site: "Europe_PMC", url: "https://europepmc.org/articles/PMC1", availability: "Free" }), true);
-  assert.equal(isFreeFullTextCopy({ site: "Europe_PMC", url: "https://europepmc.org/articles/PMC1", availability: "Open access" }), true);
-  assert.equal(isFreeFullTextCopy({ site: "DOI", url: "https://doi.org/10.1/x", availability: "Subscription required" }), false);
-  assert.equal(isFreeFullTextCopy({ site: "Publisher", url: "https://example.org/x" }), false);
+  assert.equal(isUsableFullTextCopy({ site: "Europe_PMC", url: "https://europepmc.org/articles/PMC1", availability: "Free" }), true);
+  assert.equal(isUsableFullTextCopy({ site: "NCBI_Bookshelf", url: "https://www.ncbi.nlm.nih.gov/books/NBK1", availability: "Open access" }), true);
+  assert.equal(isUsableFullTextCopy({ site: "DOI", url: "https://doi.org/10.1/x", availability: "Subscription required" }), false);
+  assert.equal(isUsableFullTextCopy({ site: "Publisher", url: "https://example.org/x" }), false);
+  // Free, but a registry endpoint rather than a document page.
+  assert.equal(isUsableFullTextCopy({ site: "EPO", url: "http://v3.espacenet.com/textdoc?DB=EPODOC&IDX=CN1", availability: "Free" }), false);
+  assert.equal(isUsableFullTextCopy({ site: "SureChembl", url: "https://www.surechembl.org/document/CN-1-A", availability: "Free" }), false);
 });
 
 test("parseSubjects reads the curated vocabulary, starring a heading when it or a qualifier says major", () => {
@@ -423,6 +444,18 @@ test("parseSubjects reads the curated vocabulary, starring a heading when it or 
   assert.equal(parseSubjects({ meshHeadingList: { meshHeading: [{ descriptorName: "  " }, { majorTopic_YN: "Y" }] } }), undefined);
 });
 
+test("a repeated subject tag keeps a later occurrence's major flag", () => {
+  // The wire can list a descriptor twice, and the first occurrence must not win
+  // the dedupe and bury the flag (differing flags are rare on real records, so
+  // this is the guard that keeps the bug latent).
+  for (const headings of [
+    [{ descriptorName: "Humans", majorTopic_YN: "N" }, { descriptorName: "Humans", majorTopic_YN: "Y" }],
+    [{ descriptorName: "Humans", majorTopic_YN: "Y" }, { descriptorName: "Humans", majorTopic_YN: "N" }],
+  ]) {
+    assert.deepEqual(parseSubjects({ meshHeadingList: { meshHeading: headings } }), [{ term: "Humans", major: true }]);
+  }
+});
+
 test("parseCompounds reads names with registry numbers, dropping the backend's \"0\" sentinel", () => {
   assert.deepEqual(parseCompounds(SUBJECT_CORE), [
     { name: "Gold", registry: "7440-57-5" },
@@ -431,6 +464,17 @@ test("parseCompounds reads names with registry numbers, dropping the backend's \
   ]);
   assert.equal(parseCompounds({}), undefined);
   assert.equal(parseCompounds({ chemicalList: { chemical: [{ registryNumber: "1" }] } }), undefined);
+});
+
+test("a repeated compound keeps a later occurrence's registry number", () => {
+  // Same rule as the subject tags: a repeat can only add. The sentinel in the
+  // first entry must not erase the number a later one carries.
+  for (const chemical of [
+    [{ name: "Gold", registryNumber: "0" }, { name: "Gold", registryNumber: "7440-57-5" }],
+    [{ name: "Gold", registryNumber: "7440-57-5" }, { name: "Gold", registryNumber: "0" }],
+  ]) {
+    assert.deepEqual(parseCompounds({ chemicalList: { chemical } }), [{ name: "Gold", registry: "7440-57-5" }]);
+  }
 });
 
 test("parseFunding dedupes the grant list and tolerates a missing identifier or acronym", () => {

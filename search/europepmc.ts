@@ -412,19 +412,22 @@ export function parseOrcids(r: EuropePmcResult): string[] | undefined {
  *  the tag. Pure; exported for tests. */
 export function parseSubjects(r: EuropePmcResult): PaperSubject[] | undefined {
   const headings = Array.isArray(r.meshHeadingList?.meshHeading) ? r.meshHeadingList.meshHeading : [];
-  const seen = new Set<string>();
-  const out: PaperSubject[] = [];
+  // Keyed by term so insertion order survives: the map yields wire order of
+  // each term's first appearance.
+  const byTerm = new Map<string, PaperSubject>();
   for (const h of headings) {
     const term = typeof h?.descriptorName === "string" ? h.descriptorName.trim() : "";
     if (term === "") continue;
-    const key = term.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
     const qualifiers = Array.isArray(h?.meshQualifierList?.meshQualifier) ? h.meshQualifierList.meshQualifier : [];
     const major = isFlagY(h?.majorTopic_YN) || qualifiers.some((q) => isFlagY(q?.majorTopic_YN));
-    out.push(major ? { term, major: true } : { term });
+    const key = term.toLowerCase();
+    const seen = byTerm.get(key);
+    if (seen === undefined) byTerm.set(key, major ? { term, major: true } : { term });
+    // A repeat can only ever add the flag: a descriptor listed twice reads
+    // major when either occurrence says so, and the first one must not win.
+    else if (major) seen.major = true;
   }
-  return out.length > 0 ? out : undefined;
+  return byTerm.size > 0 ? [...byTerm.values()] : undefined;
 }
 
 /** The compounds a work studies, in wire order, deduped by name. A
@@ -432,18 +435,20 @@ export function parseSubjects(r: EuropePmcResult): PaperSubject[] | undefined {
  *  rather than carried as a literal. Pure; exported for tests. */
 export function parseCompounds(r: EuropePmcResult): PaperCompound[] | undefined {
   const chemicals = Array.isArray(r.chemicalList?.chemical) ? r.chemicalList.chemical : [];
-  const seen = new Set<string>();
-  const out: PaperCompound[] = [];
+  const byName = new Map<string, PaperCompound>();
   for (const c of chemicals) {
     const name = typeof c?.name === "string" ? c.name.trim() : "";
     if (name === "") continue;
-    const key = name.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
     const registry = typeof c?.registryNumber === "string" ? c.registryNumber.trim() : "";
-    out.push(registry !== "" && registry !== "0" ? { name, registry } : { name });
+    const readable = registry !== "" && registry !== "0";
+    const key = name.toLowerCase();
+    const seen = byName.get(key);
+    if (seen === undefined) byName.set(key, readable ? { name, registry } : { name });
+    // As with the subject tags, a repeat can only add: the first entry for a
+    // compound may carry the sentinel where a later one carries the number.
+    else if (readable && seen.registry === undefined) seen.registry = registry;
   }
-  return out.length > 0 ? out : undefined;
+  return byName.size > 0 ? [...byName.values()] : undefined;
 }
 
 /** The funding behind the work, in wire order, deduped on the whole
@@ -522,23 +527,34 @@ export function parseFullTextUrls(
   return out.length > 0 ? out : undefined;
 }
 
-/** Is this ranked copy one the fetch chain can actually read? The backend
- *  names its paywalled copies ("Subscription required") and marks the rest
- *  free or open access; an entry it left unmarked is not assumed readable, so
- *  the URL ladder only ever gains a copy the backend vouched for. Pure;
- *  exported for tests. */
-export function isFreeFullTextCopy(u: PaperFullTextUrl): boolean {
-  return /free|open/i.test(u.availability ?? "");
+/** The ranked-copy sites whose URLs are document pages: Europe PMC's own
+ *  full-text copy, the doi.org resolution, and NCBI Bookshelf. Europe PMC's
+ *  list also carries registry and machine endpoints, and a patent's "free"
+ *  copy is one of them — an Espacenet textdoc URL (HTTP 403, plain text) or a
+ *  SureChEMBL document endpoint (HTTP 404), verified live 2026-09-30. Those are
+ *  not pages the fetch chain reads, and at the publisher tier they would
+ *  outrank the Europe PMC record page that such a record has as its only real
+ *  anchor. A site not vouched for here is not assumed readable; the ladder then
+ *  falls back to the anchor that always works. */
+const READABLE_COPY_SITES: ReadonlySet<string> = new Set(["Europe_PMC", "DOI", "NCBI_Bookshelf"]);
+
+/** Does this ranked copy belong in the URL ladder? It has to clear two bars:
+ *  the backend marked it readable (every copy in a 75-entry live sample carried
+ *  a marker, 2026-09-30, so a copy it left unmarked is not assumed to be), and
+ *  its site serves a document page rather than a registry or machine endpoint.
+ *  Pure; exported for tests. */
+export function isUsableFullTextCopy(u: PaperFullTextUrl): boolean {
+  return READABLE_COPY_SITES.has(u.site) && /free|open/i.test(u.availability ?? "");
 }
 
 /** `url` — the most fetchable copy, through the shared policy
- *  (chooseFetchableUrl): the backend's own ranked free copies first, then the
+ *  (chooseFetchableUrl): the backend's own ranked usable copies first, then the
  *  PMC copy page (Europe PMC serves its full text keyless), the doi.org
  *  resolution, then the record page by source+id. Pure; exported. */
 export function chooseRecordUrl(r: EuropePmcResult): string | null {
-  const free = (parseFullTextUrls(r) ?? []).filter(isFreeFullTextCopy);
+  const usable = (parseFullTextUrls(r) ?? []).filter(isUsableFullTextCopy);
   return chooseFetchableUrl([
-    ...free.map((u) => u.url),
+    ...usable.map((u) => u.url),
     r.pmcid ? `https://europepmc.org/article/${r.pmcid}` : undefined,
     r.doi ? `https://doi.org/${r.doi}` : undefined,
     r.id && r.source ? `https://europepmc.org/article/${r.source}/${r.id}` : undefined,
