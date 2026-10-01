@@ -16,6 +16,7 @@ import {
   renderRepoView,
   resolveTreePath,
   splitTreePath,
+  transportEnv,
   validateRepoRef,
   type CloneExec,
 } from "../fetch/github-clone.ts";
@@ -171,6 +172,15 @@ test("clone: normalizeCloneConfig applies defaults and tolerates junk", () => {
   assert.equal(custom.enabled, false);
   assert.equal(custom.maxRepoSizeMB, 100);
   assert.equal(custom.clonePath, join(process.env.HOME ?? "", "r"));
+});
+
+test("clone: transportEnv never prompts and never smudges LFS", () => {
+  const env = transportEnv({ PATH: "/usr/bin", GIT_LFS_SKIP_SMUDGE: "0" });
+  assert.equal(env.PATH, "/usr/bin");
+  assert.equal(env.GIT_TERMINAL_PROMPT, "0");
+  assert.equal(env.GCM_INTERACTIVE, "Never");
+  assert.equal(env.GH_PROMPT_DISABLED, "1");
+  assert.equal(env.GIT_LFS_SKIP_SMUDGE, "1", "must override an inherited value");
 });
 
 // ── Clone orchestration ──────────────────────────────────────────────────────
@@ -422,6 +432,13 @@ test("clone: renderRepoView renders structure + readme, skipping noise", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test("clone: renderRepoView names the checkout as shallow", () => {
+  const root = makeRepoFixture();
+  const content = renderRepoView(root, { type: "root" });
+  assert.match(content, /Shallow checkout/);
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("clone: renderRepoView caps the tree at 200 entries", () => {
   const root = mkdtempSync(join(tmpdir(), "piweb-render-test-"));
   for (let i = 0; i < 250; i++) writeFileSync(join(root, `f${i}.txt`), "x");
@@ -435,7 +452,8 @@ test("clone: renderRepoView lists a subdirectory with sizes", () => {
   const content = renderRepoView(root, { type: "tree", path: "src" });
   assert.match(content, /## src/);
   assert.match(content, /b\.ts/);
-  assert.match(content, /B\)/);
+  assert.match(content, /\(\d+ B\)/);
+  assert.ok(!content.includes("Shallow checkout"), "a subdirectory listing is not a checkout summary");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -444,6 +462,7 @@ test("clone: renderRepoView falls back to the root view for a missing path", () 
   const content = renderRepoView(root, { type: "tree", path: "nope" });
   assert.match(content, /not found in clone/);
   assert.match(content, /## Structure/);
+  assert.match(content, /Shallow checkout/, "the fallback is a root view, so it carries the note");
   rmSync(root, { recursive: true, force: true });
 });
 

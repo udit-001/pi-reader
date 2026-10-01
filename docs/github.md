@@ -8,7 +8,7 @@ Reference for `fetch/github-clone.ts` and `fetch/github-issue-pr.ts`. Open this 
 - Tree URLs (`/tree/<ref>/<subpath>`) resolve the ref before cloning: `splitTreePath` (pure) takes the **longest ref that prefixes the path** — GitHub's own rule, and the only way a branch containing a slash (`feature/x`, `release/1.2`) is not misread as `ref=feature, path=x/src` (which fails the clone and drops to the API view). `resolveTreePath` supplies the ref list with one `git ls-remote --heads --tags`, memoized per repo; a bare ref or a commit SHA needs no lookup, and an unavailable list degrades to the first segment.
 - Checkouts land in `<clonePath>/runtime-<mkdtemp>/<sha256>` — `/tmp` by default, deliberately outside the LRU-evicted pi-reader cache root: a checkout deleted mid-session under the agent's `read` is worse than disk.
 - The runtime cache is cross-process: owner files, stale sweeping, timeout kill discipline, traversal guards, tree caps. A finished checkout is cached in-process and **re-validated on every read** — a checkout removed mid-session (a /tmp cleaner) is re-cloned instead of returning a dead path.
-- `exec` and `clonePath` are injectable — tests never touch the network or git.
+- `exec` and `clonePath` are injectable — tests never touch the network or git. `transportEnv` (pure, tested) is the subprocess env for every call: no prompt, and `GIT_LFS_SKIP_SMUDGE=1` so a clone never pulls LFS objects the size gate cannot see. The root render names the checkout **shallow** (one branch, depth 1), so the agent knows why `git log`/`blame` are empty.
 
 ## Issues and PRs (`github-issue-pr.ts`)
 

@@ -340,6 +340,19 @@ function terminateProcessTree(child: ChildProcess): void {
   forceKill.unref();
 }
 
+/** The subprocess env for every transport call: never prompt, and never smudge
+ *  LFS — a `--depth 1` clone would otherwise pull every LFS object in the tree,
+ *  which the size gate cannot see. Pure; exported for tests. */
+export function transportEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "Never",
+    GH_PROMPT_DISABLED: "1",
+    GIT_LFS_SKIP_SMUDGE: "1",
+  };
+}
+
 const defaultExec: CloneExec = (command, args, opts) =>
   new Promise((resolve) => {
     let settled = false;
@@ -347,12 +360,7 @@ const defaultExec: CloneExec = (command, args, opts) =>
     let stderr = "";
     const child = spawn(command, args, {
       detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: "0",
-        GCM_INTERACTIVE: "Never",
-        GH_PROMPT_DISABLED: "1",
-      },
+      env: transportEnv(),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -636,6 +644,7 @@ const NOISE_DIRS = new Set([
 ]);
 
 const EXPLORE_HINT = "Use read and bash at the path above to explore further.";
+const SHALLOW_NOTE = "Shallow checkout (one branch, depth 1): `git log`, `git blame`, and `git show` see only the tip.";
 
 /** Path guard: resolve inside the checkout, rejecting traversal and symlinks out. */
 function resolveWithinRepo(rootPath: string, relativePath: string): string | null {
@@ -759,6 +768,7 @@ export function renderRepoView(
     }
     return [
       `Path \`${view.path}\` not found in clone. Showing repository root instead.`,
+      SHALLOW_NOTE,
       "",
       "## Structure",
       buildTree(localPath),
@@ -766,7 +776,7 @@ export function renderRepoView(
       EXPLORE_HINT,
     ].join("\n");
   }
-  const parts = [`Repository cloned to: ${localPath}`, "", "## Structure", buildTree(localPath), ""];
+  const parts = [`Repository cloned to: ${localPath}`, SHALLOW_NOTE, "", "## Structure", buildTree(localPath), ""];
   const readme = readReadme(localPath);
   if (readme) parts.push("## README.md", readme, "");
   parts.push(EXPLORE_HINT);
