@@ -4,13 +4,7 @@ Pi extension: web search (DuckDuckGo + Exa MCP) and URL→Markdown fetch. Two pr
 
 ## Build
 
-```bash
-npm install
-npm run typecheck   # tsc --noEmit
-npm test            # node --test test/*.test.ts
-```
-
-Gate for every commit: typecheck and the full suite pass. No build step — TypeScript runs directly via Node's `--test` loader. Wire-drift check for the papers vertical (real API calls — OpenAlex metered, Europe PMC keyless — skipped by default): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`.
+No build step — TypeScript runs directly via Node's `--test` loader (`npm run typecheck`, `npm test`). Gate for every commit: both green. Wire-drift check for the papers vertical (real API calls — OpenAlex metered, Europe PMC keyless — skipped by default): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`.
 
 ## Architecture
 
@@ -39,12 +33,12 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 
 **Fetch chain priority:** local (Defuddle, regex) → Jina Reader (renders JS) → markdown.new → Exa MCP. Free tiers first; Exa is the quota'd last resort.
 
-**Deep dives (docs/).** This file carries seams and rules; the docs carry mechanism. Open one when its trigger fires:
+**Deep dives (docs/).** This file carries seams and rules; the docs carry mechanism.
 
-- [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the full chain, SSRF guard, body caps, timeouts, cache layout. Open before touching the fetch chain, the network guard, or the cache, or when debugging a URL that returns nothing.
-- [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path and warm-up, Exa transport, search cache, key resolution, the wizard. Open before touching a provider, routing, recency/page behavior, or config/key handling.
-- [`docs/github.md`](docs/github.md) — repo checkouts (size gate, runtime cache) and issue/PR rendering (gh-first, REST fallback, one renderer). Open before touching `github-clone.ts` or `github-issue-pr.ts`.
-- [`docs/papers.md`](docs/papers.md) — the papers vertical: backend pair (OpenAlex + Europe PMC), the deep-research record keys, retracted-by-default, in-band error contract, record URL policy, the key + metering contract, citation-graph walk. Open before touching the papers vertical, scholarly search, citation traversal, or a paper row's URL choice.
+- [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the fetch chain, its guard, caps, timeouts, and cache. Open before touching the chain, the network guard, or the cache, or when a URL returns nothing.
+- [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path, Exa transport, keys, and wizards. Open before touching a provider, routing, recency/page behavior, or key/config handling.
+- [`docs/github.md`](docs/github.md) — repo checkouts and issue/PR rendering. Open before touching `github-clone.ts` or `github-issue-pr.ts`.
+- [`docs/papers.md`](docs/papers.md) — the papers vertical (OpenAlex + Europe PMC backends, deep-research keys, retracted-by-default, key + metering). Open before touching scholarly search, citation traversal, paper-record normalization, or a paper row's URL choice.
 
 ## Conventions
 
@@ -57,8 +51,6 @@ Gate for every commit: typecheck and the full suite pass. No build step — Type
 - **Docs:** edits to `docs/` or this file follow the writing-great-skills framework — one single source of truth per meaning, no-ops pruned sentence by sentence, duplication collapsed, leading words over restatements.
 
 ## Adding a feature
-
-Every branch ends the same way: typecheck green, the touched test file green.
 
 1. **Search provider** — add an adapter satisfying `SearchProvider` in `search/search.ts`, register it in the provider map, and extend `autoChain()` if it has Exa-equivalent intent params (`test/routing.test.ts`).
 2. **Fetch fallback** — insert into the chain in `fetch/fetch.ts` before Exa; it must be free or Exa-backed.

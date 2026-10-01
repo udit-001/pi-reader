@@ -99,7 +99,10 @@ const providerSchema = Type.Optional(
         "Find on a topic: the free-text query (the default). Walk citations from a " +
         "paper you already hold: filters.citationGraph, for when the top hits missed " +
         "the topic or the years, or you want the foundations under a hit. Look up one " +
-        "known paper by its identifier: filters.expression.",
+        "known paper by its identifier: filters.expression. Its backend is chosen by " +
+        "`index`: 'openalex' (default, all disciplines) or 'europepmc' (biomedical — " +
+        "PubMed, Europe PMC); a biomedical ask is provider: 'papers' with index: " +
+        "'europepmc'.",
     },
   ),
 );

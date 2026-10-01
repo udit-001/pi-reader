@@ -43,7 +43,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 ## Papers vertical (`search/papers.ts`)
 
-- Explicit-only like the other verticals; two backends behind one dispatch — `index` picks OpenAlex (default) or Europe PMC for biomedical full text — both normalizing into one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the key + metering contract, and the citation-graph approximation — is [papers.md](papers.md).
+- Explicit-only like the other verticals: two backends behind one dispatch, one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the key + metering contract, and the citation-graph approximation — is [papers.md](papers.md).
 
 ## Exa MCP (`search/exa-mcp.ts`)
 
