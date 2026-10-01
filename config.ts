@@ -54,6 +54,17 @@ export interface PiWebConfig {
      *  openalex.org/settings/api. */
     openalexApiKey?: string;
   };
+  /** Codex web search (see search/openai.ts). Absent fields use defaults.
+   *  Auth itself is not stored here — it is resolved from Pi's model registry
+   *  (the ChatGPT/Codex subscription from /login). */
+  openai?: {
+    /** Pin the model the search turn runs on. Sent verbatim. Default: the
+     *  newest "luna"-tier Codex model, else "terra", else the newest. */
+    searchModel?: string;
+    /** Override the Responses endpoint (full URL). Default: the Codex
+     *  subscription endpoint when Codex auth is used, else api.openai.com. */
+    responsesUrl?: string;
+  };
 }
 
 export function configPath(): string {

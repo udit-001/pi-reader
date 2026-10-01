@@ -6,6 +6,7 @@
 
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
+import { searchOpenAI } from "./openai.ts";
 import { searchNews } from "./news.ts";
 import { searchImages } from "./images.ts";
 import { searchVideos } from "./videos.ts";
@@ -16,10 +17,11 @@ import * as cache from "../cache/cache.ts";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
+export type SearchProviderName = "duckduckgo" | "exa" | "openai" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
 
 /** Which scholarly-index backend the papers provider queries. Lives here so
  *  SearchOptions, the schema literals, and the cache key share one type. */
@@ -51,6 +53,9 @@ export interface SearchOptions {
   /** Papers provider only: year/OA constraints or a citation walk from a
    *  seed paper (see PaperFilters). */
   filters?: PaperFilters;
+  /** Pi's session context. The openai adapter resolves its ChatGPT/Codex
+   *  credential from `ctx.modelRegistry`; other adapters ignore it. */
+  extensionContext?: ExtensionContext;
   signal?: AbortSignal;
 }
 
@@ -103,6 +108,22 @@ const exaProvider: SearchProvider = {
       ? await searchExaAdvanced(query, options)
       : await searchExaMcp(query, options);
     return { answer: buildAnswer(results), results, provider: "exa" };
+  },
+};
+
+// Codex web search: OpenAI's hosted `web_search` tool on the ChatGPT/Codex
+// subscription Pi already holds. Explicit-only — it spends subscription quota,
+// so `auto` never spends it silently. Its `answer` is model-authored prose
+// (the first provider whose answer is not a rendering of the rows); fall back
+// to buildAnswer only when the model returned citations with no text.
+const openaiProvider: SearchProvider = {
+  async search(query, options) {
+    const outcome = await searchOpenAI(query, options, options.extensionContext);
+    return {
+      answer: outcome.answer || buildAnswer(outcome.results),
+      results: outcome.results,
+      provider: "openai",
+    };
   },
 };
 
@@ -280,16 +301,25 @@ function writeSearchCache(key: string, data: CachedSearch): void {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/** The cache-honesty decision, pure: cache successful results except Exa
- *  (costs quota) and any degraded response — caching text under a news key
- *  would pin the degrade for the TTL instead of letting the path recover.
+/** Providers whose results are never cached: their answers cost quota (Exa's
+ *  API key, OpenAI's subscription window). One set, so a third quota provider
+ *  is one edit, not a hunt through every `!== "exa"`. */
+const QUOTA_PROVIDERS = new Set<SearchProviderName | "auto">(["exa", "openai"]);
+
+export function costsQuota(provider: SearchProviderName | "auto"): boolean {
+  return QUOTA_PROVIDERS.has(provider);
+}
+
+/** The cache-honesty decision, pure: cache successful results except a
+ *  quota-costed provider and any degraded response — caching text under a news
+ *  key would pin the degrade for the TTL instead of letting the path recover.
  *  The degrade travels as a flag on the response, so no caller has to
  *  re-derive which provider names mean "degraded". A cursor-bearing page is
  *  never cached either: it is one step of an enumeration, and a cached cursor
  *  can outlive the page it points at. Exported for tests. */
 export function shouldCacheSearch(response: SearchResponse): boolean {
   return response.results.length > 0
-    && response.provider !== "exa"
+    && !costsQuota(response.provider)
     && response.degraded !== true
     && response.nextCursor === undefined;
 }
@@ -300,8 +330,9 @@ export async function webSearch(
 ): Promise<SearchResponse> {
   const requested = options.provider ?? "auto";
 
-  // Check cache first (unless provider is explicitly set to exa)
-  if (requested !== "exa") {
+  // Check cache first (unless the provider costs quota: exa and openai are
+  // never written, so a read under their key is a miss by construction).
+  if (!costsQuota(requested)) {
     const cacheKey = searchCacheKey(query, options);
     const cached = readSearchCache(cacheKey);
     if (cached) {
@@ -321,6 +352,8 @@ export async function webSearch(
     response = await duckduckgoProvider.search(query, options);
   } else if (requested === "exa") {
     response = await exaProvider.search(query, options);
+  } else if (requested === "openai") {
+    response = await openaiProvider.search(query, options);
   } else if (requested === "news") {
     response = await newsProvider.search(query, options);
   } else if (requested === "images") {

@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoChain, shouldCacheSearch, searchCacheKey, type SearchResponse } from "../search/search.ts";
+import { autoChain, costsQuota, shouldCacheSearch, searchCacheKey, type SearchResponse } from "../search/search.ts";
 
 test("searchCacheKey keys the page size — a bigger ask is not the earlier call's answer", () => {
   // The cache is keyed on everything that changes the rows. With a page size
@@ -87,6 +87,22 @@ test("autoChain: videos intent never enters the chain — explicit provider only
   }
 });
 
+test("autoChain: openai intent never enters the chain — explicit provider only", () => {
+  // provider: "openai" spends subscription quota, so auto never spends it
+  // silently. No param combination routes to or falls back to openai; the
+  // adapter is dispatched only when the agent names it.
+  for (const options of [
+    {},
+    { category: "news" as const },
+    { includeContent: true, domains: ["github.com"] },
+    { recency: "day" as const },
+  ]) {
+    const [primary, fallback] = autoChain(options);
+    assert.notEqual(primary, "openai");
+    assert.notEqual(fallback, "openai");
+  }
+});
+
 test("autoChain: papers intent never enters the chain — explicit provider only", () => {
   // `provider: "papers"` is a deliberate dispatch, not an intent the router
   // guesses (PIWEB-14). Scholarly-record search is a distinct job from web
@@ -124,6 +140,16 @@ const ok = (over: Partial<SearchResponse> = {}): SearchResponse => ({
   ...over,
 });
 
+test("costsQuota: exa and openai cost quota; free providers and auto do not", () => {
+  // The single source behind both the cache write and the cache read guard —
+  // a third quota provider is one edit here, not a hunt for every !== "exa".
+  assert.equal(costsQuota("exa"), true);
+  assert.equal(costsQuota("openai"), true);
+  assert.equal(costsQuota("duckduckgo"), false);
+  assert.equal(costsQuota("papers"), false);
+  assert.equal(costsQuota("auto"), false);
+});
+
 test("shouldCacheSearch: successful free-provider results are cached", () => {
   assert.equal(shouldCacheSearch(ok()), true);
   assert.equal(shouldCacheSearch(ok({ provider: "news" })), true);
@@ -135,6 +161,10 @@ test("shouldCacheSearch: successful free-provider results are cached", () => {
 test("shouldCacheSearch: Exa results are never cached — they cost quota", () => {
   assert.equal(shouldCacheSearch(ok({ provider: "exa" })), false);
   assert.equal(shouldCacheSearch(ok({ provider: "exa" })), false);
+});
+
+test("shouldCacheSearch: openai results are never cached — they cost subscription quota", () => {
+  assert.equal(shouldCacheSearch(ok({ provider: "openai" })), false);
 });
 
 test("shouldCacheSearch: empty results are never cached", () => {

@@ -18,6 +18,7 @@ import type { Client } from "@modelcontextprotocol/client";
 import { callMcpTool, connectMcp, McpToolError } from "./mcp-client.ts";
 import { configPath, loadConfig } from "../config.ts";
 import { classifyExaError, noteExaIssue } from "./exa-issue.ts";
+import { redactSecret } from "./redact.ts";
 import type { ExaCategory, SearchOptions, SearchResult } from "./search.ts";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
@@ -63,13 +64,6 @@ export function exaKeySource(): string | null {
 
 function endpointUrl(key: string): string {
   return `${resolveBaseUrl()}?exaApiKey=${encodeURIComponent(key)}&tools=${encodeURIComponent(EXA_TOOLS)}`;
-}
-
-/** Scrub the API key from error text before it can reach the agent transcript.
- *  Internal seam, exported for its own tests. Short keys are skipped: they
- *  occur in ordinary text, so redaction would mangle the message. */
-export function redactKey(text: string, key: string | null): string {
-  return key && key.length > 4 ? text.split(key).join("[redacted]") : text;
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
@@ -173,7 +167,7 @@ export async function callExaTool(
   try {
     return await callExaToolRaw(tool, args, options);
   } catch (err) {
-    const cleaned = redactKey(err instanceof Error ? err.message : String(err), key);
+    const cleaned = redactSecret(err instanceof Error ? err.message : String(err), key);
     if (cleaned === (err instanceof Error ? err.message : String(err))) throw err;
     throw err instanceof McpToolError ? new McpToolError(cleaned) : new Error(cleaned);
   }

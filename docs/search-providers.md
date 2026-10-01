@@ -7,6 +7,7 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 - `provider: "auto"` → `autoChain()`: the single routing seam — a pure function of intent returning `[primary, failure-fallback]` provider names. Exa-shaped params (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback. Pin changes in `test/routing.test.ts`.
 - For news intent (`category: "news"`) the chain is the fidelity ladder's first two rungs: Exa semantic news primary when alive; on an Exa *failure* (quota death, missing key) the news vertical takes over with dates and outlets, and its own degrade lands on text. Fallback fires on provider failure (throw) only — never on empty results. A degraded response carries `degraded: true` on the `SearchResponse`, and `shouldCacheSearch()` refuses to cache it — so a news-intent query that fell all the way to text is not pinned for the TTL and the ladder recovers.
 - `wikipedia`, `hn`, `context7`, `news`, and `images` are free, keyless, explicit-only — never chosen as the auto *primary* and never in the fallback chain for non-news intent. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
+- `openai` (Codex web search) is explicit-only too, but not free: it spends ChatGPT/Codex subscription quota, so `auto` never selects it. See below.
 - Exa runs one of two calls: a plain query → `searchExaMcp`; any Exa-shaped param → `searchExaAdvanced`.
 - Successful results are cached for 1 hour (key: query + provider + options). Exa results are never cached — they cost quota.
 
@@ -45,16 +46,24 @@ Reference for `search/` and `config.ts`. Open this before touching a provider, a
 
 - Explicit-only like the other verticals: two backends behind one dispatch, one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the key + metering contract, and the citation-graph approximation — is [papers.md](papers.md).
 
+## Codex web search (`search/openai.ts`)
+
+- `provider: "openai"` runs OpenAI's hosted `web_search` tool on the ChatGPT/Codex subscription Pi already holds — no API key. Auth resolves through `ctx.modelRegistry` (`openai-codex` first, then `openai` with ChatGPT OAuth); `getApiKeyAndHeaders` yields the token, and `chatgpt-account-id` is read from the JWT. No credential → `OpenAISearchUnavailableError`, whose message is the recovery path (run `/login`, or use `duckduckgo`/`exa`) and is passed through verbatim by the entry.
+- Explicit-only and quota-costed: `auto` never spends subscription quota silently, and `shouldCacheSearch()` refuses it — the same rule as Exa.
+- Search is model-mediated: the model picks the queries, OpenAI runs them server-side, and the model writes the answer. So this is the one provider whose `SearchResponse.answer` is model-authored prose, not `buildAnswer(results)`; the adapter falls back to `buildAnswer` only when the model returned citations with no text.
+- Model and endpoint: `openai.searchModel` pins the model (sent verbatim); default is the newest `luna`-tier Codex model, then `terra`, then the newest versioned id (`pro`/`ultra` excluded). The endpoint is the Codex subscription one for Codex auth, `api.openai.com/v1/responses` for a plain API key; `openai.responsesUrl` overrides.
+- Parse seam (exported for tests): `parseOpenAIResponse` collects `output_item.done` items — the Codex endpoint sends `response.completed` with an **empty** `output`, so the completed payload is used only when non-empty. `extractSearchResults` prefers `url_citation` annotations (title + snippet), then adds `web_search_call` action sources, deduping and stripping `utm_source=openai`.
+
 ## Exa MCP (`search/exa-mcp.ts`)
 
 - Remote JSON-RPC over SSE — network errors are expected: the adapter retries once, then auto-routing falls back to DDG.
 - Key resolution, in order: `~/.pi/agent/pi-reader.json` (`exa.apiKey`, written by the wizard) → `EXA_API_KEY` env var. `mcp.json` is a wizard *import source*, never a runtime key source. Resolution is lazy and cached; `resetExaKeyCache()` after a wizard write makes a new key live without restart.
-- Keyless and rate-limited failures call `noteExaIssue()`; the entry consumes it once per tool call (`consumeExaIssue` in `finally`), so the hint fires once per tool call, not per provider attempt. Every error leaving `callExaTool` passes `redactKey()` — the key never reaches the agent transcript (short keys are skipped: they occur in ordinary text).
+- Keyless and rate-limited failures call `noteExaIssue()`; the entry consumes it once per tool call (`consumeExaIssue` in `finally`), so the hint fires once per tool call, not per provider attempt. Every error leaving `callExaTool` passes `redactSecret()` (`search/redact.ts`, shared with the Codex adapter) — the key never reaches the agent transcript (short values are skipped: they occur in ordinary text).
 
 ## Config (`config.ts`)
 
 - Single file: `~/.pi/agent/pi-reader.json`. Writes are atomic (tmp + rename); reads are forgiving — missing or malformed resolves to null.
-- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `papers.openalexApiKey` (OpenAlex metering — [papers.md](papers.md)), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
+- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `papers.openalexApiKey` (OpenAlex metering — [papers.md](papers.md)), `openai.searchModel` / `openai.responsesUrl` (Codex search — above), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
 
 ## Wizard (`/exa-setup`, `/openalex-setup`; skeleton in `search/key-setup.ts`)
 

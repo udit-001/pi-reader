@@ -3,7 +3,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseFormattedResults, parseJsonResults, parseCrawlResults, redactKey } from "../search/exa-mcp.ts";
+import { parseFormattedResults, parseJsonResults, parseCrawlResults } from "../search/exa-mcp.ts";
+import { redactSecret } from "../search/redact.ts";
 
 test("exa: parses formatted web_search_exa result blocks", () => {
   const text = [
@@ -94,16 +95,16 @@ test("exa: marks missing URLs as errors", () => {
   assert.equal(results[1]!.url, "https://missing.example.com");
   assert.equal(results[1]!.error, "no content returned");
 });
-test("exa: redactKey scrubs the API key from error text", () => {
+test("redact: redactSecret scrubs the secret from error text", () => {
   const key = "exa-secret-key-000";
   const raw = `MCP connection to https://mcp.exa.ai/mcp?exaApiKey=${key}&tools=web_search_exa timed out`;
-  const cleaned = redactKey(raw, key);
+  const cleaned = redactSecret(raw, key);
   assert.ok(!cleaned.includes(key), "redacted message must not contain the key");
   assert.ok(cleaned.includes("[redacted]"));
-  assert.equal(redactKey("no key in this message", key), "no key in this message");
+  assert.equal(redactSecret("no key in this message", key), "no key in this message");
 });
 
-test("exa: redactKey skips null and short keys", () => {
-  assert.equal(redactKey("text with ab in it", "ab"), "text with ab in it");
-  assert.equal(redactKey("anything", null), "anything");
+test("redact: redactSecret skips null and short secrets", () => {
+  assert.equal(redactSecret("text with ab in it", "ab"), "text with ab in it");
+  assert.equal(redactSecret("anything", null), "anything");
 });

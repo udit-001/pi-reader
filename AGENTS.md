@@ -17,6 +17,7 @@ No build step — TypeScript runs directly via Node's `--test` loader (`npm run 
 | `search/news.ts`, `search/images.ts`, `search/duckduckgo.ts` | ddgs verticals: news, images, and the HTML degrade |
 | `search/videos.ts` | Videos vertical: direct DDG v.js client, keyless |
 | `search/papers.ts`, `search/paper-backend.ts`, `search/europepmc.ts` | Papers vertical: backend dispatch (`index`), shared record seam, Europe PMC backend |
+| `search/openai.ts` | Codex web search: OpenAI's hosted `web_search` on the Pi ChatGPT/Codex subscription — auth via `ctx.modelRegistry`, explicit-only, quota-costed |
 | `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
 | `fetch/handlers/` | Per-site structured rendering (GitHub, registries, HN, feeds, …) |
 | `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, size gate, runtime cache), `renderRepoView` |

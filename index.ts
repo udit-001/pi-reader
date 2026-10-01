@@ -33,6 +33,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
+import { OpenAISearchUnavailableError } from "./search/openai.ts";
 import { isPaperRecord, renderPaperExtras, PAPER_SEARCH_MODES, PAPER_SORTS, PaperError, type PaperRecord } from "./search/paper-backend.ts";
 import { EUROPEPMC_OPERATOR_LISTING, EUROPEPMC_PAGE_SIZE_MAX } from "./search/europepmc.ts";
 import { EXPRESSION_PARAM_DESCRIPTION, OPENALEX_CITATION_EDGES } from "./search/papers.ts";
@@ -68,6 +69,7 @@ const providerSchema = Type.Optional(
       Type.Literal("auto"),
       Type.Literal("duckduckgo"),
       Type.Literal("exa"),
+      Type.Literal("openai"),
       Type.Literal("news"),
       Type.Literal("images"),
       Type.Literal("videos"),
@@ -90,6 +92,9 @@ const providerSchema = Type.Optional(
         "domains; degrades to text search with a visible notice. category: 'news' instead uses " +
         "Exa semantic news (better relevance, uses quota).\n" +
         "• 'wikipedia' — factual 'what is X'. 'hn' — Hacker News discussions.\n" +
+        "• 'openai' — a grounded, cited answer from your ChatGPT/Codex subscription (no key): " +
+        "for 'what changed in X' or 'is Y still true' — phrase the query as the question. " +
+        "Costs subscription quota and takes a few seconds; plain page-finding belongs to 'auto'.\n" +
         "• 'images' — image discovery ('find a photo of X'): the result URL is the hotlinkable " +
         "image itself, with dimensions and source in the snippet; honors query, page, and license.\n" +
         "• 'videos' — video discovery ('find a video about X'): watch URLs with duration, views, " +
@@ -209,13 +214,13 @@ const recencySchema = Type.Optional(
 
 const domainSchema = Type.Optional(
   Type.Array(Type.String(), {
-    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Binds only on the providers whose branch lists it",
+    description: "Restrict to domains (prefix with - to exclude, e.g. ['github.com', '-reddit.com']). Honored by duckduckgo, exa, and openai; other providers ignore it",
   }),
 );
 
 const webSearchParams = Type.Object({
   query: Type.String({
-    description: "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
+    description: "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint'). For 'openai', phrase it as the question you want answered (e.g. 'is Stripe's charge API deprecated').",
   }),
   provider: providerSchema,
   numResults: Type.Optional(Type.Integer({
@@ -368,7 +373,7 @@ export default function piWeb(pi: ExtensionAPI): void {
       "you know the need — 'context7' for API reference (a named library or SDK's endpoints, " +
       "signatures, and config), 'wikipedia' for facts, 'hn' for Hacker News discussions, " +
       "'news' for dated coverage, 'images' and 'videos' for media discovery, " +
-      "'papers' for scholarly paper records. " +
+      "'openai' for a grounded, cited answer, 'papers' for scholarly paper records. " +
       "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
     promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures); 'papers' returns citeable scholarly records (find papers on X).",
     parameters: webSearchParams,
@@ -395,6 +400,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           includeSummary: params.includeSummary,
           index: params.index,
           filters: params.filters,
+          extensionContext: ctx,
           signal,
         });
 
@@ -498,6 +504,8 @@ export default function piWeb(pi: ExtensionAPI): void {
         // passed verbatim; a generic rewriter would strip the recovery path.
         let error: string;
         if (err instanceof PaperError) {
+          error = err.message;
+        } else if (err instanceof OpenAISearchUnavailableError) {
           error = err.message;
         } else if (/DuckDuckGo/i.test(message)) {
           error = "Search failed. Try provider: 'exa' or rephrase with a descriptive query.";
