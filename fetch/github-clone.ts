@@ -646,6 +646,12 @@ const NOISE_DIRS = new Set([
 const EXPLORE_HINT = "Use read and bash at the path above to explore further.";
 const SHALLOW_NOTE = "Shallow checkout (one branch, depth 1): `git log`, `git blame`, and `git show` see only the tip.";
 
+/** Every view opens with the checkout path: EXPLORE_HINT says "the path
+ *  above", so a view without it sends the agent looking for nothing. */
+function clonedTo(localPath: string): string {
+  return `Repository cloned to: ${localPath}`;
+}
+
 /** Path guard: resolve inside the checkout, rejecting traversal and symlinks out. */
 function resolveWithinRepo(rootPath: string, relativePath: string): string | null {
   const root = resolvePath(rootPath);
@@ -764,9 +770,18 @@ export function renderRepoView(
   if (view.type === "tree" && view.path) {
     const target = resolveWithinRepo(localPath, view.path);
     if (target && existsSync(target) && statSync(target).isDirectory()) {
-      return [`## ${view.path}`, buildDirListing(localPath, view.path), "", EXPLORE_HINT].join("\n");
+      return [
+        clonedTo(localPath),
+        `Directory: ${join(localPath, view.path)}`,
+        "",
+        `## ${view.path}`,
+        buildDirListing(localPath, view.path),
+        "",
+        EXPLORE_HINT,
+      ].join("\n");
     }
     return [
+      clonedTo(localPath),
       `Path \`${view.path}\` not found in clone. Showing repository root instead.`,
       SHALLOW_NOTE,
       "",
@@ -776,7 +791,7 @@ export function renderRepoView(
       EXPLORE_HINT,
     ].join("\n");
   }
-  const parts = [`Repository cloned to: ${localPath}`, SHALLOW_NOTE, "", "## Structure", buildTree(localPath), ""];
+  const parts = [clonedTo(localPath), SHALLOW_NOTE, "", "## Structure", buildTree(localPath), ""];
   const readme = readReadme(localPath);
   if (readme) parts.push("## README.md", readme, "");
   parts.push(EXPLORE_HINT);

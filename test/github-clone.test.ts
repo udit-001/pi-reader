@@ -432,6 +432,22 @@ test("clone: renderRepoView renders structure + readme, skipping noise", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test("clone: every render names the checkout path the hint refers to", () => {
+  // The explore hint says "the path above"; a view without the path sends the
+  // agent looking for a checkout it was never given.
+  const root = makeRepoFixture();
+  const views = {
+    root: renderRepoView(root, { type: "root" }),
+    tree: renderRepoView(root, { type: "tree", path: "src" }),
+    fallback: renderRepoView(root, { type: "tree", path: "nope" }),
+  };
+  for (const [name, content] of Object.entries(views)) {
+    assert.ok(content.includes(root), `${name} view must name the checkout`);
+  }
+  assert.ok(views.tree.includes(join(root, "src")), "tree view must name the subdirectory");
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("clone: renderRepoView names the checkout as shallow", () => {
   const root = makeRepoFixture();
   const content = renderRepoView(root, { type: "root" });
@@ -468,9 +484,16 @@ test("clone: renderRepoView falls back to the root view for a missing path", () 
 
 test("clone: renderRepoView contains path traversal", () => {
   const root = makeRepoFixture();
-  const outside = tmpdir();
+  // A sibling of the checkout: if the render ever walked to "../..", this name
+  // would appear in the listing. The checkout path line legitimately contains
+  // tmpdir, so absence of the sentinel is the real assertion.
+  const sentinel = join(tmpdir(), "piweb-outside-sentinel");
+  mkdirSync(sentinel, { recursive: true });
+  writeFileSync(join(sentinel, "secret.txt"), "x");
   const content = renderRepoView(root, { type: "tree", path: "../.." });
   assert.match(content, /not found in clone/);
-  assert.ok(!content.includes(outside), "must not list directories outside the checkout");
+  assert.ok(!content.includes("piweb-outside-sentinel"), "must not list directories outside the checkout");
+  assert.match(content, /src\//, "falls back to the checkout's own root");
   rmSync(root, { recursive: true, force: true });
+  rmSync(sentinel, { recursive: true, force: true });
 });
