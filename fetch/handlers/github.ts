@@ -181,12 +181,14 @@ async function githubRepoClone(
   }
   const result = await ensureClone({ owner, repo, ref }, { signal: ctx.signal });
   if (result.status === "cloned") {
-    const content = renderRepoView(result.localPath, subPath ? { type: "tree", path: subPath } : { type: "root" });
-    return {
+    const view: HandlerResult = {
       kind: "repo",
       title: subPath ? `${owner}/${repo} - ${subPath}` : `${owner}/${repo}`,
-      content,
+      content: renderRepoView(result.localPath, subPath ? { type: "tree", path: subPath } : { type: "root" }),
     };
+    return result.submodulesIncomplete
+      ? withNote(view, "Note: some submodules could not be fetched — their directories are empty or missing; `git submodule update --init --recursive` at the path above retries.")
+      : view;
   }
   if (result.status === "disabled") return githubLight(owner, repo, ctx); // config off: today's behavior
   if (result.status === "too-large") {

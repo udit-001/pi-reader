@@ -3,7 +3,7 @@
 // Ported from pi-web-access (github-extract.ts / github-api.ts) and reshaped
 // for pi-reader's handler architecture. The seam:
 //
-//   ensureClone({owner, repo, ref?}) -> {cloned, localPath, via}
+//   ensureClone({owner, repo, ref?}) -> {cloned, localPath, via, submodulesIncomplete?}
 //                                     | {too-large, sizeMB, limitMB}
 //                                     | {failed, reason}
 //                                     | {disabled}
@@ -11,8 +11,9 @@
 //   resolveTreePath(owner, repo, segments) -> {ref, subPath}
 //
 // Everything else — gh→git transport choice, checkout-size gate, tree-URL ref
-// resolution, cross-process runtime cache with owner files and stale sweeping,
-// timeout kill discipline, traversal guards, tree caps — is implementation.
+// resolution, best-effort submodule init, cross-process runtime cache with
+// owner files and stale sweeping, timeout kill discipline, traversal guards,
+// tree caps — is implementation.
 // `exec` and `clonePath` are injectable so tests never touch the network or git.
 //
 // Clone destinations live under `<clonePath>/runtime-<mkdtemp>/<sha256>`:
@@ -49,7 +50,7 @@ export interface RepoRef {
 }
 
 export type CloneResult =
-  | { status: "cloned"; localPath: string; via: "gh" | "git" | "cache" }
+  | { status: "cloned"; localPath: string; via: "gh" | "git" | "cache"; submodulesIncomplete?: boolean }
   | { status: "too-large"; sizeMB: number; limitMB: number }
   | { status: "failed"; reason: string }
   | { status: "disabled" };
@@ -171,7 +172,8 @@ export async function ensureClone(req: RepoRef, opts: CloneOptions = {}): Promis
   const cached = settled.get(key);
   if (cached) {
     if (cached.status !== "cloned") return cached;
-    if (isUsableCheckout(cached.localPath)) return { status: "cloned", localPath: cached.localPath, via: "cache" };
+    // Spread, not a fresh object: a cache hit must keep the submodule flag.
+    if (isUsableCheckout(cached.localPath)) return { ...cached, via: "cache" };
     settled.delete(key);
   }
 
@@ -215,9 +217,10 @@ async function runClone(
   }
 
   // A leftover from a lost in-flight map (module reload) is still a valid
-  // checkout of the same ref — reuse it.
+  // checkout of the same ref — reuse it, but still finish its submodules.
   if (isUsableCheckout(destination)) {
-    return { status: "cloned", localPath: destination, via: "cache" };
+    const incomplete = await initSubmodules(runner, destination, timeoutMs, opts.signal);
+    return clonedResult(destination, "cache", incomplete);
   }
   rmSync(destination, { recursive: true, force: true });
   // git clone accepts an existing empty dir; creating it here also gives the
@@ -237,7 +240,35 @@ async function runClone(
     rmSync(destination, { recursive: true, force: true });
     return { status: "failed", reason: r.stderr.trim().slice(0, 300) || `${cmd} clone exited ${r.code}` };
   }
-  return { status: "cloned", localPath: destination, via: hasGh ? "gh" : "git" };
+  const submodulesIncomplete = await initSubmodules(runner, destination, timeoutMs, opts.signal);
+  return clonedResult(destination, hasGh ? "gh" : "git", submodulesIncomplete);
+}
+
+/** The `cloned` result, with the optional submodule flag built in one place. */
+function clonedResult(localPath: string, via: "gh" | "git" | "cache", submodulesIncomplete: boolean): CloneResult {
+  return {
+    status: "cloned",
+    localPath,
+    via,
+    ...(submodulesIncomplete ? { submodulesIncomplete: true } : {}),
+  };
+}
+
+/** Best-effort submodule init: skipped when the repo declares none, and a
+ *  failure leaves the directory empty rather than failing the checkout. Returns
+ *  true when content is missing, so the caller can say so. */
+async function initSubmodules(
+  runner: CloneExec,
+  destination: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!existsSync(join(destination, ".gitmodules"))) return false;
+  const r = await runner("git", ["-C", destination, "submodule", "update", "--init", "--recursive", "--depth", "1"], {
+    timeoutMs,
+    signal,
+  });
+  return r.code !== 0;
 }
 
 async function ghAvailable(runner: CloneExec): Promise<boolean> {

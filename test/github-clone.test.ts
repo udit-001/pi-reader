@@ -384,6 +384,67 @@ test("clone: ensureClone re-clones when a cached checkout has been deleted", asy
   rmSync(clonePath, { recursive: true, force: true });
 });
 
+// A clone route that also writes .gitmodules, so the submodule step has work.
+const withSubmodules: Route = (command, args) => {
+  if (command === "gh" && args[0] === "repo" && args[1] === "clone") {
+    const destination = args[3];
+    if (destination) {
+      mkdirSync(destination, { recursive: true });
+      writeFileSync(join(destination, ".gitmodules"), "[submodule \"x\"]\n");
+    }
+  }
+  return ghHappyPath(command, args);
+};
+
+test("clone: ensureClone initializes submodules best-effort", async () => {
+  const clonePath = tmpClonePath();
+  const { exec, calls } = fakeExec(withSubmodules);
+  const result = await ensureClone(REPO, { exec, clonePath });
+  assert.equal(result.status, "cloned");
+  if (result.status === "cloned") assert.equal(result.submodulesIncomplete, undefined, "a clean submodule step reports nothing");
+  assert.ok(
+    calls.some((c) => c.command === "git" && c.args[0] === "-C" && c.args[2] === "submodule"),
+    "expected a submodule update",
+  );
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: ensureClone keeps the checkout when submodule init fails", async () => {
+  const clonePath = tmpClonePath();
+  const { exec } = fakeExec((command, args) => {
+    if (command === "git" && args[2] === "submodule") return { code: 1, stderr: "fatal: could not fetch" };
+    return withSubmodules(command, args);
+  });
+  const result = await ensureClone(REPO, { exec, clonePath });
+  assert.equal(result.status, "cloned", "a failed submodule must not fail the checkout");
+  if (result.status === "cloned") assert.equal(result.submodulesIncomplete, true, "missing submodule content must be reported, not silent");
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: ensureClone keeps reporting incomplete submodules on a cache hit", async () => {
+  const clonePath = tmpClonePath();
+  const { exec } = fakeExec((command, args) => {
+    if (command === "git" && args[2] === "submodule") return { code: 1, stderr: "fatal: could not fetch" };
+    return withSubmodules(command, args);
+  });
+  const first = await ensureClone(REPO, { exec, clonePath });
+  const second = await ensureClone(REPO, { exec, clonePath });
+  assert.equal(first.status, "cloned");
+  assert.equal(second.status, "cloned");
+  // The cached return must spread the stored result, not rebuild it — a fresh
+  // object drops the flag and the render stops warning.
+  if (second.status === "cloned") assert.equal(second.submodulesIncomplete, true, "a cache hit must keep the flag");
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: ensureClone skips the submodule step when the repo has none", async () => {
+  const clonePath = tmpClonePath();
+  const { exec, calls } = fakeExec(ghHappyPath);
+  await ensureClone(REPO, { exec, clonePath });
+  assert.ok(!calls.some((c) => c.args.includes("submodule")), "no submodule step for a repo without .gitmodules");
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
 test("clone: ensureClone reports invalid refs without running anything", async () => {
   const { exec, calls } = fakeExec(ghHappyPath);
   const result = await ensureClone({ owner: "bad owner", repo: "r" }, { exec });
