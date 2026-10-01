@@ -4,9 +4,10 @@ Reference for `fetch/github-clone.ts` and `fetch/github-issue-pr.ts`. Open this 
 
 ## Repo checkouts (`github-clone.ts`)
 
-- `ensureClone`: gh first (auth covers private repos), git fallback. A repo size gate runs first — over `maxRepoSizeMB` (config) → `{too-large, sizeMB, limitMB}` so the caller can say why.
+- `ensureClone`: gh first (auth covers private repos), git fallback. A size gate runs first — over `maxRepoSizeMB` (config) → `{too-large, sizeMB, limitMB}` so the caller can say why. It estimates the **checkout**, not the repo: the ref's working-tree blob sum from `git/trees?recursive=1` (×2 for git's object store), because the whole-repo `size` counts every commit in history and refused popular repos whose shallow clone is tiny. A truncated or unavailable listing falls back to the whole-repo size.
+- Tree URLs (`/tree/<ref>/<subpath>`) resolve the ref before cloning: `splitTreePath` (pure) takes the **longest ref that prefixes the path** — GitHub's own rule, and the only way a branch containing a slash (`feature/x`, `release/1.2`) is not misread as `ref=feature, path=x/src` (which fails the clone and drops to the API view). `resolveTreePath` supplies the ref list with one `git ls-remote --heads --tags`, memoized per repo; a bare ref or a commit SHA needs no lookup, and an unavailable list degrades to the first segment.
 - Checkouts land in `<clonePath>/runtime-<mkdtemp>/<sha256>` — `/tmp` by default, deliberately outside the LRU-evicted pi-reader cache root: a checkout deleted mid-session under the agent's `read` is worse than disk.
-- The runtime cache is cross-process: owner files, stale sweeping, timeout kill discipline, traversal guards, tree caps.
+- The runtime cache is cross-process: owner files, stale sweeping, timeout kill discipline, traversal guards, tree caps. A finished checkout is cached in-process and **re-validated on every read** — a checkout removed mid-session (a /tmp cleaner) is re-cloned instead of returning a dead path.
 - `exec` and `clonePath` are injectable — tests never touch the network or git.
 
 ## Issues and PRs (`github-issue-pr.ts`)

@@ -7,7 +7,7 @@ import {
   getJson,
   getText,
 } from "./handler.ts";
-import { ensureClone, renderRepoView } from "../github-clone.ts";
+import { ensureClone, FULL_SHA_RE, renderRepoView, resolveTreePath } from "../github-clone.ts";
 import { fetchIssuePr, parseIssuePrUrl } from "../github-issue-pr.ts";
 
 function repoParts(url: URL): { owner: string; repo: string; rest: string[] } | undefined {
@@ -151,7 +151,6 @@ async function githubReleases(
 }
 
 // Full-SHA refs can't be branch-cloned; they get the API view with a note.
-const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
 function withNote(light: HandlerResult, note: string): HandlerResult {
   return { ...light, content: `${light.content}\n\n---\n\n${note}` };
@@ -194,7 +193,7 @@ async function githubRepoClone(
     const light = await githubLight(owner, repo, ctx);
     return withNote(
       light,
-      `Note: repository is ${Math.round(result.sizeMB)} MB (limit: ${result.limitMB} MB) — showing the API view instead of cloning.`,
+      `Note: the checkout is ~${Math.round(result.sizeMB)} MB (limit: ${result.limitMB} MB) — showing the API view instead of cloning.`,
     );
   }
   const light = await githubLight(owner, repo, ctx);
@@ -232,9 +231,10 @@ export const githubHandler = defineHandler({
       return defaultFetch(url, ctx); // unrecognized shape — plain page
     }
     if (rest.length === 0 || rest[0] === "tree") {
-      const isTree = rest[0] === "tree";
-      const ref = isTree ? rest[1] : undefined;
-      const subPath = isTree ? rest.slice(2).join("/") : "";
+      // A tree URL's ref may contain "/" — resolveTreePath owns the split.
+      const { ref, subPath } = rest[0] === "tree"
+        ? await resolveTreePath(owner, repo, rest.slice(1), { signal: ctx.signal })
+        : { ref: undefined, subPath: "" };
       return githubRepoClone(owner, repo, ref, subPath, ctx);
     }
     const releasesIntent = parseReleasesPath(rest);

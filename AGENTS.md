@@ -20,7 +20,7 @@ No build step — TypeScript runs directly via Node's `--test` loader (`npm run 
 | `search/openai.ts` | Codex web search: OpenAI's hosted `web_search` on the Pi ChatGPT/Codex subscription — auth via `ctx.modelRegistry`, explicit-only, quota-costed |
 | `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
 | `fetch/handlers/` | Per-site structured rendering (GitHub, registries, HN, feeds, …) |
-| `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, size gate, runtime cache), `renderRepoView` |
+| `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, checkout-size gate, runtime cache), `renderRepoView`, `resolveTreePath` (slash refs) |
 | `fetch/github-issue-pr.ts` | Issue/PR documents: gh-first with REST fallback, one deterministic renderer |
 | `cache/cache.ts` | Fetch cache on disk: lookup/store/prune, sqlite index in `cachedb.ts` |
 | `config.ts` | All config file I/O: `~/.pi/agent/pi-reader.json`, atomic |

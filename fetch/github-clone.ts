@@ -8,11 +8,12 @@
 //                                     | {failed, reason}
 //                                     | {disabled}
 //   renderRepoView(localPath, {root|tree, path?}) -> content
+//   resolveTreePath(owner, repo, segments) -> {ref, subPath}
 //
-// Everything else — gh→git transport choice, repo size gate, cross-process
-// runtime cache with owner files and stale sweeping, timeout kill discipline,
-// traversal guards, tree caps — is implementation. `exec` and `clonePath` are
-// injectable so tests never touch the network or git.
+// Everything else — gh→git transport choice, checkout-size gate, tree-URL ref
+// resolution, cross-process runtime cache with owner files and stale sweeping,
+// timeout kill discipline, traversal guards, tree caps — is implementation.
+// `exec` and `clonePath` are injectable so tests never touch the network or git.
 //
 // Clone destinations live under `<clonePath>/runtime-<mkdtemp>/<sha256>`:
 // /tmp by default (survives the session, dies with reboot, no cleanup logic
@@ -132,10 +133,24 @@ export function expandPath(value: string): string {
 
 // ── Clone orchestration ──────────────────────────────────────────────────────
 
-// Keyed by `<runtimeRoot>|owner/repo@ref`: dedupes concurrent callers and
-// reuses successful checkouts for the life of the process. Failed clones are
-// dropped so a retry can actually retry.
+// Two maps, two lifetimes. `inflight` dedupes concurrent callers and is cleared
+// the moment a clone settles. `settled` memoizes a terminal verdict for the
+// process — a checkout (re-validated on every read, because the disk is not
+// ours to trust: a /tmp cleaner must not hand the agent a dead path) and a
+// too-large refusal (stable, so the size lookup is not repeated per fetch).
 const inflight = new Map<string, Promise<CloneResult>>();
+const settled = new Map<string, CloneResult>();
+
+/** A checkout is reusable only when the directory exists and is not empty — a
+ *  failed clone can leave an empty destination, and a cleaner can remove a
+ *  whole one. */
+function isUsableCheckout(path: string): boolean {
+  try {
+    return existsSync(path) && readdirSync(path).length > 0;
+  } catch {
+    return false;
+  }
+}
 
 export async function ensureClone(req: RepoRef, opts: CloneOptions = {}): Promise<CloneResult> {
   const invalid = validateRepoRef(req);
@@ -153,11 +168,23 @@ export async function ensureClone(req: RepoRef, opts: CloneOptions = {}): Promis
   const key = `${runtimeRoot}|${req.owner}/${req.repo}@${req.ref ?? ""}`;
   const running = inflight.get(key);
   if (running) return running;
+  const cached = settled.get(key);
+  if (cached) {
+    if (cached.status !== "cloned") return cached;
+    if (isUsableCheckout(cached.localPath)) return { status: "cloned", localPath: cached.localPath, via: "cache" };
+    settled.delete(key);
+  }
 
   const destination = join(runtimeRoot, digestOf(req));
-  const promise = runClone(req, cfg, destination, key, opts);
+  const promise = runClone(req, cfg, destination, opts);
   inflight.set(key, promise);
-  return promise;
+  try {
+    const result = await promise;
+    if (result.status === "cloned" || result.status === "too-large") settled.set(key, result);
+    return result;
+  } finally {
+    inflight.delete(key);
+  }
 }
 
 function digestOf(req: RepoRef): string {
@@ -168,7 +195,6 @@ async function runClone(
   req: RepoRef,
   cfg: CloneConfig,
   destination: string,
-  key: string,
   opts: CloneOptions,
 ): Promise<CloneResult> {
   const runner = opts.exec ?? defaultExec;
@@ -177,17 +203,20 @@ async function runClone(
   const hasGh = await ghAvailable(runner);
 
   // Size gate (gh only): refuse to clone repos over the budget, so the caller
-  // can degrade to the API view. gh absent → no size knowledge → attempt.
+  // can degrade to the API view. The estimate is the ref's WORKING TREE, not
+  // the whole repo — `repo.size` counts every commit in history, so it refused
+  // popular repos with tiny shallow clones (react: 1073 MB full, 73 MB clone).
+  // gh absent → no size knowledge → attempt.
   if (hasGh) {
-    const sizeKb = await repoSizeKb(runner, req, timeoutMs, opts.signal);
-    if (sizeKb !== null && sizeKb / 1024 > cfg.maxRepoSizeMB) {
-      return { status: "too-large", sizeMB: sizeKb / 1024, limitMB: cfg.maxRepoSizeMB };
+    const sizeMB = await checkoutSizeMB(runner, req, timeoutMs, opts.signal);
+    if (sizeMB !== null && sizeMB > cfg.maxRepoSizeMB) {
+      return { status: "too-large", sizeMB, limitMB: cfg.maxRepoSizeMB };
     }
   }
 
   // A leftover from a lost in-flight map (module reload) is still a valid
   // checkout of the same ref — reuse it.
-  if (existsSync(destination) && readdirSync(destination).length > 0) {
+  if (isUsableCheckout(destination)) {
     return { status: "cloned", localPath: destination, via: "cache" };
   }
   rmSync(destination, { recursive: true, force: true });
@@ -206,7 +235,6 @@ async function runClone(
   const r = await runner(cmd, cloneArgs, { timeoutMs, signal: opts.signal });
   if (r.code !== 0) {
     rmSync(destination, { recursive: true, force: true });
-    inflight.delete(key);
     return { status: "failed", reason: r.stderr.trim().slice(0, 300) || `${cmd} clone exited ${r.code}` };
   }
   return { status: "cloned", localPath: destination, via: hasGh ? "gh" : "git" };
@@ -217,6 +245,8 @@ async function ghAvailable(runner: CloneExec): Promise<boolean> {
   return r.code === 0;
 }
 
+/** The whole-repo size in KB (every commit in history) — the conservative
+ *  fallback when the working-tree estimate is unavailable. */
 async function repoSizeKb(
   runner: CloneExec,
   req: RepoRef,
@@ -227,6 +257,57 @@ async function repoSizeKb(
   if (r.code !== 0) return null;
   const kb = parseInt(r.stdout.trim(), 10);
   return Number.isNaN(kb) ? null : kb;
+}
+
+/** git stores the tree again as objects on top of the checked-out files, so
+ *  the on-disk checkout is larger than the working tree it came from; 2× tracks
+ *  it closely and errs conservative. */
+const CHECKOUT_OVERHEAD = 2;
+
+/** Working-tree bytes for the requested ref (sum of blob sizes), or null.
+ *  `truncated` marks the sum as a partial lower bound — a tree the API will
+ *  not return whole. */
+async function treeSizeBytes(
+  runner: CloneExec,
+  req: RepoRef,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ bytes: number; truncated: boolean } | null> {
+  const ref = encodeURIComponent(req.ref ?? "HEAD");
+  const r = await runner(
+    "gh",
+    [
+      "api",
+      `repos/${req.owner}/${req.repo}/git/trees/${ref}?recursive=1`,
+      "--jq",
+      '{total: ([.tree[] | select(.type=="blob") | .size] | add // 0), truncated}',
+    ],
+    { timeoutMs, signal },
+  );
+  if (r.code !== 0) return null;
+  try {
+    const parsed = JSON.parse(r.stdout.trim()) as { total?: unknown; truncated?: unknown };
+    if (typeof parsed.total !== "number" || !Number.isFinite(parsed.total)) return null;
+    return { bytes: parsed.total, truncated: parsed.truncated === true };
+  } catch {
+    return null;
+  }
+}
+
+/** The checkout's size in MB. A clean working-tree sum is what a `--depth 1`
+ *  clone actually pulls; a truncated or unavailable listing falls back to the
+ *  whole-repo size (today's conservative number), and null when neither is
+ *  known. */
+async function checkoutSizeMB(
+  runner: CloneExec,
+  req: RepoRef,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  const tree = await treeSizeBytes(runner, req, timeoutMs, signal);
+  if (tree && !tree.truncated) return (tree.bytes * CHECKOUT_OVERHEAD) / (1024 * 1024);
+  const sizeKb = await repoSizeKb(runner, req, timeoutMs, signal);
+  return sizeKb === null ? null : sizeKb / 1024;
 }
 
 // ── Default runner: hardened spawn with process-group kill ───────────────────
@@ -305,6 +386,82 @@ const defaultExec: CloneExec = (command, args, opts) =>
       resolve({ stdout, stderr, code });
     });
   });
+
+// ── Tree URL ref resolution ──────────────────────────────────────────────────
+// GitHub resolves `/owner/repo/tree/<a>/<b>/<c>` by taking the LONGEST ref that
+// prefixes the path; the remainder is the subpath. Reading only the first
+// segment breaks every branch name containing a slash — feature/x, release/1.2,
+// dependabot/... — and the clone then fails to the API view. The ref list is
+// one `git ls-remote` (refs only, no objects), memoized per repo for the
+// process; when it is unavailable the splitter degrades to the first segment.
+
+/** Pure; exported for tests. `segments` are the URL segments after "tree". */
+export function splitTreePath(
+  segments: string[],
+  knownRefs: ReadonlySet<string>,
+): { ref: string | undefined; subPath: string } {
+  if (segments.length === 0) return { ref: undefined, subPath: "" };
+  for (let end = segments.length; end >= 1; end--) {
+    const candidate = segments.slice(0, end).join("/");
+    if (knownRefs.has(candidate)) return { ref: candidate, subPath: segments.slice(end).join("/") };
+  }
+  return { ref: segments[0], subPath: segments.slice(1).join("/") };
+}
+
+const REF_LIST_TIMEOUT_MS = 15_000;
+
+/** A full commit SHA is never a branch, so no ref list contains it and
+ *  `--branch` cannot take it. Exported so the handler's clone guard shares one
+ *  definition. */
+export const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+
+/** Ref lists memoized per repo for the process: a slash-ref tree URL resolves
+ *  on every fetch, and without this a cached checkout would still pay a network
+ *  round-trip each time. */
+const refSets = new Map<string, ReadonlySet<string>>();
+
+/** refs/heads/* and refs/tags/* for the repo, or an empty set when unavailable. */
+async function listRepoRefs(
+  owner: string,
+  repo: string,
+  runner: CloneExec,
+  signal?: AbortSignal,
+): Promise<ReadonlySet<string>> {
+  const memoKey = `${owner}/${repo}`;
+  const memo = refSets.get(memoKey);
+  if (memo) return memo;
+  const refs = new Set<string>();
+  const r = await runner(
+    "git",
+    ["ls-remote", "--heads", "--tags", `https://github.com/${owner}/${repo}.git`],
+    { timeoutMs: REF_LIST_TIMEOUT_MS, signal },
+  );
+  if (r.code === 0) {
+    for (const line of r.stdout.split("\n")) {
+      const match = line.match(/^[0-9a-f]+\s+refs\/(?:heads|tags)\/(.+?)(?:\^\{\})?$/);
+      if (match?.[1]) refs.add(match[1]);
+    }
+  }
+  refSets.set(memoKey, refs);
+  return refs;
+}
+
+/** Resolve a tree URL's ref + subpath. One segment is the ref outright; a
+ *  subpath may extend the ref, so the repo's refs are consulted once. */
+export async function resolveTreePath(
+  owner: string,
+  repo: string,
+  segments: string[],
+  opts: CloneOptions = {},
+): Promise<{ ref: string | undefined; subPath: string }> {
+  // Nothing to look up: a bare ref is the whole path, a commit SHA is never a
+  // ref, and an unqueryable repo cannot answer.
+  if (segments.length <= 1 || FULL_SHA_RE.test(segments[0] ?? "") || validateRepoRef({ owner, repo })) {
+    return splitTreePath(segments, new Set());
+  }
+  const refs = await listRepoRefs(owner, repo, opts.exec ?? defaultExec, opts.signal);
+  return splitTreePath(segments, refs);
+}
 
 // ── Runtime root + stale sweep ───────────────────────────────────────────────
 // Each pi process clones into its own `runtime-XXXX` dir under the clone path.
