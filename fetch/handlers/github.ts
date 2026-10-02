@@ -7,7 +7,7 @@ import {
   getJson,
   getText,
 } from "./handler.ts";
-import { ensureClone, FULL_SHA_RE, renderRepoView, resolveTreePath } from "../github-clone.ts";
+import { ensureClone, FULL_SHA_RE, renderRepoView, resolveTreePath, SHA_LIKE_RE } from "../github-clone.ts";
 import { fetchIssuePr, parseIssuePrUrl } from "../github-issue-pr.ts";
 
 function repoParts(url: URL): { owner: string; repo: string; rest: string[] } | undefined {
@@ -173,6 +173,18 @@ function withNote(light: HandlerResult, note: string): HandlerResult {
   return { ...light, content: `${light.content}\n\n---\n\n${note}` };
 }
 
+/** Agent-facing: why a commit-SHA URL has no checkout, and what to use instead. */
+const SHA_NOTE =
+  "Note: commit-SHA URLs show the API view — a clone needs a branch name. " +
+  "Use a branch URL (`/tree/<branch>/…`) for a local checkout.";
+
+/** The note for a clone that could not run. A SHA-shaped ref gets the same
+ *  explanation the full-SHA shortcut gives: `--branch` takes a branch name, and
+ *  a short or uppercase SHA is not one. Pure; exported for tests. */
+export function cloneFailureNote(ref: string | undefined, reason: string): string {
+  return ref && SHA_LIKE_RE.test(ref) ? SHA_NOTE : `Note: clone failed (${reason}) — showing the API view instead.`;
+}
+
 /** Issue/PR URL: delegate to the github-issue-pr module (gh-first, REST fallback). */
 function githubIssueView(url: URL, ctx: FetchContext): Promise<HandlerResult> | undefined {
   const info = parseIssuePrUrl(url);
@@ -194,7 +206,7 @@ async function githubRepoClone(
 ): Promise<HandlerResult> {
   if (ref && FULL_SHA_RE.test(ref)) {
     const light = await githubLight(owner, repo, ctx);
-    return withNote(light, "Note: commit-SHA URLs show the API view; clones pin to a branch, not a SHA.");
+    return withNote(light, SHA_NOTE);
   }
   const result = await ensureClone({ owner, repo, ref }, { signal: ctx.signal });
   if (result.status === "cloned") {
@@ -216,7 +228,7 @@ async function githubRepoClone(
     );
   }
   const light = await githubLight(owner, repo, ctx);
-  return withNote(light, `Note: clone failed (${result.reason}) — showing the API view instead.`);
+  return withNote(light, cloneFailureNote(ref, result.reason));
 }
 
 export const githubHandler = defineHandler({

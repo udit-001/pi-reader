@@ -458,6 +458,13 @@ const REF_LIST_TIMEOUT_MS = 15_000;
  *  definition. */
 export const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
+/** Any commit-ish ref — git's short form (7) through the full id (40), case-
+ *  insensitive because a URL may keep uppercase hex. A branch can also be
+ *  all-hex, so this only *names* a clone failure; routing stays on the stricter
+ *  FULL_SHA_RE, which is why a short all-hex branch still reaches a clone
+ *  attempt (a full lowercase all-hex ref is indistinguishable from an id). */
+export const SHA_LIKE_RE = /^[0-9a-f]{7,40}$/i;
+
 /** Ref lists memoized per repo for the process: a slash-ref tree URL resolves
  *  on every fetch, and without this a cached checkout would still pay a network
  *  round-trip each time. */

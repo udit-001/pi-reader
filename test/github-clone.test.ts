@@ -11,10 +11,12 @@ import { join } from "node:path";
 import {
   ensureClone,
   expandPath,
+  FULL_SHA_RE,
   normalizeCloneConfig,
   parseRuntimeOwner,
   renderRepoView,
   resolveTreePath,
+  SHA_LIKE_RE,
   splitTreePath,
   transportEnv,
   validateRepoRef,
@@ -181,6 +183,20 @@ test("clone: transportEnv never prompts and never smudges LFS", () => {
   assert.equal(env.GCM_INTERACTIVE, "Never");
   assert.equal(env.GH_PROMPT_DISABLED, "1");
   assert.equal(env.GIT_LFS_SKIP_SMUDGE, "1", "must override an inherited value");
+});
+
+test("clone: SHA_LIKE_RE spans short through full ids; FULL_SHA_RE stays the routing guard", () => {
+  assert.equal(SHA_LIKE_RE.test("abc1234"), true, "7-char short id");
+  assert.equal(SHA_LIKE_RE.test("ABC1234"), true, "uppercase hex");
+  assert.equal(SHA_LIKE_RE.test("a".repeat(40)), true, "full id");
+  assert.equal(SHA_LIKE_RE.test("abc123"), false, "6 chars is too short");
+  assert.equal(SHA_LIKE_RE.test("a".repeat(41)), false, "longer than an object id");
+  assert.equal(SHA_LIKE_RE.test("release/1.2"), false);
+  // Routing stays stricter, so a short or uppercase id still reaches a clone
+  // attempt — and so does a short all-hex branch name.
+  assert.equal(FULL_SHA_RE.test("abc1234"), false);
+  assert.equal(FULL_SHA_RE.test("ABC" + "a".repeat(37)), false);
+  assert.equal(FULL_SHA_RE.test("a".repeat(40)), true);
 });
 
 // ── Clone orchestration ──────────────────────────────────────────────────────

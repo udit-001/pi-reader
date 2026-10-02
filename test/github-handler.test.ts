@@ -4,7 +4,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeSegment, rawContentUrl, repoHeader, formatRelease, formatReleases, parseReleasesPath } from "../fetch/handlers/github.ts";
+import { cloneFailureNote, decodeSegment, rawContentUrl, repoHeader, formatRelease, formatReleases, parseReleasesPath } from "../fetch/handlers/github.ts";
+
+test("github: cloneFailureNote names a SHA-shaped ref instead of leaking a git error", () => {
+  const shaNote = /commit-SHA URLs show the API view.*branch URL/;
+  assert.match(cloneFailureNote("abc1234", "fatal: Remote branch abc1234 not found"), shaNote);
+  assert.match(cloneFailureNote("ABC1234", "fatal: Remote branch not found"), shaNote);
+  assert.match(cloneFailureNote("main", "fatal: repository not found"), /clone failed \(fatal: repository not found\)/);
+  assert.match(cloneFailureNote(undefined, "boom"), /clone failed \(boom\)/);
+});
 
 test("github: decodeSegment decodes percent-escapes and leaves malformed ones alone", () => {
   assert.equal(decodeSegment("my%20file"), "my file");
