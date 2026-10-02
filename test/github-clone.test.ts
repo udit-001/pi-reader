@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -556,6 +556,53 @@ test("clone: renderRepoView names the checkout as shallow", () => {
   const root = makeRepoFixture();
   const content = renderRepoView(root, { type: "root" });
   assert.match(content, /Shallow checkout/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView lists a symlink instead of walking through it", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-symlink-test-"));
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "x.ts"), "x");
+  // A link to an ancestor: following it loops (bounded only by the OS limit).
+  symlinkSync(".", join(root, "self"));
+  const content = renderRepoView(root, { type: "root" });
+  assert.match(content, /self  \(symlink -> \.\)/);
+  assert.ok(!content.includes("self/self/"), "a symlink must not be walked through");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView lists a subdirectory symlink without following it", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-symlink-test-"));
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "x.ts"), "x");
+  symlinkSync("x.ts", join(root, "src", "link.ts"));
+  const content = renderRepoView(root, { type: "tree", path: "src" });
+  assert.match(content, /link\.ts  \(symlink -> x\.ts\)/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView keeps a link out of the checkout out of reach", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-symlink-test-"));
+  const outside = mkdtempSync(join(tmpdir(), "piweb-outside-"));
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", "x.ts"), "x");
+  writeFileSync(join(outside, "secret.txt"), "secret");
+  symlinkSync(outside, join(root, "src", "escape"));
+  const content = renderRepoView(root, { type: "tree", path: "src" });
+  assert.match(content, /escape  \(outside checkout\)/);
+  assert.ok(!content.includes("secret.txt"), "must not read through a link that leaves the checkout");
+  rmSync(root, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView follows a symlink when the agent names it", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-symlink-test-"));
+  mkdirSync(join(root, "real"), { recursive: true });
+  writeFileSync(join(root, "real", "x.ts"), "x");
+  symlinkSync("real", join(root, "link"));
+  const content = renderRepoView(root, { type: "tree", path: "link" });
+  assert.match(content, /## link/);
+  assert.match(content, /x\.ts/);
   rmSync(root, { recursive: true, force: true });
 });
 

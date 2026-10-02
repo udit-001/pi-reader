@@ -31,6 +31,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -722,15 +723,29 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** statSync that returns undefined instead of throwing: a checkout is live, so
- *  an entry can vanish or become unreadable between listing and stat. The
- *  caller owns what to do about it. */
-function safeStat(path: string): Stats | undefined {
+/** statSync or lstatSync, returning undefined instead of throwing: a checkout
+ *  is live, so an entry can vanish or become unreadable between a listing and
+ *  its stat. The caller owns what to do about it. */
+function safeStat(path: string, syscall: "stat" | "lstat"): Stats | undefined {
   try {
-    return statSync(path);
+    return syscall === "stat" ? statSync(path) : lstatSync(path);
   } catch {
     return undefined;
   }
+}
+
+/** One symlink entry: the target is named, and a walk never descends through
+ *  it — a link to an ancestor would loop, and one to a sibling would duplicate
+ *  that subtree. The target is a raw byte string from the link, so line breaks
+ *  are folded out before it reaches agent-facing output. */
+function symlinkEntry(relPath: string, path: string): string {
+  let target: string;
+  try {
+    target = readlinkSync(path);
+  } catch {
+    target = "(unreadable)";
+  }
+  return `${relPath}  (symlink -> ${target.replace(/[\r\n]+/g, " ")})`;
 }
 
 function buildTree(rootPath: string): string {
@@ -749,8 +764,12 @@ function buildTree(rootPath: string): string {
       const relPath = rel ? `${rel}/${item}` : item;
       const safe = resolveWithinRepo(rootPath, relPath);
       if (!safe) continue;
-      const st = safeStat(safe);
+      const st = safeStat(safe, "lstat");
       if (!st) continue;
+      if (st.isSymbolicLink()) {
+        entries.push(symlinkEntry(relPath, safe));
+        continue;
+      }
       if (st.isDirectory()) {
         if (NOISE_DIRS.has(item)) {
           entries.push(`${relPath}/  [skipped]`);
@@ -785,9 +804,13 @@ function buildDirListing(rootPath: string, subPath: string): string {
       lines.push(`  ${item}  (outside checkout)`);
       continue;
     }
-    const st = safeStat(safe);
+    const st = safeStat(safe, "lstat");
     if (!st) {
       lines.push(`  ${item}  (unreadable)`);
+      continue;
+    }
+    if (st.isSymbolicLink()) {
+      lines.push(`  ${symlinkEntry(item, safe)}`);
       continue;
     }
     lines.push(st.isDirectory() ? `  ${item}/` : `  ${item}  (${formatSize(st.size)})`);
@@ -836,7 +859,7 @@ export function renderRepoView(
   if (view.type === "tree" && view.path) {
     const target = resolveWithinRepo(localPath, view.path);
     // Missing, unreadable, or escaping: the fallback view owns all three.
-    const stat = target ? safeStat(target) : undefined;
+    const stat = target ? safeStat(target, "stat") : undefined;
     if (stat?.isDirectory()) {
       return [
         clonedTo(localPath),
