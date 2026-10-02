@@ -18,6 +18,23 @@ function repoParts(url: URL): { owner: string; repo: string; rest: string[] } | 
   return { owner, repo, rest: segs.slice(2) };
 }
 
+/** URL path segments arrive percent-encoded; a space or non-ASCII path must
+ *  reach the filesystem decoded. Pure; exported for tests. */
+export function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment; // malformed escape: leave it as the URL wrote it
+  }
+}
+
+/** The raw-content URL for a `blob`/`raw` path. Segments stay percent-encoded —
+ *  raw.githubusercontent wants the path as the URL wrote it. Pure; exported
+ *  for tests, which pin that the tree branch's decode does not reach here. */
+export function rawContentUrl(owner: string, repo: string, rest: string[]): string {
+  return `https://raw.githubusercontent.com/${owner}/${repo}/${rest.slice(1).join("/")}`;
+}
+
 interface GhRepoMeta {
   full_name: string;
   description: string | null;
@@ -221,10 +238,7 @@ export const githubHandler = defineHandler({
     const { owner, repo, rest } = p;
 
     if (rest[0] === "blob" || rest[0] === "raw") {
-      const { text } = await getText(
-        `https://raw.githubusercontent.com/${owner}/${repo}/${rest.slice(1).join("/")}`,
-        ctx.signal,
-      );
+      const { text } = await getText(rawContentUrl(owner, repo, rest), ctx.signal);
       return { kind: "file", content: text };
     }
     if ((rest[0] === "issues" || rest[0] === "pull") && /^\d+$/.test(rest[1] ?? "")) {
@@ -233,9 +247,12 @@ export const githubHandler = defineHandler({
       return defaultFetch(url, ctx); // unrecognized shape — plain page
     }
     if (rest.length === 0 || rest[0] === "tree") {
-      // A tree URL's ref may contain "/" — resolveTreePath owns the split.
+      // Segments are percent-encoded; both the ref list and the filesystem
+      // match decoded text. A tree URL's ref may contain "/" — resolveTreePath
+      // owns the split.
+      const segments = rest.slice(1).map(decodeSegment);
       const { ref, subPath } = rest[0] === "tree"
-        ? await resolveTreePath(owner, repo, rest.slice(1), { signal: ctx.signal })
+        ? await resolveTreePath(owner, repo, segments, { signal: ctx.signal })
         : { ref: undefined, subPath: "" };
       return githubRepoClone(owner, repo, ref, subPath, ctx);
     }

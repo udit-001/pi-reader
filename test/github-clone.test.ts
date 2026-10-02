@@ -40,12 +40,12 @@ function fakeExec(route: Route): { exec: CloneExec; calls: Call[] } {
   return { exec, calls };
 }
 
-// gh present, repo 1 MB, clone succeeds. The trees call returns the checkout
-// estimate (1 KB of blobs); the plain `api` route is the whole-repo fallback.
-// The clone writes a marker file so the destination is a usable checkout, as a
-// real git clone would leave it.
+// gh present and authenticated, repo 1 MB, clone succeeds. The trees call
+// returns the checkout estimate (1 KB of blobs); the plain `api` route is the
+// whole-repo fallback. The clone writes a marker file so the destination is a
+// usable checkout, as a real git clone would leave it.
 const ghHappyPath: Route = (command, args) => {
-  if (command === "gh" && args[0] === "--version") return { code: 0 };
+  if (command === "gh" && args[0] === "auth") return { code: 0 };
   if (command === "gh" && args[0] === "api" && (args[1] ?? "").includes("/git/trees/")) {
     return { stdout: JSON.stringify({ total: 1024, truncated: false }) };
   }
@@ -209,16 +209,17 @@ test("clone: ensureClone pins the requested branch", async () => {
   rmSync(clonePath, { recursive: true, force: true });
 });
 
-test("clone: ensureClone falls back to git when gh is missing", async () => {
+test("clone: ensureClone falls back to git when gh is missing or logged out", async () => {
   const clonePath = tmpClonePath();
   const { exec, calls } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 1 };
+    if (command === "gh" && args[0] === "auth") return { code: 1, stderr: "not logged in" };
     return undefined;
   });
   const result = await ensureClone(REPO, { exec, clonePath });
   assert.equal(result.status, "cloned");
   if (result.status !== "cloned") return;
   assert.equal(result.via, "git");
+  assert.ok(!calls.some((c) => c.args[0] === "api"), "a logged-out gh must not run the size gate");
   const gitCall = calls.find((c) => c.command === "git");
   assert.ok(gitCall, "expected a git clone call");
   assert.ok(gitCall.args.some((a) => a.startsWith("https://github.com/")));
@@ -237,7 +238,7 @@ test("clone: ensureClone gates on the working tree, not the full repo history", 
   // react-shaped: 1073 MB of history, 39 MB working tree. The whole-repo gate
   // refused it (1073 > 350); the checkout estimate (39 x2) clones.
   const { exec, calls } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 0 };
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
     if (command === "gh" && routesTrees(args)) return { stdout: treesPayload(39 * 1024 * 1024) };
     if (command === "gh" && args[0] === "api") return { stdout: "1099593\n" };
     return undefined;
@@ -253,7 +254,7 @@ test("clone: ensureClone declines a repo whose working tree is over the limit", 
   const clonePath = tmpClonePath();
   // 200 MB of blobs -> ~400 MB checkout, above the 350 MB default.
   const { exec, calls } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 0 };
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
     if (command === "gh" && routesTrees(args)) return { stdout: treesPayload(200 * 1024 * 1024) };
     return undefined;
   });
@@ -270,7 +271,7 @@ test("clone: ensureClone memoizes a too-large verdict", async () => {
   const clonePath = tmpClonePath();
   let treesCalls = 0;
   const { exec } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 0 };
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
     if (command === "gh" && routesTrees(args)) {
       treesCalls++;
       return { stdout: treesPayload(400 * 1024 * 1024) };
@@ -289,7 +290,7 @@ test("clone: ensureClone falls back to the whole-repo size when the tree listing
   const clonePath = tmpClonePath();
   // A tree the API will not return whole: its partial sum is untrusted.
   const { exec, calls } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 0 };
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
     if (command === "gh" && routesTrees(args)) return { stdout: treesPayload(1024, true) };
     if (command === "gh" && args[0] === "api") return { stdout: "400000\n" };
     return undefined;
@@ -303,7 +304,7 @@ test("clone: ensureClone falls back to the whole-repo size when the tree listing
 test("clone: ensureClone falls back to the whole-repo size when the tree listing fails", async () => {
   const clonePath = tmpClonePath();
   const { exec } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 0 };
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
     if (command === "gh" && routesTrees(args)) return { code: 1, stderr: "Not Found" };
     if (command === "gh" && args[0] === "api") return { stdout: "400000\n" };
     return undefined;
@@ -316,7 +317,7 @@ test("clone: ensureClone falls back to the whole-repo size when the tree listing
 test("clone: ensureClone reports failed clones and cleans the destination", async () => {
   const clonePath = tmpClonePath();
   const { exec, calls } = fakeExec((command, args) => {
-    if (command === "gh" && args[0] === "--version") return { code: 0 };
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
     if (command === "gh" && args[0] === "api") return { stdout: "1024\n" };
     if (command === "gh" && args[0] === "repo") return { code: 128, stderr: "fatal: repository not found" };
     return undefined;
@@ -506,6 +507,32 @@ test("clone: every render names the checkout path the hint refers to", () => {
     assert.ok(content.includes(root), `${name} view must name the checkout`);
   }
   assert.ok(views.tree.includes(join(root, "src")), "tree view must name the subdirectory");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView reads a README variant case-insensitively", () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-readme-test-"));
+  writeFileSync(join(root, "Readme.markdown"), "variant readme");
+  const content = renderRepoView(root, { type: "root" });
+  assert.match(content, /variant readme/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView names the README by the file it actually read", () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-readme-test-"));
+  writeFileSync(join(root, "Readme.rst"), "rst readme");
+  const content = renderRepoView(root, { type: "root" });
+  assert.match(content, /## Readme\.rst/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView prefers README.md over a bare README", () => {
+  const root = mkdtempSync(join(tmpdir(), "piweb-readme-test-"));
+  writeFileSync(join(root, "README"), "bare readme");
+  writeFileSync(join(root, "README.md"), "markdown readme");
+  const content = renderRepoView(root, { type: "root" });
+  assert.match(content, /markdown readme/);
+  assert.ok(!content.includes("bare readme"), "markdown outranks the extensionless README");
   rmSync(root, { recursive: true, force: true });
 });
 

@@ -4,7 +4,23 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { repoHeader, formatRelease, formatReleases, parseReleasesPath } from "../fetch/handlers/github.ts";
+import { decodeSegment, rawContentUrl, repoHeader, formatRelease, formatReleases, parseReleasesPath } from "../fetch/handlers/github.ts";
+
+test("github: decodeSegment decodes percent-escapes and leaves malformed ones alone", () => {
+  assert.equal(decodeSegment("my%20file"), "my file");
+  assert.equal(decodeSegment("caf%C3%A9"), "café");
+  assert.equal(decodeSegment("plain"), "plain");
+  assert.equal(decodeSegment("100%"), "100%");
+});
+
+test("github: rawContentUrl keeps the path percent-encoded", () => {
+  // The tree branch decodes its segments; this branch must not — a space here
+  // would break the raw.githubusercontent request.
+  assert.equal(
+    rawContentUrl("o", "r", ["blob", "main", "my%20file.ts"]),
+    "https://raw.githubusercontent.com/o/r/main/my%20file.ts",
+  );
+});
 
 test("repoHeader renders the full metadata block the API already returns", () => {
   const header = repoHeader({

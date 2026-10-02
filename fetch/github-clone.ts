@@ -202,7 +202,7 @@ async function runClone(
   const runner = opts.exec ?? defaultExec;
   const timeoutMs = cfg.cloneTimeoutSeconds * 1000;
 
-  const hasGh = await ghAvailable(runner);
+  const hasGh = await ghUsable(runner);
 
   // Size gate (gh only): refuse to clone repos over the budget, so the caller
   // can degrade to the API view. The estimate is the ref's WORKING TREE, not
@@ -271,8 +271,12 @@ async function initSubmodules(
   return r.code !== 0;
 }
 
-async function ghAvailable(runner: CloneExec): Promise<boolean> {
-  const r = await runner("gh", ["--version"], { timeoutMs: 5000 });
+/** gh is usable only when it can act: `gh --version` passes when logged out,
+ *  but every API call and clone then fails — silently disabling both the size
+ *  gate and the checkout. Probing auth sends a logged-out gh down the git path,
+ *  where public repos still clone. */
+async function ghUsable(runner: CloneExec): Promise<boolean> {
+  const r = await runner("gh", ["auth", "status"], { timeoutMs: 5000 });
   return r.code === 0;
 }
 
@@ -667,7 +671,9 @@ function resolveRuntimeRoot(clonePath: string): string | null {
 
 const MAX_TREE_ENTRIES = 200;
 const MAX_README_CHARS = 8192;
-const README_CANDIDATES = ["README.md", "readme.md", "README", "README.txt", "README.rst"];
+/** Most-preferred first, matched case-insensitively against the listing so a
+ *  variant spelling (`Readme.md`) still wins over a lower-preference name. */
+const README_PATTERNS = [/^readme\.md$/i, /^readme\.markdown$/i, /^readme$/i, /^readme\.rst$/i, /^readme\.txt$/i];
 const NOISE_DIRS = new Set([
   "node_modules", "vendor", ".next", "dist", "build", "__pycache__",
   ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
@@ -773,17 +779,29 @@ function buildDirListing(rootPath: string, subPath: string): string {
   return lines.join("\n");
 }
 
-function readReadme(localPath: string): string | null {
-  for (const name of README_CANDIDATES) {
-    const p = join(localPath, name);
-    if (!existsSync(p)) continue;
+/** The repo's README, matched case-insensitively over the directory listing so
+ *  `Readme.md` and `README.markdown` are not missed, and returned with the name
+ *  it actually has. A name that turns out to be a directory falls through. */
+function readReadme(localPath: string): { name: string; content: string } | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(localPath).sort();
+  } catch {
+    return null;
+  }
+  for (const pattern of README_PATTERNS) {
+    const name = entries.find((entry) => pattern.test(entry));
+    if (!name) continue;
     try {
-      const content = readFileSync(p, "utf8");
-      return content.length > MAX_README_CHARS
-        ? `${content.slice(0, MAX_README_CHARS)}\n\n[README truncated at 8K chars]`
-        : content;
+      const content = readFileSync(join(localPath, name), "utf8");
+      return {
+        name,
+        content: content.length > MAX_README_CHARS
+          ? `${content.slice(0, MAX_README_CHARS)}\n\n[README truncated at 8K chars]`
+          : content,
+      };
     } catch {
-      // try the next candidate
+      // a directory or unreadable file named like a README: try the next
     }
   }
   return null;
@@ -824,7 +842,7 @@ export function renderRepoView(
   }
   const parts = [clonedTo(localPath), SHALLOW_NOTE, "", "## Structure", buildTree(localPath), ""];
   const readme = readReadme(localPath);
-  if (readme) parts.push("## README.md", readme, "");
+  if (readme) parts.push(`## ${readme.name}`, readme.content, "");
   parts.push(EXPLORE_HINT);
   return parts.join("\n");
 }
