@@ -35,6 +35,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  type Stats,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve as resolvePath, sep as pathSep } from "node:path";
@@ -688,6 +689,7 @@ const NOISE_DIRS = new Set([
 ]);
 
 const EXPLORE_HINT = "Use read and bash at the path above to explore further.";
+const FILE_HINT = "Use read at that path.";
 const SHALLOW_NOTE = "Shallow checkout (one branch, depth 1): `git log`, `git blame`, and `git show` see only the tip.";
 
 /** Every view opens with the checkout path: EXPLORE_HINT says "the path
@@ -720,6 +722,17 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** statSync that returns undefined instead of throwing: a checkout is live, so
+ *  an entry can vanish or become unreadable between listing and stat. The
+ *  caller owns what to do about it. */
+function safeStat(path: string): Stats | undefined {
+  try {
+    return statSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
 function buildTree(rootPath: string): string {
   const entries: string[] = [];
   const walk = (dir: string, rel: string): void => {
@@ -736,12 +749,8 @@ function buildTree(rootPath: string): string {
       const relPath = rel ? `${rel}/${item}` : item;
       const safe = resolveWithinRepo(rootPath, relPath);
       if (!safe) continue;
-      let st;
-      try {
-        st = statSync(safe);
-      } catch {
-        continue;
-      }
+      const st = safeStat(safe);
+      if (!st) continue;
       if (st.isDirectory()) {
         if (NOISE_DIRS.has(item)) {
           entries.push(`${relPath}/  [skipped]`);
@@ -776,12 +785,12 @@ function buildDirListing(rootPath: string, subPath: string): string {
       lines.push(`  ${item}  (outside checkout)`);
       continue;
     }
-    try {
-      const st = statSync(safe);
-      lines.push(st.isDirectory() ? `  ${item}/` : `  ${item}  (${formatSize(st.size)})`);
-    } catch {
+    const st = safeStat(safe);
+    if (!st) {
       lines.push(`  ${item}  (unreadable)`);
+      continue;
     }
+    lines.push(st.isDirectory() ? `  ${item}/` : `  ${item}  (${formatSize(st.size)})`);
   }
   return lines.join("\n");
 }
@@ -815,9 +824,10 @@ function readReadme(localPath: string): { name: string; content: string } | null
 }
 
 /**
- * Render a checkout view for the agent: repository root (structure + README)
- * or a subdirectory listing. `path` is repo-relative and traversal-guarded;
- * a missing or escaping path degrades to the root view, never outside reads.
+ * Render a checkout view for the agent: repository root (structure + README),
+ * a subdirectory listing, or a file path (its checkout path and size). `path`
+ * is repo-relative and traversal-guarded; a path that is missing, unreadable,
+ * or escapes the checkout degrades to the root view, never outside reads.
  */
 export function renderRepoView(
   localPath: string,
@@ -825,7 +835,9 @@ export function renderRepoView(
 ): string {
   if (view.type === "tree" && view.path) {
     const target = resolveWithinRepo(localPath, view.path);
-    if (target && existsSync(target) && statSync(target).isDirectory()) {
+    // Missing, unreadable, or escaping: the fallback view owns all three.
+    const stat = target ? safeStat(target) : undefined;
+    if (stat?.isDirectory()) {
       return [
         clonedTo(localPath),
         `Directory: ${join(localPath, view.path)}`,
@@ -836,9 +848,19 @@ export function renderRepoView(
         EXPLORE_HINT,
       ].join("\n");
     }
+    if (stat) {
+      // The path exists but is a file: name it and where it lives rather than
+      // claiming it is missing.
+      return [
+        clonedTo(localPath),
+        `File: ${join(localPath, view.path)} (${formatSize(stat.size)})`,
+        "",
+        FILE_HINT,
+      ].join("\n");
+    }
     return [
       clonedTo(localPath),
-      `Path \`${view.path}\` not found in clone. Showing repository root instead.`,
+      `Path \`${view.path}\` is not available in this checkout. Showing repository root instead.`,
       SHALLOW_NOTE,
       "",
       "## Structure",

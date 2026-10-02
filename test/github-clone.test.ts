@@ -580,9 +580,18 @@ test("clone: renderRepoView lists a subdirectory with sizes", () => {
 test("clone: renderRepoView falls back to the root view for a missing path", () => {
   const root = makeRepoFixture();
   const content = renderRepoView(root, { type: "tree", path: "nope" });
-  assert.match(content, /not found in clone/);
+  assert.match(content, /not available in this checkout/);
   assert.match(content, /## Structure/);
   assert.match(content, /Shallow checkout/, "the fallback is a root view, so it carries the note");
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("clone: renderRepoView names a file path instead of claiming it is missing", () => {
+  const root = makeRepoFixture();
+  const content = renderRepoView(root, { type: "tree", path: "src/b.ts" });
+  assert.ok(!content.includes("not available in this checkout"), "an existing file is not missing");
+  assert.match(content, /File: .*b\.ts \(\d+ B\)/);
+  assert.ok(content.includes(root), "still names the checkout");
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -595,7 +604,7 @@ test("clone: renderRepoView contains path traversal", () => {
   mkdirSync(sentinel, { recursive: true });
   writeFileSync(join(sentinel, "secret.txt"), "x");
   const content = renderRepoView(root, { type: "tree", path: "../.." });
-  assert.match(content, /not found in clone/);
+  assert.match(content, /not available in this checkout/);
   assert.ok(!content.includes("piweb-outside-sentinel"), "must not list directories outside the checkout");
   assert.match(content, /src\//, "falls back to the checkout's own root");
   rmSync(root, { recursive: true, force: true });
