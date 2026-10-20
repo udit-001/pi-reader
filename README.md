@@ -1,6 +1,6 @@
 # pi-reader
 
-Web search and URL→Markdown for the [Pi coding agent](https://pi.dev). Two tools, zero config, no API key required.
+Web search and URL→Markdown for the [Pi coding agent](https://pi.dev). Two tools, zero keys: your agent can search the web and read any page the moment you install it.
 
 ## Install
 
@@ -10,16 +10,17 @@ pi install git:github.com/udit-001/pi-reader
 
 ## What your agent gets
 
-- **Web search with no setup** — DuckDuckGo works immediately and shrugs off bot walls, with recency windows (`day`/`week`/`month`/`year`) and pagination built in. `provider: "parallel"` adds a second independent index (Parallel's own — free, keyless, explicit-only) for when DDG is captcha-walled or thin. Wikipedia, Hacker News, and Context7 (library docs) are one `provider` word away.
-- **News, image, and video search** — `provider: "news"` returns dated, outlet-attributed articles; `provider: "images"` returns hotlinkable image URLs — dimensions, source domain, and a license filter ride in each result, so one hit is enough to embed, download, or vision-check; `provider: "videos"` returns watch URLs with duration, view count, and uploader — pick a video and hand the URL to a watcher. All are explicit opt-ins; auto-routing never picks them.
-- **Deliberately excluded** — ddgs's books vertical (Anna's Archive): shadow-library positioning aside, the backend returns no results at all (verified 2026-09).
-- **Scholarly search built in** — `provider: "papers"` returns citeable records from OpenAlex and Europe PMC (PubMed, PMC copies, preprints): authors, venue, DOI, topic, open-access links, and field-normalized impact on every row. Retracted work is excluded by default; walk a citation graph from any hit (who cites it, what it cites), sort by citations, date, or impact, and filter with OpenAlex's full expression grammar — no key required.
-- **Semantic search when you want it** — pass Exa params (category filters, full page content, domain restrictions) and search routes to Exa. `/exa-setup` adds a key in a guided wizard — and imports one you already have in `mcp.json`.
-- **Grounded answers from your Codex subscription** — `provider: "openai"` runs OpenAI's hosted web search on the ChatGPT/Codex login you already have: one cited, synthesized answer instead of a page list, no API key. Explicit opt-in (it spends subscription quota); `searchModel` picks the model, defaulting to the cheap tier.
-- **Any URL becomes clean Markdown** — client-rendered pages and bot-walled pages included. Pass `prompt` to get an answer about the content instead of the raw text.
-- **Code hosts come back structured** — a GitHub or GitLab repo URL returns a local checkout your agent explores with `read` and shell commands; issues and PRs return the full document (state, checks, review verdicts, files, commits, comments — private repos too); raw files come back verbatim. Plus releases, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, …).
-- **Answer sites arrive ready to read** — arXiv papers as citation-ready summaries (full text on request), Reddit threads as post + top comments, Stack Overflow questions with the accepted answer first, ORCID profiles as name, affiliations, and a deduped publication list with DOI links — the works list also arrives as JSON when the agent wants to process it, Wikipedia articles and Wikidata entities as clean plaintext.
-- **Safe by default** — hostile pages can't bounce the fetcher at your localhost, private network, or cloud-metadata endpoints — not even through redirects, and DNS answers are pinned against rebinding. Your Exa key is redacted from every error that leaves the tool. Fetched pages are cached locally, so repeat reads are instant.
+- **Searches the web on day one** — DuckDuckGo answers with no key and no account, with recency windows (`day`/`week`/`month`/`year`) and pagination built in. Add `provider: "parallel"` for a second independent index when DDG is captcha-walled or thin, or `"wikipedia"`, `"hn"`, `"context7"` to query those directly.
+- **Searches news, images, and video** — `provider: "news"` returns dated, outlet-attributed articles; `"images"` returns hotlinkable image URLs with dimensions, source domain, and a license filter on each row; `"videos"` returns watch URLs with duration, view count, and uploader. All three are explicit opt-ins, so auto-routing never picks them by accident.
+- **Reads papers** — `provider: "papers"` returns citeable OpenAlex and Europe PMC records: authors, venue, DOI, topic, open-access links, and field-normalized impact. Retractions are excluded by default, a citation graph can be walked in either direction from any hit, and no key is needed.
+- **Answers a question instead of listing pages** — `provider: "openai"` runs OpenAI's hosted web search on the ChatGPT/Codex login you already have and returns one cited answer. Opt-in, because it spends subscription quota; `searchModel` picks the model and defaults to the cheap tier.
+- **Reaches Exa when you want semantics** — passing Exa params (category filters, full page content, domain restrictions) routes the search to Exa. `/exa-setup` walks you through a key, and imports one already sitting in `mcp.json`.
+- **Turns any URL into Markdown** — client-rendered and bot-walled pages included. Add `prompt` to get an answer about the page instead of its full text.
+- **Returns code hosts as structure** — a GitHub or GitLab repo URL becomes a local checkout your agent walks with `read` and shell commands. Issues and PRs come back as the whole document: state, checks, review verdicts, files, commits, comments, private repos included when `gh` is authenticated. Also raw files, releases, RSS/Atom feeds, and 8 package registries (npm, PyPI, crates.io, Maven, Go, Hex, Packagist, RubyGems).
+- **Brings answer sites ready to read** — arXiv papers as citation-ready summaries with full text on request, Reddit threads as post plus top comments, Stack Overflow questions with the accepted answer first, ORCID profiles as name, affiliations, and a deduped publication list with DOI links (the works list also as JSON), Wikipedia articles as plaintext, Wikidata entities as structured summaries.
+- **Survives hostile pages** — the fetcher can't be bounced at your localhost, private network, or cloud-metadata endpoints, not even through redirects, and DNS answers are pinned against rebinding. Your Exa key is redacted from every error the tool emits, and fetched pages are cached locally.
+
+Skipped on purpose: ddgs's books vertical (Anna's Archive). Beyond the shadow-library question, the backend returns no results at all (checked 2026-09).
 
 ```text
 web_search({ query: "Stripe API create subscription Node.js example" })
@@ -30,7 +31,7 @@ web_fetch({ urls: "https://docs.example.com/api", prompt: "How do I paginate?" }
 
 ## Contributing
 
-Architecture and rules: [AGENTS.md](AGENTS.md) — `npm install`, then `npm run typecheck && npm test`. Subsystem deep dives (fetch pipeline, search providers, GitHub rendering) live in [docs/](docs/); open them before touching those seams.
+Architecture and rules live in [AGENTS.md](AGENTS.md): `npm install`, then `npm run typecheck && npm test`. Subsystem deep dives (fetch pipeline, search providers, GitHub rendering) are in [docs/](docs/) — read those before touching the seam.
 
 ## License
 
