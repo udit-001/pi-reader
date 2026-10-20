@@ -20,6 +20,7 @@
 
 import type {
   AgentToolResult,
+  AgentToolUpdateCallback,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
@@ -406,13 +407,24 @@ export default function piWeb(pi: ExtensionAPI): void {
       _callId: string,
       params: WebSearchParams,
       signal: AbortSignal | undefined,
-      _onUpdate: unknown,
+      onUpdate: AgentToolUpdateCallback<WebSearchDetails> | undefined,
       ctx: ExtensionContext,
     ): Promise<AgentToolResult<WebSearchDetails>> {
       // Hoisted out of `try` so the catch block can name the requested
       // provider in its recovery message (parallel's rate limit has a
       // different fix than Exa's).
       const provider = (params.provider ?? "auto") as "auto" | SearchProviderName;
+      // Mid-run feedback: the transcript holds this line (renderResult's
+      // isPartial branch) until the real result lands, so a slow provider
+      // doesn't read as a dead call. The index is named only when the agent
+      // picked it — on 'auto' a fallback could answer instead, and the line
+      // must not go stale mid-flight. Empty details: partials are rendered
+      // from content alone until the final result carries the real payload.
+      const where = provider !== "auto" ? ` ${provider}` : "";
+      onUpdate?.({
+        content: [{ type: "text", text: `Searching${where} for “${params.query}”…` }],
+        details: {},
+      });
       try {
         // Smart default: category present → precise (10), broad discovery → 15
         const numResults = params.numResults ?? (params.category ? 10 : 15);
@@ -477,6 +489,7 @@ export default function piWeb(pi: ExtensionAPI): void {
           details: {
             provider: response.provider,
             resultCount: response.results.length,
+            ...(params.category ? { category: params.category } : {}),
             ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
             results: response.results.map((r) => ({
               title: r.title,
