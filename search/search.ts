@@ -6,6 +6,7 @@
 
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
+import { searchParallelMcp } from "./parallel-mcp.ts";
 import { searchOpenAI } from "./openai.ts";
 import { searchNews } from "./news.ts";
 import { searchImages } from "./images.ts";
@@ -21,7 +22,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type SearchProviderName = "duckduckgo" | "exa" | "openai" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
+export type SearchProviderName = "duckduckgo" | "exa" | "parallel" | "openai" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
 
 /** Which scholarly-index backend the papers provider queries. Lives here so
  *  SearchOptions, the schema literals, and the cache key share one type. */
@@ -108,6 +109,17 @@ const exaProvider: SearchProvider = {
       ? await searchExaAdvanced(query, options)
       : await searchExaMcp(query, options);
     return { answer: buildAnswer(results), results, provider: "exa" };
+  },
+};
+
+// Parallel: keyword search on Parallel's own index — free and keyless by
+// default (anonymous fast mode), explicit-only like openai. Honors query,
+// numResults, and the signal; domains/recency/category are Exa-shaped and
+// ignored here (the tool description says so at the call site).
+const parallelProvider: SearchProvider = {
+  async search(query, options) {
+    const results = await searchParallelMcp(query, options);
+    return { answer: buildAnswer(results), results, provider: "parallel" };
   },
 };
 
@@ -352,6 +364,8 @@ export async function webSearch(
     response = await duckduckgoProvider.search(query, options);
   } else if (requested === "exa") {
     response = await exaProvider.search(query, options);
+  } else if (requested === "parallel") {
+    response = await parallelProvider.search(query, options);
   } else if (requested === "openai") {
     response = await openaiProvider.search(query, options);
   } else if (requested === "news") {

@@ -10,7 +10,7 @@ pi install git:github.com/udit-001/pi-reader
 
 ## What your agent gets
 
-- **Web search with no setup** — DuckDuckGo works immediately and shrugs off bot walls, with recency windows (`day`/`week`/`month`/`year`) and pagination built in. Wikipedia, Hacker News, and Context7 (library docs) are one `provider` word away.
+- **Web search with no setup** — DuckDuckGo works immediately and shrugs off bot walls, with recency windows (`day`/`week`/`month`/`year`) and pagination built in. `provider: "parallel"` adds a second independent index (Parallel's own — free, keyless, explicit-only) for when DDG is captcha-walled or thin. Wikipedia, Hacker News, and Context7 (library docs) are one `provider` word away.
 - **News, image, and video search** — `provider: "news"` returns dated, outlet-attributed articles; `provider: "images"` returns hotlinkable image URLs — dimensions, source domain, and a license filter ride in each result, so one hit is enough to embed, download, or vision-check; `provider: "videos"` returns watch URLs with duration, view count, and uploader — pick a video and hand the URL to a watcher. All are explicit opt-ins; auto-routing never picks them.
 - **Deliberately excluded** — ddgs's books vertical (Anna's Archive): shadow-library positioning aside, the backend returns no results at all (verified 2026-09).
 - **Scholarly search built in** — `provider: "papers"` returns citeable records from OpenAlex and Europe PMC (PubMed, PMC copies, preprints): authors, venue, DOI, topic, open-access links, and field-normalized impact on every row. Retracted work is excluded by default; walk a citation graph from any hit (who cites it, what it cites), sort by citations, date, or impact, and filter with OpenAlex's full expression grammar — no key required.

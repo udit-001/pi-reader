@@ -8,8 +8,9 @@
 //   resultText  — CallToolResult → text; throws McpToolError on isError/empty
 //
 // Policy lives with the adapters, never here: credentials and endpoint
-// composition (Exa's keyed URL), keep-alive singletons and retry (Exa),
-// stateless per-call connections (grep).
+// composition (Exa's keyed URL, Parallel's Bearer header), keep-alive
+// singletons and retry (Exa, Parallel), stateless per-call connections
+// (grep).
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
@@ -27,13 +28,20 @@ export interface ToolResultLike {
   isError?: boolean;
 }
 
-/** Connect to a streamable-HTTP MCP server, bounded by a connect timeout. */
+/** Connect to a streamable-HTTP MCP server, bounded by a connect timeout.
+ *  `authToken` rides the Authorization header on every request — for servers
+ *  whose keys must not appear in the endpoint URL (they would leak into
+ *  transport error messages). */
 export async function connectMcp(
   url: string | URL,
-  opts: { connectTimeoutMs?: number } = {},
+  opts: { connectTimeoutMs?: number; authToken?: string } = {},
 ): Promise<Client> {
   const client = new Client({ name: "pi-reader", version: PI_WEB_VERSION });
-  const transport = new StreamableHTTPClientTransport(new URL(url));
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    ...(opts.authToken
+      ? { requestInit: { headers: { Authorization: `Bearer ${opts.authToken}` } } }
+      : {}),
+  });
   await Promise.race([
     client.connect(transport),
     new Promise<never>((_, reject) =>

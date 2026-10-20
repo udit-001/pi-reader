@@ -30,6 +30,8 @@ import { consumeExaIssue } from "./search/exa-issue.ts";
 import { warmDdgs } from "./search/ddgs-uv.ts";
 import { exaCategoryList } from "./search/exa-mcp.ts";
 import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
+import { consumeParallelIssue } from "./search/parallel-mcp.ts";
+import { openParallelSetup } from "./search/parallel-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
@@ -69,6 +71,7 @@ const providerSchema = Type.Optional(
       Type.Literal("auto"),
       Type.Literal("duckduckgo"),
       Type.Literal("exa"),
+      Type.Literal("parallel"),
       Type.Literal("openai"),
       Type.Literal("news"),
       Type.Literal("images"),
@@ -92,6 +95,11 @@ const providerSchema = Type.Optional(
         "domains; degrades to text search with a visible notice. category: 'news' instead uses " +
         "Exa semantic news (better relevance, uses quota).\n" +
         "• 'wikipedia' — factual 'what is X'. 'hn' — Hacker News discussions.\n" +
+        "• 'parallel' — a second independent keyword index (free to try): cross-index " +
+        "coverage in research passes, deep reads where its long inline excerpts save " +
+        "fetches, or when DuckDuckGo is captcha-walled or thin. Its index lags breaking " +
+        "news — recency belongs to 'news' or recency-flagged 'auto'. Ignores Exa-shaped " +
+        "params (category, domains, recency, includeContent).\n" +
         "• 'openai' — a grounded, cited answer from your ChatGPT/Codex subscription (no key): " +
         "for 'what changed in X' or 'is Y still true' — phrase the query as the question. " +
         "Costs subscription quota and takes a few seconds; plain page-finding belongs to 'auto'.\n" +
@@ -315,11 +323,26 @@ function notifyExaIssueOnce(ctx: ExtensionContext): void {
   }
 }
 
+// Parallel's only failure state is rate-limiting (anonymous is a valid
+// configuration, so there is no missing-key hint). Same once-per-session
+// surfacing as Exa's.
+function notifyParallelIssueOnce(ctx: ExtensionContext): void {
+  if (!consumeParallelIssue()) return;
+  ctx.ui.notify("Parallel is rate limited. /parallel-setup to add a key for higher limits — DuckDuckGo still works.", "warning");
+}
+
 export default function piWeb(pi: ExtensionAPI): void {
   pi.registerCommand("exa-setup", {
     description: "Set up or replace the Exa API key (guided wizard)",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
       openExaSetup(ctx);
+    },
+  });
+
+  pi.registerCommand("parallel-setup", {
+    description: "Add a Parallel API key for higher search rate limits (optional — search works keyless)",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      openParallelSetup(ctx);
     },
   });
 
@@ -384,8 +407,11 @@ export default function piWeb(pi: ExtensionAPI): void {
       _onUpdate: unknown,
       ctx: ExtensionContext,
     ): Promise<AgentToolResult<Record<string, unknown>>> {
+      // Hoisted out of `try` so the catch block can name the requested
+      // provider in its recovery message (parallel's rate limit has a
+      // different fix than Exa's).
+      const provider = (params.provider ?? "auto") as "auto" | SearchProviderName;
       try {
-        const provider = (params.provider ?? "auto") as "auto" | SearchProviderName;
         // Smart default: category present → precise (10), broad discovery → 15
         const numResults = params.numResults ?? (params.category ? 10 : 15);
         const response = await webSearch(params.query, {
@@ -510,7 +536,9 @@ export default function piWeb(pi: ExtensionAPI): void {
         } else if (/DuckDuckGo/i.test(message)) {
           error = "Search failed. Try provider: 'exa' or rephrase with a descriptive query.";
         } else if (/rate.?limit/i.test(message)) {
-          error = "Search failed. Run /exa-setup to replace the key, or wait and retry.";
+          error = provider === "parallel"
+            ? "Search failed. Parallel is rate limited — wait and retry, or /parallel-setup to add a key."
+            : "Search failed. Run /exa-setup to replace the key, or wait and retry.";
         } else if (/no.*key|not.*configured|missing/i.test(message)) {
           error = "Search failed. Run /exa-setup to configure an Exa API key.";
         } else if (/no.*results|parseable/i.test(message)) {
@@ -527,6 +555,7 @@ export default function piWeb(pi: ExtensionAPI): void {
         };
       } finally {
         notifyExaIssueOnce(ctx);
+        notifyParallelIssueOnce(ctx);
       }
     },
   });

@@ -21,6 +21,13 @@ export interface PiWebConfig {
     url: string;
     apiKey: string;
   };
+  /** Parallel MCP key (see search/parallel-mcp.ts). Optional by design — the
+   *  anonymous free tier is the default; a key (env fallback
+   *  PARALLEL_API_KEY) raises the rate limits. Absent = anonymous. */
+  parallel?: {
+    url: string;
+    apiKey: string;
+  };
   /** One-shot UX flags, persisted so prompts fire once per user. */
   hints?: {
     /** ISO timestamp when the mcp.json duplication prompt was shown. */
