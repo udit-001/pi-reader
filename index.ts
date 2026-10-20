@@ -33,6 +33,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { consumeParallelIssue } from "./search/parallel-mcp.ts";
 import { openParallelSetup } from "./search/parallel-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
+import { webSearchRenderers, type WebSearchDetails } from "./render.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { OpenAISearchUnavailableError } from "./search/openai.ts";
@@ -389,7 +390,7 @@ export default function piWeb(pi: ExtensionAPI): void {
 
   pi.registerTool({
     name: "web_search",
-    label: "Web Search",
+    label: "search",
     description:
       "Search the web. 'auto' (default) runs DuckDuckGo, then Exa; Exa-shaped params " +
       "(category, includeContent, includeSummary, domains) start at Exa. Name a provider when " +
@@ -400,13 +401,14 @@ export default function piWeb(pi: ExtensionAPI): void {
       "Phrase the query as the page you want to land on (e.g. 'stripe API charge endpoint').",
     promptSnippet: "Search the web; provider 'context7' returns library/API reference docs (endpoints, signatures); 'papers' returns citeable scholarly records (find papers on X).",
     parameters: webSearchParams,
+    ...webSearchRenderers,
     async execute(
       _callId: string,
       params: WebSearchParams,
       signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: ExtensionContext,
-    ): Promise<AgentToolResult<Record<string, unknown>>> {
+    ): Promise<AgentToolResult<WebSearchDetails>> {
       // Hoisted out of `try` so the catch block can name the requested
       // provider in its recovery message (parallel's rate limit has a
       // different fix than Exa's).
