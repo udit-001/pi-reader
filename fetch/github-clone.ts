@@ -1,25 +1,9 @@
-// github-clone.ts — deep module: a local, exploreable checkout of a GitHub repo.
+// github-clone.ts — a local, exploreable checkout of a GitHub repo.
 //
-// Ported from pi-web-access (github-extract.ts / github-api.ts) and reshaped
-// for pi-reader's handler architecture. The seam:
-//
-//   ensureClone({owner, repo, ref?}) -> {cloned, localPath, via, submodulesIncomplete?}
-//                                     | {too-large, sizeMB, limitMB}
-//                                     | {failed, reason}
-//                                     | {disabled}
-//   renderRepoView(localPath, {root|tree, path?}) -> content
-//   resolveTreePath(owner, repo, segments) -> {ref, subPath}
-//
-// Everything else — gh→git transport choice, checkout-size gate, tree-URL ref
-// resolution, best-effort submodule init, cross-process runtime cache with
-// owner files and stale sweeping, timeout kill discipline, traversal guards,
-// tree caps — is implementation.
-// `exec` and `clonePath` are injectable so tests never touch the network or git.
-//
-// Clone destinations live under `<clonePath>/runtime-<mkdtemp>/<sha256>`:
-// /tmp by default (survives the session, dies with reboot, no cleanup logic
-// of its own), deliberately outside the LRU-evicted pi-reader cache root — a
-// checkout deleted mid-session under the agent's `read` is worse than disk.
+// A checkout lives under its own `runtime-<mkdtemp>` dir, outside the
+// LRU-evicted cache root: a clone deleted mid-session under the agent's `read` is
+// worse than disk. `exec` and `clonePath` are injectable, so tests never touch
+// the network or git.
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -43,7 +27,7 @@ import { basename, dirname, join, resolve as resolvePath, sep as pathSep } from 
 import { readFile, opendir, rm } from "node:fs/promises";
 import { loadConfig } from "../config.ts";
 
-// ── Public interface ─────────────────────────────────────────────────────────
+// Public interface
 
 export interface RepoRef {
   owner: string;
@@ -124,7 +108,7 @@ function loadCloneConfig(): CloneConfig {
   return normalizeCloneConfig(loadConfig()?.githubClone);
 }
 
-/** Expand `~` and `$VAR` at the start of a configured path. Pure; exported for tests. */
+/** Expand `~` and `$VAR` at the start of a configured path. Pure. */
 export function expandPath(value: string): string {
   let expanded = value;
   if (expanded.startsWith("~/") || expanded === "~") {
@@ -134,7 +118,7 @@ export function expandPath(value: string): string {
   return expanded;
 }
 
-// ── Clone orchestration ──────────────────────────────────────────────────────
+// Clone orchestration
 
 // Two maps, two lifetimes. `inflight` dedupes concurrent callers and is cleared
 // the moment a clone settles. `settled` memoizes a terminal verdict for the
@@ -347,7 +331,7 @@ async function checkoutSizeMB(
   return sizeKb === null ? null : sizeKb / 1024;
 }
 
-// ── Default runner: hardened spawn with process-group kill ───────────────────
+// Default runner: hardened spawn with process-group kill
 
 const KILL_GRACE_MS = 3000;
 const OUTPUT_CAP = 2 * 1024 * 1024;
@@ -379,7 +363,7 @@ function terminateProcessTree(child: ChildProcess): void {
 
 /** The subprocess env for every transport call: never prompt, and never smudge
  *  LFS — a `--depth 1` clone would otherwise pull every LFS object in the tree,
- *  which the size gate cannot see. Pure; exported for tests. */
+ *  which the size gate cannot see. Pure. */
 export function transportEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return {
     ...base,
@@ -432,15 +416,13 @@ const defaultExec: CloneExec = (command, args, opts) =>
     });
   });
 
-// ── Tree URL ref resolution ──────────────────────────────────────────────────
-// GitHub resolves `/owner/repo/tree/<a>/<b>/<c>` by taking the LONGEST ref that
-// prefixes the path; the remainder is the subpath. Reading only the first
-// segment breaks every branch name containing a slash — feature/x, release/1.2,
-// dependabot/... — and the clone then fails to the API view. The ref list is
-// one `git ls-remote` (refs only, no objects), memoized per repo for the
-// process; when it is unavailable the splitter degrades to the first segment.
+// Tree URL ref resolution
+// GitHub takes the LONGEST ref that prefixes the path; the rest is the subpath.
+// Reading only the first segment breaks every branch containing a slash and the
+// clone then fails to the API view. The ref list is one `git ls-remote`, memoized
+// per repo; when unavailable, the splitter degrades to the first segment.
 
-/** Pure; exported for tests. `segments` are the URL segments after "tree". */
+/** Pure. `segments` are the URL segments after "tree". */
 export function splitTreePath(
   segments: string[],
   knownRefs: ReadonlySet<string>,
@@ -515,7 +497,7 @@ export async function resolveTreePath(
   return splitTreePath(segments, refs);
 }
 
-// ── Runtime root + stale sweep ───────────────────────────────────────────────
+// Runtime root + stale sweep
 // Each pi process clones into its own `runtime-XXXX` dir under the clone path.
 // `.owner.json` records pid + platform (+ bootId and /proc start time on
 // Linux, defending against PID reuse); a one-shot background sweep deletes
@@ -676,7 +658,7 @@ function resolveRuntimeRoot(clonePath: string): string | null {
   }
 }
 
-// ── Rendering: describe the checkout for the agent ───────────────────────────
+// Rendering: describe the checkout for the agent
 
 const MAX_TREE_ENTRIES = 200;
 const MAX_README_CHARS = 8192;

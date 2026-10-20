@@ -49,11 +49,9 @@ export function canonicalize(url: URL): string {
 }
 
 /**
- * Human/model-legible layout: <root>/<host>/<path-slug>-<hash8>/
- * The slug lets the LLM ls/grep everything cached from a domain; the hash guarantees uniqueness.
- *
- * One directory per URL, whatever the mode.
- * A full fetch promotes the existing entry in place instead of writing a second copy of the same page.
+ * Layout: <root>/<host>/<path-slug>-<hash8>/. The slug is what lets the agent ls a
+ * domain; the hash keeps it unique. One directory per URL whatever the mode — a
+ * full fetch promotes the entry in place rather than writing a second copy.
  */
 export function entryDir(root: string, url: string): string {
   const u = new URL(url);

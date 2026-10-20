@@ -1,20 +1,10 @@
-// exa-setup.ts — guided Exa API key setup (`/exa-setup`).
+// exa-setup.ts — `/exa-setup`, a thin instance of the shared skeleton.
 //
-// A thin instance of the shared key-setup skeleton (search/key-setup.ts):
-// the flow (intro → dashboard → paste → validate → save → done), the
-// spinner, redaction, the headless fallback, and the reopen guard all live
-// in the skeleton. What's Exa-specific stays here:
-//
-//   • mcp.json detection & removal — pi-reader no longer reads mcp.json for
-//     credentials, so the wizard imports a key found there and offers to
-//     delete the duplicate entry (opt-in, confirmation-gated, never clobber:
-//     a malformed mcp.json is reported with manual instructions, never
-//     overwritten).
-//   • validation issues one web_search_exa with numResults: 1 through the
-//     same MCP client the adapter uses — ~$0.005 of search credit when the
-//     key is valid, nothing when it isn't (401s arrive before metering).
-//
-// The key is never rendered (masked in previews, redacted from error text).
+// Two things are Exa's alone: the mcp.json import and duplicate-entry removal
+// (opt-in, confirmation-gated, and a malformed mcp.json is reported with manual
+// instructions rather than overwritten), and a validation probe that costs
+// ~$0.005 when the key works and nothing when it does not — the 401 arrives
+// before metering.
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
@@ -41,7 +31,7 @@ import { configPath, loadConfig, saveConfig, type PiWebConfig } from "../config.
 const DASHBOARD_URL = "https://dashboard.exa.ai/api-keys";
 const VALIDATE_TIMEOUT_MS = 20_000;
 
-// ── mcp.json paths (the foreign config we detect in, import from, dedupe) ────
+// mcp.json paths (the foreign config we detect in, import from, dedupe)
 
 export function mcpConfigPaths(): string[] {
   const home = homedir();
@@ -52,7 +42,7 @@ export function mcpConfigPaths(): string[] {
   ];
 }
 
-// ── mcp.json detection & removal ─────────────────────────────────────────────
+// mcp.json detection & removal
 
 export interface McpExaEntry {
   /** Config file the entry was found in. */
@@ -125,7 +115,7 @@ export function removeMcpExaEntry(path: string): void {
   renameSync(tmp, path);
 }
 
-// ── Key validation (one cheap search; 401s arrive before metering) ───────────
+// Key validation (one cheap search; 401s arrive before metering)
 
 export async function validateExaKey(key: string, signal?: AbortSignal): Promise<ValidationResult> {
   try {
@@ -147,7 +137,7 @@ export async function validateExaKey(key: string, signal?: AbortSignal): Promise
   }
 }
 
-// ── The Exa instance — skeleton + import and dedupe-removal places ──────────
+// The Exa instance — skeleton + import and dedupe-removal places
 
 export class ExaSetupWizard extends KeySetupWizard {
   private imported = false; // true when the key came from the mcp.json import
@@ -255,7 +245,7 @@ export class ExaSetupWizard extends KeySetupWizard {
   }
 }
 
-// ── The Exa spec + opener ────────────────────────────────────────────────────
+// The Exa spec + opener
 
 const exaSpec: KeySetupSpec = {
   title: "Exa setup",

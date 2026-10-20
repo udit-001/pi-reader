@@ -1,17 +1,9 @@
-// RSS/Atom feed handler — feeds as first-class fetchable objects.
+// RSS/Atom feed handler: a feed URL returns channel title plus recent items as
+// Markdown instead of an XML dump.
 //
-// A feed URL (.xml/.rss/.atom, or a /feed path) returns the channel title and
-// recent items as Markdown instead of a raw XML dump. Feed bodies are parsed
-// with linkedom's XML DOMParser (already a dependency — no new packages).
-//
-// Match discipline: URL shape claims the URL, the payload confirms it — a body
-// that is not a feed throws and the URL falls through to the default pipeline
-// (this also keeps sitemaps and plain .xml files out of this handler).
-// Bot-walled feed URLs (403/429 from the direct fetch) get one curl retry via
-// the shared curl tier; genuine 404s surface as errors downstream.
-//
-// feedToMarkdown is the pure parse/render seam, exported for its own tests
-// (not for callers).
+// URL shape claims the URL, the payload confirms it — a body that is not a feed
+// throws and the URL falls through to the default pipeline, which is what keeps
+// sitemaps and plain .xml files out of here.
 
 import { DOMParser } from "linkedom";
 import { curlGetText } from "../curl-fetch.ts";

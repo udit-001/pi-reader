@@ -15,7 +15,7 @@ import type { SearchOptions, SearchResult } from "./search.ts";
 const INSTALL_TIMEOUT_MS = 60_000;
 const SEARCH_TIMEOUT_MS = 30_000;
 
-// ── uvx path resolution ─────────────────────────────────────────────────────
+// uvx path resolution
 
 // Default install location used by the official uv installer on each platform.
 // Other install methods (brew, apt, pip, scoop, winget) put uvx on PATH
@@ -41,7 +41,7 @@ export function hasUvx(): boolean {
   }
 }
 
-// ── uv installation ─────────────────────────────────────────────────────────
+// uv installation
 
 export function installUv(): void {
   const binDir = dirname(uvxInstallPath(process.platform, homedir()));
@@ -49,7 +49,7 @@ export function installUv(): void {
   execSync(uvInstallCommand(process.platform), { stdio: "pipe", timeout: INSTALL_TIMEOUT_MS });
 }
 
-// ── session-start warm-up ────────────────────────────────────────────────────
+// session-start warm-up
 
 // The install step, as a shell command — shared by the sync installUv() and
 // the async warm-up so both stay in sync per platform.
@@ -115,7 +115,7 @@ export function warmDdgs(
   return warmFlow(run, probeCommands(process.platform, homedir()), uvInstallCommand(process.platform), onInstall);
 }
 
-// ── recency → ddgs timelimit ─────────────────────────────────────────────────────────────────────────
+// recency → ddgs timelimit
 
 // SearchOptions.recency → ddgs `-t` letter code. The HTML fallback's `df=`
 // param uses the same letter codes, so this map is the single source of truth
@@ -132,7 +132,7 @@ export function timelimitFor(recency?: SearchOptions["recency"]): string | null 
   return REGENCY_TO_TIMELIMIT[recency] ?? null;
 }
 
-// ── license → ddgs -lic ─────────────────────────────────────────────────────
+// license → ddgs -lic
 
 // SearchOptions.license → ddgs images `-lic` values (verified live:
 // `ddgs images --help` accepts any|Public|Share|ShareCommercially|Modify|
@@ -148,7 +148,7 @@ export function licenseFlagFor(license?: SearchOptions["license"]): string | nul
   return LICENSE_TO_FLAG[license] ?? null;
 }
 
-// ── ddgs command plan ────────────────────────────────────────────────────────────────────────────────
+// ddgs command plan
 
 export interface DdgsArgs {
   /** ddgs vertical: "text", "news", or "images". Same flag set for text and
@@ -168,7 +168,7 @@ export interface DdgsArgs {
 /** The full `uvx ddgs <subcommand>` command as one pure argv plan — tests pin
  *  the flags without spawning processes. One argv slot per argument: the query
  *  (which embeds model-supplied text) is data, never shell syntax. Pure;
- *  exported for tests. */
+ *  Pure. */
 export function buildDdgsArgs(a: DdgsArgs): string[] {
   const parts = [a.uvx, "ddgs", a.subcommand, "-q", a.query];
   // Images engines reject -t outright (KeyError, verified live on every
@@ -182,7 +182,7 @@ export function buildDdgsArgs(a: DdgsArgs): string[] {
   return parts;
 }
 
-// ── ddgs search ─────────────────────────────────────────────────────────────
+// ddgs search
 
 /** A raw row from ddgs JSON output. Text rows carry `href`; news rows carry
  *  `url`, `date`, `source`, `image`; images rows carry `image`, `thumbnail`,

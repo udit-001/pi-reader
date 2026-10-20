@@ -1,14 +1,7 @@
-// config.ts — pi-reader's own config file: key residency and hint state.
-//
-// The file is ours alone (~/.pi/agent/pi-reader.json, named for the package,
-// living in the same directory convention as pi's mcp.json). Nobody else
-// reads or writes it, which is the point: pi-reader's credentials no longer
-// share state with another system's config.
-//
-// Reads are forgiving on purpose — a missing OR malformed file reads as null
-// (DuckDuckGo keeps working; the wizard's next save replaces the file with
-// valid JSON). Writes are atomic (tmp + rename) so a crash can't leave a
-// half-written config behind.
+// config.ts — pi-reader's own config file, ~/.pi/agent/pi-reader.json.
+// Reads are forgiving on purpose: a missing or malformed file reads as null, so
+// DuckDuckGo keeps working until the wizard's next save replaces it. Writes are
+// atomic (tmp + rename), so a crash cannot leave half a config behind.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";

@@ -1,32 +1,9 @@
-// europepmc.ts — Europe PMC backend for the papers vertical: biomedical
-// literature via the Europe PMC REST API (no key, covers PubMed abstracts,
-// PMC full text, preprints, and patents). Selected with index: "europepmc"
-// when the query is biomedical and full text matters — OpenAlex metadata only
-// names a paper; Europe PMC can point at the PMC copy itself.
+// europepmc.ts — the Europe PMC backend for the papers vertical: PubMed
+// abstracts, PMC full text, preprints, patents. Where OpenAlex only names a
+// paper, this backend can point at the PMC copy itself.
 //
-// Normalizes into the SAME PaperRecord shape as the OpenAlex backend — no
-// per-backend forking downstream. Mapping decisions:
-//   year        ← pubYear          (string in the API → number)
-//   authors     ← authorString (comma-separated, bibliographic "Surname I"
-//                 order preserved as-is — the agent only reads them)
-//   venue       ← journalInfo.journal.title, else journalTitle
-//   citedBy     ← citedByCount
-//   doi         ← the bare doi field (Europe PMC ships it bare already)
-//   url         ← the most fetchable copy (shared chooseFetchableUrl): the
-//                 backend's ranked free copies first, then the PMC article
-//                 page when a PMCID exists, else the doi.org resolution, else
-//                 the Europe PMC record page
-//   oaUrl       ← inEPMC === "Y" or inPMC === "Y" → the PMC article URL
-//                 Europe PMC's own inEPMC record is the full-text body
-//   snippet     ← buildPaperSnippet (shared): venue · year · citations ·
-//                 open/closed badge · first author et al.
-//   subjects    ← meshHeadingList (curated subject vocabulary, major-topic
-//                 flag from the heading or a starred qualifier)
-//   compounds   ← chemicalList (name + registry number; "0" is the backend's
-//                 "none")
-//   funding     ← grantsList (agency + grant id + acronym)
-//
-// Records with no record URL at all are dropped — no url, no action.
+// Author order stays as the wire's bibliographic "Surname I" string; the agent
+// only reads them. A record with no URL at all is dropped: no url, no action.
 
 import type { PaperIndexName, SearchOptions } from "./search.ts";
 import {
@@ -68,7 +45,7 @@ const EPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest";
  *  unsendable rather than a case to guard against. */
 export const EUROPEPMC_PAGE_SIZE_MAX = 1000;
 
-// ── Pure seam: the query language ────────────────────────────────────────────
+// Pure seam: the query language
 
 /** The query fields this adapter accepts and documents — one table, so the
  *  composed listing and the validator's check cannot disagree. Anything
@@ -118,22 +95,21 @@ export const EUROPEPMC_SORTS: ReadonlyArray<{ key: PaperSort; value: string }> =
 ];
 
 /** The Europe PMC `sort` value for an interface sort key, or null when the key
- *  is outside the accepted set. Pure; exported for tests. */
+ *  is outside the accepted set. Pure. */
 export function europePmcSortValue(key: string | undefined): string | null {
   if (key === undefined) return null;
   return EUROPEPMC_SORTS.find((s) => s.key === key)?.value ?? null;
 }
 
 /** The query with quoted values blanked, so a field prefix or a conjunction
- *  inside a phrase is never read as syntax. Pure; module-private. */
+ *  inside a phrase is never read as syntax. Pure. */
 function stripQuoted(query: string): string {
   return query.replace(/"[^"]*"/g, '""');
 }
 
 /** Field prefixes the query uses that the table does not recognise. Scans the
  *  uppercase `TOKEN:` form, which is EPMC's own field convention, so free
- *  text, booleans, parentheses, quoted values and ranges pass through. Pure;
- *  exported for tests. */
+ *  text, booleans, parentheses, quoted values and ranges pass through. Pure. */
 export function unrecognisedEuropePmcOperators(query: string): string[] {
   const known = new Set(EUROPEPMC_OPERATORS.map((o) => o.token));
   const seen = new Set<string>();
@@ -154,7 +130,7 @@ export function unrecognisedEuropePmcOperators(query: string): string[] {
  *  Europe PMC returns no error for any of these: it repairs the query or
  *  answers a plausible count for a question that was not asked, which is why
  *  each carries its own cause rather than reading as "no results". Verified
- *  live 2026-09-30. Pure; exported for tests. */
+ *  live 2026-09-30. Pure. */
 export function europePmcQueryFaults(query: string): string[] {
   const faults: string[] = [];
   // The quote is checked first: an unclosed one makes every later scan
@@ -198,7 +174,7 @@ export function europePmcQueryFaults(query: string): string[] {
   return faults;
 }
 
-// ── Raw shape (Europe PMC result — trimmed live capture 2026-09-25) ──────────
+// Raw shape (Europe PMC result — trimmed live capture 2026-09-25)
 // resultType=lite (the default). Only the fields normalization reads are
 // named; pagination cursors, sources, textMined flags, and the rest are
 // dropped no-ops.
@@ -228,7 +204,7 @@ export interface EuropePmcResult {
   inPMC?: string;
   /** "Y"/"N" — open-access classification (public access tag). */
   isOpenAccess?: string;
-  // ── Core-only fields (resultType=core; the lite form omits them) ──
+  // Core-only fields (resultType=core; the lite form omits them)
   /** The publication-type list ("Journal Article", "Preprint", "Retracted
    *  Publication", …). The lite form carries the ";"-separated `pubType`
    *  string instead. */
@@ -301,9 +277,9 @@ export function parsePubYear(pubYear: string | number | undefined): number | und
   return Number.isNaN(year) ? undefined : year;
 }
 
-// ── Pure seams ───────────────────────────────────────────────────────────────
+// Pure seams
 
-/** y/n string flag → boolean, tolerating absent. Pure; exported for tests. */
+/** y/n string flag → boolean, tolerating absent. Pure. */
 export function isFlagY(v: string | undefined): boolean {
   return v === "Y" || v === "y";
 }
@@ -319,12 +295,12 @@ const RETRACTION_NOTICE_TYPE = /retract/i;
 
 /** The backend's own retraction-exclusion clause — a query-language condition
  *  Europe PMC evaluates server-side, so the reported count already reflects
- *  it (no post-fetch removal). Pure; exported for tests. */
+ *  it (no post-fetch removal). Pure. */
 export const RETRACTION_EXCLUSION_CLAUSE = `NOT PUB_TYPE:"${RETRACTED_PUB_TYPE}"`;
 
 /** Does this record's publication-type list mark it retracted? pubType is a
  *  ";"-separated list ("retracted publication; editorial"); absent means the
- *  API didn't say, which is not a retraction. Pure; exported for tests. */
+ *  API didn't say, which is not a retraction. Pure. */
 export function isRetractedPubType(pubType: string | undefined): boolean {
   if (typeof pubType !== "string" || pubType === "") return false;
   return pubType
@@ -338,7 +314,7 @@ export function isRetractedPubType(pubType: string | undefined): boolean {
  *  clauses. A query that already carries any `PUB_TYPE:"Retracted
  *  Publication"` condition (either polarity — an agent that asked FOR
  *  retracted works must not be contradicted) is left untouched. Opt in with
- *  `includeRetracted: true`. Pure; exported for tests. */
+ *  `includeRetracted: true`. Pure. */
 export function mergeRetractionClause(query: string, includeRetracted?: boolean): string {
   if (includeRetracted === true) return query;
   if (/PUB_TYPE\s*:\s*["']?retracted publication["']?/i.test(query)) return query;
@@ -348,7 +324,7 @@ export function mergeRetractionClause(query: string, includeRetracted?: boolean)
 
 /** A record's publication types from either wire shape: the core
  *  `pubTypeList.pubType[]`, or the lite/walk `pubType` ";"-separated string.
- *  Pure; exported for tests. */
+ *  Pure. */
 export function pubTypes(r: EuropePmcResult): string[] {
   const list = r.pubTypeList?.pubType;
   if (Array.isArray(list) && list.length > 0) {
@@ -368,7 +344,7 @@ export function primaryPubType(types: string[]): string | undefined {
 /** The record's affiliations, deduped in authorship order, from every author's
  *  full affiliation list — a dual-affiliated author contributes both. The flat
  *  corresponding-author `affiliation` is the fallback when the wire sends no
- *  author list. Pure; exported for tests. */
+ *  author list. Pure. */
 export function parseAffiliations(r: EuropePmcResult): PaperInstitution[] | undefined {
   const seen = new Set<string>();
   const out: PaperInstitution[] = [];
@@ -393,7 +369,7 @@ export function parseAffiliations(r: EuropePmcResult): PaperInstitution[] | unde
 }
 
 /** The record's ORCID identifiers, deduped. The wire carries them as an
- *  aggregate list, not linked to individual authors. Pure; exported. */
+ *  aggregate list, not linked to individual authors. Pure. */
 export function parseOrcids(r: EuropePmcResult): string[] | undefined {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -412,7 +388,7 @@ export function parseOrcids(r: EuropePmcResult): string[] | undefined {
  *  order. `major` is set from the heading's own flag or any starred qualifier
  *  (a heading can arrive with its flag N beside a starred `chemistry` —
  *  verified live 2026-09-30). Qualifier names are dropped; the descriptor is
- *  the tag. Pure; exported for tests. */
+ *  the tag. Pure. */
 export function parseSubjects(r: EuropePmcResult): PaperSubject[] | undefined {
   const headings = Array.isArray(r.meshHeadingList?.meshHeading) ? r.meshHeadingList.meshHeading : [];
   // Keyed by term so insertion order survives: the map yields wire order of
@@ -435,7 +411,7 @@ export function parseSubjects(r: EuropePmcResult): PaperSubject[] | undefined {
 
 /** The compounds a work studies, in wire order, deduped by name. A
  *  `registryNumber` of "0" is the backend's own "none", so it is dropped
- *  rather than carried as a literal. Pure; exported for tests. */
+ *  rather than carried as a literal. Pure. */
 export function parseCompounds(r: EuropePmcResult): PaperCompound[] | undefined {
   const chemicals = Array.isArray(r.chemicalList?.chemical) ? r.chemicalList.chemical : [];
   const byName = new Map<string, PaperCompound>();
@@ -456,7 +432,7 @@ export function parseCompounds(r: EuropePmcResult): PaperCompound[] | undefined 
 
 /** The funding behind the work, in wire order, deduped on the whole
  *  agency/acronym/grant triple. An entry with no agency is skipped — it anchors
- *  nothing a reader can act on. Pure; exported for tests. */
+ *  nothing a reader can act on. Pure. */
 export function parseFunding(r: EuropePmcResult): PaperGrant[] | undefined {
   const grants = Array.isArray(r.grantsList?.grant) ? r.grantsList.grant : [];
   const seen = new Set<string>();
@@ -489,7 +465,7 @@ export function europePmcVenueType(r: EuropePmcResult, types: string[]): string 
 
 /** The retraction notice a retracted record points at: the Europe PMC page for
  *  the notice when the wire carries its source+id, else a DOI lifted from the
- *  reference string, else nothing. Pure; exported. */
+ *  reference string, else nothing. Pure. */
 export function retractionNoticeUrl(r: EuropePmcResult): string | undefined {
   const corrections = Array.isArray(r.commentCorrectionList?.commentCorrection)
     ? r.commentCorrectionList.commentCorrection
@@ -508,7 +484,7 @@ export function retractionNoticeUrl(r: EuropePmcResult): string | undefined {
   return doi ? `https://doi.org/${doi}` : undefined;
 }
 
-/** Evidence-availability markers the backend reports. Pure; exported. */
+/** Evidence-availability markers the backend reports. Pure. */
 export function parseDataAvailability(r: EuropePmcResult): string[] | undefined {
   const out: string[] = [];
   if (isFlagY(r.hasData)) out.push("data");
@@ -517,7 +493,7 @@ export function parseDataAvailability(r: EuropePmcResult): string[] | undefined 
   return out.length > 0 ? out : undefined;
 }
 
-/** Ranked full-text copies the backend offers. Pure; exported. */
+/** Ranked full-text copies the backend offers. Pure. */
 export function parseFullTextUrls(
   r: EuropePmcResult,
 ): PaperFullTextUrl[] | undefined {
@@ -530,22 +506,19 @@ export function parseFullTextUrls(
   return out.length > 0 ? out : undefined;
 }
 
-/** The ranked-copy sites whose URLs are document pages: Europe PMC's own
- *  full-text copy, the doi.org resolution, and NCBI Bookshelf. Europe PMC's
- *  list also carries registry and machine endpoints, and a patent's "free"
- *  copy is one of them — an Espacenet textdoc URL (HTTP 403, plain text) or a
- *  SureChEMBL document endpoint (HTTP 404), verified live 2026-09-30. Those are
- *  not pages the fetch chain reads, and at the publisher tier they would
- *  outrank the Europe PMC record page that such a record has as its only real
- *  anchor. A site not vouched for here is not assumed readable; the ladder then
- *  falls back to the anchor that always works. */
+/** The ranked-copy sites whose URLs are real document pages. A patent's "free"
+ *  copy is an Espacenet textdoc (403) or SureChEMBL (404) endpoint — verified live
+ *  2026-09-30 — not a page the fetch chain reads, and at the publisher tier it
+ *  would outrank the record page that such a record has as its only anchor. A
+ *  site not vouched for here falls back to that default and is never assumed
+ *  readable. */
 const READABLE_COPY_SITES: ReadonlySet<string> = new Set(["Europe_PMC", "DOI", "NCBI_Bookshelf"]);
 
 /** Does this ranked copy belong in the URL ladder? It has to clear two bars:
  *  the backend marked it readable (every copy in a 75-entry live sample carried
  *  a marker, 2026-09-30, so a copy it left unmarked is not assumed to be), and
  *  its site serves a document page rather than a registry or machine endpoint.
- *  Pure; exported for tests. */
+ *  Pure. */
 export function isUsableFullTextCopy(u: PaperFullTextUrl): boolean {
   return READABLE_COPY_SITES.has(u.site) && /free|open/i.test(u.availability ?? "");
 }
@@ -553,7 +526,7 @@ export function isUsableFullTextCopy(u: PaperFullTextUrl): boolean {
 /** `url` — the most fetchable copy, through the shared policy
  *  (chooseFetchableUrl): the backend's own ranked usable copies first, then the
  *  PMC copy page (Europe PMC serves its full text keyless), the doi.org
- *  resolution, then the record page by source+id. Pure; exported. */
+ *  resolution, then the record page by source+id. Pure. */
 export function chooseRecordUrl(r: EuropePmcResult): string | null {
   const usable = (parseFullTextUrls(r) ?? []).filter(isUsableFullTextCopy);
   return chooseFetchableUrl([
@@ -565,7 +538,7 @@ export function chooseRecordUrl(r: EuropePmcResult): string | null {
 }
 
 /** `oaUrl` — the full-text body when a PMC copy exists; absent (closed or
- *  metadata-only, or no id to anchor the URL) otherwise. Pure; exported. */
+ *  metadata-only, or no id to anchor the URL) otherwise. Pure. */
 export function chooseOaUrl(r: EuropePmcResult): string | null {
   if (r.pmcid === undefined && r.id === undefined) return null;
   if (isFlagY(r.inEPMC)) return `https://europepmc.org/article/${r.pmcid ?? r.id}`;
@@ -588,17 +561,13 @@ export function parseAuthors(authorString: string | undefined): PaperAuthor[] | 
   return authors.length > 0 ? authors : undefined;
 }
 
-// ── Normalization (agent-POV) ────────────────────────────────────────────────
+// Normalization (agent-POV)
 
-/** Europe PMC results → PaperRecords, the same flat keys the OpenAlex
- *  backend produces. Works with no record URL are dropped.
- *
- *  `idsOnly` marks rows that came back from the identifiers-only tier
- *  (`resultType=idlist`), whose wire entry is the source-scoped identifiers and
- *  nothing else. The tier does not fork the record SHAPE — one normalizer, one
- *  shape — it decides only how far down that shape there is anything to fill,
- *  which is what keeps an ordinary row from gaining the tier's keys. Pure;
- *  exported for tests. */
+/** Europe PMC results → PaperRecords. Rows with no record URL are dropped.
+ *  `idsOnly` marks rows from the identifiers-only tier, whose wire entry carries
+ *  the source-scoped identifiers and nothing else: the tier decides how far down
+ *  the shared shape there is anything to fill, which is what keeps an ordinary
+ *  row from gaining the tier's keys. */
 export function normalizeEuropePmcResults(
   results: EuropePmcResult[],
   options: { idsOnly?: boolean } = {},
@@ -608,14 +577,10 @@ export function normalizeEuropePmcResults(
   for (const r of results) {
     const url = chooseRecordUrl(r);
     if (url === null) continue;
-    // The tier's row IS its identity, and it is built here, ahead of the
-    // enrichment, so the two paths share only the URL decision and nothing is
-    // computed to be discarded. The enrichment has no wire data to read for an
-    // idlist entry, and running it would derive fields from the id's own source
-    // prefix — a PPR id would read as a `repository` venue never claimed. The
-    // badge is absent because the wire sent no flag, not because it said
-    // closed. (Probed live 2026-09-30: pmid on a MEDLINE row, pmcid on a PMC
-    // one, neither on a preprint or a patent.)
+    // Build the tier's row here, ahead of enrichment: an idlist entry has no wire
+    // data to enrich from, and reading the id's own prefix would claim a venue the
+    // API never sent (a PPR id would read as `repository`). Probed live
+    // 2026-09-30: pmid on a MEDLINE row, pmcid on a PMC one, neither on a preprint.
     if (idsOnly) {
       const rec: PaperRecord = { title: r.title ?? "", url, snippet: "" };
       if (r.id) rec.europepmcId = r.id;
@@ -692,17 +657,13 @@ export function normalizeEuropePmcResults(
   return records;
 }
 
-// ── Pure seam: request params ────────────────────────────────────────────────
+// Pure seam: request params
 
-/** Build the Europe PMC request params: query + format + pageSize, plus the
- *  paging mechanism the endpoint actually serves, the synonym-recall lever,
- *  and the backend's own `sort`. `paging.page` is the walk endpoints' own
- *  offset (1-based, verified live: offset = (page-1)*pageSize, and
- *  pageSize=1000 serves while 1001 answers 200 with zero rows);
- *  `paging.cursor` is the search endpoint's `cursorMark`, where `*` opens the
- *  enumeration. `options.synonym` sets `synonym=true`; `options.sort` is an
- *  already-mapped Europe PMC value (see EUROPEPMC_SORTS). Pure; exported for
- *  tests. */
+/** Build the Europe PMC request params, each paging mechanism only on the
+ *  endpoint that serves it: `page` on the walk routes (1-based), `cursorMark` on
+ *  search, where `*` opens the enumeration. Verified live: pageSize=1000 serves
+ *  while 1001 answers 200 with zero rows. `options.sort` arrives already mapped
+ *  (see EUROPEPMC_SORTS). */
 export function buildEuropePmcParams(
   query: string,
   numResults: number,
@@ -725,14 +686,13 @@ export function buildEuropePmcParams(
   return params;
 }
 
-// ── Pure seam: filters ───────────────────────────────────────────────────────
+// Pure seam: filters
 
 /** Europe PMC filters ride INSIDE the query string (field syntax), unlike
  *  OpenAlex's separate filter param. Year exact: PUB_YEAR:"2023"; range:
  *  (PUB_YEAR:[2019 TO 2021]); OA: OPEN_ACCESS:y; retracted work is excluded by
- *  default through the backend's own PUB_TYPE clause (PIWEB-35), folded into
- *  the agent's query rather than replacing it — all verified live. Pure;
- *  exported for tests. */
+ *  default through the backend's own PUB_TYPE clause, folded into
+ *  the agent's query rather than replacing it — all verified live. Pure. */
 export function buildEuropePmcFilterQuery(query: string, filters?: PaperFilters): string {
   const base = mergeRetractionClause(query, filters?.includeRetracted);
   const conds: string[] = [];
@@ -746,13 +706,12 @@ export function buildEuropePmcFilterQuery(query: string, filters?: PaperFilters)
 /** The Europe PMC citation walk is endpoint-based — the search query has no
  *  CITES field (verified live, hitCount 0) — so the plan is a REST route:
  *  /rest/{src}/{id}/citations for the forward walk, /references for the
- *  backward one. This endpoint pair IS the documented approximation. Pure;
- *  exported for tests. */
+ *  backward one. This endpoint pair IS the documented approximation. Pure. */
 export function planEuropePmcWalk(src: string, id: string, direction: "cites" | "citedBy"): string {
   return `${src}/${id}/${direction === "citedBy" ? "references" : "citations"}`;
 }
 
-// ── Adapter ──────────────────────────────────────────────────────────────────
+// Adapter
 
 /** Injectable seams so the adapter is testable without network. */
 export interface EuropePmcDeps {
@@ -833,7 +792,7 @@ async function resolveSeed(
   return { src: first.source ?? "MED", id: first.id };
 }
 
-/** The citation walk (PIWEB-16): forward = works citing the seed
+/** The citation walk: forward = works citing the seed
  *  (/citations), backward = the seed's references (/references). Filters on
  *  the walk: year applies post-fetch (applyYearFilter — the walk endpoints
  *  take no filter params); openAccess can't be verified on walk entries and
@@ -878,8 +837,7 @@ async function searchEuropePmcWalk(
  *  paths: 4xx (except 429) is the API rejecting the request — the
  *  malformed-query case; every other failure is the backend being down.
  *  Live behavior: Europe PMC's parser is loose (unbalanced quotes don't
- *  400), so a 400 is a genuinely rejected query, not parser fuzz. Pure;
- *  exported for tests. */
+ *  400), so a 400 is a genuinely rejected query, not parser fuzz. Pure. */
 export function classifyEuropePmcFailure(err: unknown): PaperBackendStatus {
   if (err instanceof PaperError) return "no-results";
   const message = err instanceof Error ? err.message : String(err);
@@ -914,14 +872,10 @@ export async function searchEuropePmc(
     throw new PaperError(paperError("malformed", "europepmc",
       "filters.searchMode is OpenAlex's matcher switch — Europe PMC has no exact or semantic mode; drop it or retry with index: \"openalex\""));
   }
-  // A sort key outside the accepted set is declined before it is sent: the
-  // backend answers an invalid sort with a 503, which reads as an outage.
-  //
-  // Two different failures share this branch, and the message separates them:
-  // a key outside the interface's vocabulary is a caller bug, while `fwci` is
-  // spelled correctly and ranks by a metric this index does not compute.
-  // Calling the second "unrecognised" would send the agent hunting for a typo
-  // in a word it wrote right.
+  // Declined before it is sent: the backend answers an invalid sort with a 503,
+  // which reads as an outage. `fwci` gets its own wording — it is spelled right and
+  // ranks by a metric this index does not compute, so "unrecognised" would send the
+  // agent hunting for a typo.
   const sort = options.filters?.sort;
   const sortValue = sort === undefined ? undefined : europePmcSortValue(sort);
   if (sort !== undefined && sortValue === null) {

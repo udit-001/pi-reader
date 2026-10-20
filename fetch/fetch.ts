@@ -1,17 +1,6 @@
-// fetch.ts — deep module: URL → clean Markdown, optionally summarized.
-//
-// The seam is fetchContent(): a list of URLs in, a list of {url,title,content}
-// out. Tiers, tried until one serves the URL: local (verbatim markdown/text/
-// JSON; Defuddle → Markdown for HTML; Next.js RSC flight decode when
-// Readability finds nothing; regex last resort; bot-walled pages get one curl
-// retry with a real Chrome profile before leaving the machine) → Jina Reader
-// → markdown.new (free services for dynamic pages, blocks, PDFs) → Exa MCP
-// (quota'd; last resort). Plus a summarization pass on the current pi model.
-// Borrowed the "everything becomes Markdown" idea from mitsuhiko's markitdown
-// summarize skill — the caller gets quotable text, never raw HTML.
-//
-// Internal seams exported for their own tests (not for callers):
-// convert, htmlToMarkdown, fitToBudget, rawViaHandler.
+// fetch.ts — URL to clean Markdown, optionally summarized. The tiers run free
+// before metered (local → Jina → markdown.new → Exa), and the caller always gets
+// quotable text, never raw HTML.
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Api, Message, Model } from "@earendil-works/pi-ai/compat";
@@ -61,14 +50,12 @@ export interface FetchOptions {
   mode?: "markdown" | "raw";
 }
 
-// ── Public interface ─────────────────────────────────────────────────────────
+// Public interface
 
 /**
- * Raw-mode handler dispatch, as its own seam so tests can pin the decision
- * without live HTTP. A handler with fetchRaw substitutes the site's canonical
- * body (orcid.org's API JSON) instead of its public URL's JS shell; returns
- * null when no handler claims raw — the caller fetches the URL itself.
- * A fetchRaw failure is an error result, never a fall-through: for a JS-shell
+ * Raw-mode handler dispatch: a handler with fetchRaw substitutes the site's
+ * canonical body (orcid.org's API JSON) for its public URL's JS shell.
+ * A fetchRaw failure is an error result, never a fall-through — for a JS-shell
  * site the plain raw fetch would "succeed" with the placeholder page.
  */
 export async function rawViaHandler(urlStr: string, signal?: AbortSignal): Promise<FetchResult | null> {
@@ -277,16 +264,11 @@ export async function fetchContent(
   return finalResults;
 }
 
-// ── OpenCode identity for direct completions ─────────────────────────────────
-// The summarize pass calls ctx.modelRegistry.complete() directly — outside pi's
-// agent pipeline, which normally finalizes x-opencode-session per request (see
-// getSessionHeaders in pi's provider-attribution, and the ses_ shaping in
-// pi-zen). Bypassing that pipeline means a request aimed at an OpenCode host
-// reaches the gateway with no session id and dies with
-// `400 MissingSessionID` before any model runs. Mirror pi-zen's fix: pin a
-// deterministic opencode-shaped `ses_` id — derived from pi's session id, so
-// sticky routing and prompt cache stay warm across requests in a session —
-// onto every OpenCode-hosted request this tool sends.
+// OpenCode identity for direct completions
+// The summarize pass calls modelRegistry.complete() outside pi's pipeline, which
+// normally sets x-opencode-session per request. Without it, an OpenCode-hosted
+// request dies with `400 MissingSessionID` before any model runs. The `ses_` id
+// is derived from pi's session id so sticky routing and prompt cache stay warm.
 
 const OPENCODE_HOST = "opencode.ai";
 const OPENCODE_PROVIDERS = new Set(["opencode", "opencode-go", "pi-zen"]);
@@ -298,14 +280,10 @@ const ID_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw
 type IdentityModel = { provider: string; baseUrl?: string };
 
 /**
- * OpenCode request-identity headers for a completion target. Returns null when
- * the target is not OpenCode-hosted (never touch other providers' requests) or
- * when no session id is available.
- *
- * Gate: provider id, then baseUrl host. The provider list is defense in depth
- * for providers that may move off the OpenCode host — pi-zen's baseUrl lives
- * on opencode.ai today, so the host gate already covers it; the id entry only
- * matters if that ever changes.
+ * OpenCode request-identity headers for a completion target, or null when the
+ * target is not OpenCode-hosted or no session id is available.
+ * Gate: provider id, then baseUrl host — the id list is defense in depth for a
+ * provider that may move off the OpenCode host.
  */
 export function opencodeSessionHeaders(
   model: IdentityModel,
@@ -334,7 +312,7 @@ function sessionIdFor(ctx: ExtensionContext): string | undefined {
   }
 }
 
-// ── Summarization ────────────────────────────────────────────────────────────
+// Summarization
 // Optional: run the extracted content (as untrusted data) through the current
 // pi model to answer a prompt about the page(s). Mirrors markitdown --summary.
 
@@ -394,13 +372,9 @@ export async function summarizeContent(
   const completeFn = registry.complete?.bind(registry);
   if (!completeFn) throw new Error("Model completion is unavailable for this session");
 
-  // Direct completions bypass pi's before_provider_headers pipeline, so two
-  // session facts go on the request ourselves:
-  //   transformHeaders — the x-opencode-session header the gateway requires to
-  //     route the request at all (see opencodeSessionHeaders above)
-  //   options.sessionId — providers read it for session-based prompt caching
-  //     and affinity (openai-completions maps it to cacheSessionId), which is
-  //     how one session's summarize calls share the model's prompt cache
+  // Two session facts go on the request ourselves: transformHeaders carries the
+  // x-opencode-session header the gateway needs to route it, and options.sessionId
+  // is what shares one prompt cache across a session's summarize calls.
   const sessionId = sessionIdFor(ctx);
   const response = await completeFn(
     model,
@@ -436,14 +410,10 @@ export async function summarizeContent(
   return { text, model: `${model.provider}/${model.id}` };
 }
 
-// ── Free hosted fallbacks ────────────────────────────────────────────────────
-// Tried in the order the quality matrix supports: Jina Reader first (renders
-// JS, bypasses Cloudflare, parses PDFs), markdown.new second (survives sites
-// Jina 403s on, but must be guarded against binary-garbage responses).
-// compress.new was evaluated and dropped — it 405s on every request.
-//
-// Adapter contract at this seam: url in → {title, content} out, or null if
-// the service answered but unusably; throw if the service is unreachable.
+// Free hosted fallbacks
+// Jina Reader first (renders JS, parses PDFs), markdown.new second (survives
+// sites Jina 403s on, and needs guarding against binary-garbage responses).
+// Null means the service answered unusably; an unreachable service throws.
 
 async function fetchViaJinaReader(
   url: string,
@@ -494,7 +464,7 @@ function usableText(s: string): boolean {
   return printable / sample.length > 0.9;
 }
 
-// ── Local fetch + convert (Defuddle primary, regex last resort) ──────────────
+// Local fetch + convert (Defuddle primary, regex last resort)
 
 // Single timeout policy for every network adapter in this module.
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<Response> {
@@ -623,7 +593,7 @@ async function fetchOne(
   return extractFromText(url, contentType, await readBodyCapped(res, FETCH_BODY_CAP), maxChars);
 }
 
-/** Label heading for raw mode output. Pure; exported for tests. */
+/** Label heading for raw mode output. Pure. */
 export function rawContentLabel(status: number, contentType: string): string {
   return `[status: ${status} | content-type: ${contentType || "unknown"}]`;
 }
@@ -666,7 +636,7 @@ async function extractFromText(url: string, contentType: string, text: string, m
   return { url, title, content, error: null };
 }
 
-// ── Defuddle extraction (primary local path) ─────────────────────────────────
+// Defuddle extraction (primary local path)
 // Scored main-content extraction: boilerplate, ads, and nav stripped properly.
 // Returns null on failure — the fallback chain (Jina, markdown.new, Exa) handles it.
 
@@ -746,7 +716,7 @@ export function convert(
   };
 }
 
-// ── HTML → Markdown converter (last resort) ─────────────────────────────────
+// HTML → Markdown converter (last resort)
 // Regex-based; no DOM library. Kept as the fallback when Defuddle fails or
 // returns nothing. Handles the shapes that matter for reading: headings,
 // paragraphs, links, lists, code, blockquotes. Everything else collapses to
@@ -812,7 +782,7 @@ export function htmlToMarkdown(html: string): string {
     .trim();
 }
 
-// ── Inline + entity helpers ──────────────────────────────────────────────────
+// Inline + entity helpers
 
 function inline(s: string): string {
   s = s.replace(/<br\s*\/?>/gi, " ");

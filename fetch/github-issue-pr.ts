@@ -1,20 +1,10 @@
-// github-issue-pr.ts — deep module: rich, deterministic rendering of a GitHub
-// issue or pull request. Ported from pi-web-access (github-issue-pr.ts) and
-// reshaped for pi-reader's handler architecture. The seam:
+// github-issue-pr.ts — a GitHub issue or PR as one rendered document: gh first
+// (auth covers private repos and lifts the 60 req/h limit), the SSRF-guarded REST
+// fallback otherwise, one renderer for both.
 //
-//   parseIssuePrUrl(url)              -> {owner, repo, kind, number, anchor?} | null
-//   fetchIssuePr(info, opts?)         -> HandlerResult (rendered document)
-//   renderIssuePr(data)               -> string (pure; the test surface)
-//   mapRestView(info, restJson)       -> view (pure; REST -> gh view shape)
-//
-// Transport: gh CLI first (`gh pr view --json <rich fields>` — auth covers
-// private repos and lifts the 60 req/h anonymous limit); old gh versions that
-// reject unknown JSON fields retry with a core field set + availability note.
-// gh absent or failed -> api.github.com REST fallback via the shared
-// SSRF-guarded httpGet, mapped to the same view shape so ONE renderer serves
-// both paths. Degradation is explicit: `*Unavailable` flags and availability
-// notes, never silent omissions, plus escalation commands (`gh pr view`,
-// `gh pr diff`) so the agent can always reach the complete data.
+// Degradation stays visible — `*Unavailable` flags, availability notes, and
+// escalation commands (`gh pr view`, `gh pr diff`) — so a missing section reads
+// as missing rather than as absent from the PR.
 
 import { execFile } from "node:child_process";
 import type { HandlerResult } from "./handlers/handler.ts";
@@ -22,7 +12,7 @@ import { FetchError, httpGet } from "./handlers/handler.ts";
 import type { CloneExec } from "./github-clone.ts";
 import { loadConfig } from "../config.ts";
 
-// ── Public interface ─────────────────────────────────────────────────────────
+// Public interface
 
 export interface IssuePrRef {
   owner: string;
@@ -132,7 +122,7 @@ function validRepo(repo: string): boolean {
   return /^[A-Za-z0-9._-]{1,100}$/.test(repo) && repo !== "." && repo !== "..";
 }
 
-// ── Orchestration ────────────────────────────────────────────────────────────
+// Orchestration
 
 export async function fetchIssuePr(info: IssuePrRef, opts: IssuePrOptions = {}): Promise<HandlerResult> {
   const ghEnabled = normalizeEnabled(loadConfig()?.githubIssuePr);
@@ -239,7 +229,7 @@ async function ghReviewThreads(
   };
 }
 
-// ── REST fallback ────────────────────────────────────────────────────────────
+// REST fallback
 
 const REST_HEADERS = { "Accept": "application/vnd.github+json", "User-Agent": "pi-reader" };
 
@@ -362,7 +352,7 @@ export function mapRestView(info: IssuePrRef, value: unknown): Record<string, un
   };
 }
 
-// ── Default gh runner ────────────────────────────────────────────────────────
+// Default gh runner
 
 const defaultGhExec: CloneExec = (command, args, opts) =>
   new Promise((resolve) => {
@@ -377,7 +367,7 @@ const defaultGhExec: CloneExec = (command, args, opts) =>
     });
   });
 
-// ── Renderer ─────────────────────────────────────────────────────────────────
+// Renderer
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

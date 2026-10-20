@@ -1,24 +1,10 @@
-// videos.ts — the videos vertical adapter: `provider: "videos"`, backed by a
-// direct DuckDuckGo v.js client (free, keyless). Explicit-only: never chosen
-// by auto-routing ("find a video about" intent hijacking text searches is a
-// determinism risk), so this adapter lives outside the auto chain and is
-// dispatched only when the agent names it.
+// videos.ts — the videos vertical, on a direct DuckDuckGo v.js client.
 //
-// Why not ddgs (the news/images route): ddgs's videos engine is the only one
-// behind that vertical, and its HTTP client (primp, TLS-fingerprint-spoofed)
-// is 403-banned from v.js. The endpoint itself is open — verified live with a
-// plain browser UA — so this adapter runs two plain GETs:
-//
-//   1. GET duckduckgo.com/?q=<query>          → extract the VQD token
-//   2. GET duckduckgo.com/v.js?...&vqd=<vqd>  → JSON results
-//
-// That is the same seam shape as the HTML text fallback in duckduckgo.ts
-// (plain fetch, browser UA, parse). The fragile seam is the VQD regex —
-// pinned by fixture, and failures surface as actionable in-band errors, not
-// fake results. No degrade-to-text: text results cannot substitute for
-// videos, and a 403 from a fingerprint ban is not a retry-recoverable state —
-// the error names the cause and the text + `domains: ["youtube.com"]`
-// workaround instead.
+// ddgs cannot serve it: its primp client is TLS-fingerprint-spoofed and 403-banned
+// from v.js, while the endpoint accepts a plain browser UA (verified live).
+// The fragile seam is the VQD token regex, pinned by fixture. A 403 is never
+// retried — a fingerprint ban is not retry-recoverable — so the error names the
+// text-search workaround instead.
 
 import type { SearchOptions, SearchResult } from "./search.ts";
 import { REGENCY_TO_TIMELIMIT } from "./ddgs-uv.ts";
@@ -28,7 +14,7 @@ const TIMEOUT_MS = 25_000;
 // aggressively, so this client must stay boring to avoid earning the same flag.
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// ── Raw shape (v.js rows — live-verified 2026-09-19) ──────────────────────────
+// Raw shape (v.js rows — live-verified 2026-09-19)
 // Only the fields normalization reads are named; the rest (embed_html,
 // embed_url, image_token, images, description, thumbnail_*) are dropped
 // no-ops — nothing the agent does with a video needs them.
@@ -45,7 +31,7 @@ export interface VjsVideoRow {
   [key: string]: unknown;
 }
 
-// ── Pure seam: VQD extraction ─────────────────────────────────────────────────
+// Pure seam: VQD extraction
 
 /** Extract the VQD token from the duckduckgo.com/?q= response HTML.
  *  Regex-on-markup — the known-fragile seam; pinned by fixture. Returns null
@@ -56,7 +42,7 @@ export function extractVqd(html: string): string | null {
   return m?.[1] ?? null;
 }
 
-// ── Pure seam: request params ──────────────────────────────────────────────────
+// Pure seam: request params
 
 /** Build the v.js query params. `f` packs filters as a 4-slot comma string —
  *  only the publishedAfter slot binds (recency d/w/m/y); the rest stay empty.
@@ -78,10 +64,10 @@ export function buildVideoParams(query: string, vqd: string, options: SearchOpti
   return params;
 }
 
-// ── Pure seam: normalization (agent-POV) ──────────────────────────────────────
+// Pure seam: normalization (agent-POV)
 
 /** Compact view count: 1216317 → "1.2M", 592793 → "592.8k", 41 → "41".
- *  Non-finite/absent → null. Pure; exported for tests. */
+ *  Non-finite/absent → null. Pure. */
 export function formatViews(n: number | undefined): string | null {
   if (n === undefined || !Number.isFinite(n) || n < 0) return null;
   if (n >= 1e9) return `${trim(n / 1e9)}B`;
@@ -95,13 +81,9 @@ function trim(x: number): string {
   return s.endsWith(".0") ? s.slice(0, -2) : s;
 }
 
-/** v.js rows → SearchResult. `url`←`content` (the watch URL — the agent acts
- *  on the video, not a page about it), `title` verbatim, `author`←`uploader`
- *  (falling back to `publisher`), `publishedDate` verbatim (clean ISO and
- *  source junk pass through, same rule as news), `snippet`←
- *  `"duration · N views · via uploader"` — tokens join with " · "; missing
- *  fields tolerated. Rows without a watch URL are dropped — no url, no
- *  action. Pure; exported for tests. */
+/** v.js rows → SearchResult. The URL is the watch URL: the agent acts on the
+ *  video, not a page about it. `publishedDate` passes through verbatim, the same
+ *  rule as news, and a row without a watch URL is dropped. */
 export function normalizeVideoResults(rows: VjsVideoRow[]): SearchResult[] {
   const results: SearchResult[] = [];
   for (const r of rows) {
@@ -123,7 +105,7 @@ export function normalizeVideoResults(rows: VjsVideoRow[]): SearchResult[] {
   return results;
 }
 
-// ── Adapter ────────────────────────────────────────────────────────────────────
+// Adapter
 
 /** Injectable seams so the adapter is testable without network. */
 export interface VideosDeps {

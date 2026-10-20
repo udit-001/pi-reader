@@ -1,16 +1,7 @@
-// Generic MCP client glue — the shared seam under every remote-MCP provider.
-//
-// Wraps @modelcontextprotocol/client, which owns the protocol (initialize
-// handshake, session headers, SSE framing). This module adds only what the
-// SDK leaves to callers, so adapters don't fork it:
-//   connectMcp  — Client + StreamableHTTP transport, connect bounded by a timeout
-//   callMcpTool — one tools/call, call+signal timeouts composed
-//   resultText  — CallToolResult → text; throws McpToolError on isError/empty
-//
-// Policy lives with the adapters, never here: credentials and endpoint
-// composition (Exa's keyed URL, Parallel's Bearer header), keep-alive
-// singletons and retry (Exa, Parallel), stateless per-call connections
-// (grep).
+// Generic MCP client glue: the SDK owns the protocol, this adds only the timeout
+// composition and text extraction every adapter needs, so none of them forks it.
+// Policy stays with the adapters — credentials, endpoint composition, keep-alive
+// and retry.
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 

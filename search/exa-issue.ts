@@ -1,10 +1,6 @@
-// exa-issue.ts — why the Exa setup wizard might be needed.
-//
-// Tiny shared module so the adapter (exa-mcp.ts) can record what went wrong
-// and the entry point (index.ts) can surface a one-shot hint, without either
-// depending on the other. Two failure kinds matter because recovery differs:
-//   rate-limited — the key works; wait, or replace it
-//   missing-key  — nothing valid is configured; set one up
+// exa-issue.ts — a handoff between the adapter and the entry, so neither depends
+// on the other. Two kinds, because the recovery differs: rate-limited (the key
+// works; wait or replace it) and missing-key (nothing valid is configured).
 
 export type ExaIssue = "rate-limited" | "missing-key";
 

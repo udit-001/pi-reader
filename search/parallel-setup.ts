@@ -1,17 +1,10 @@
-// parallel-setup.ts — guided Parallel API key setup (`/parallel-setup`).
+// parallel-setup.ts — `/parallel-setup`, a plain spec instance with no subclass:
+// the anonymous tier is the default product, so there is no mcp.json key to
+// import or duplicate to remove. This wizard is for raised limits, not for
+// search to work at all.
 //
-// A thin instance of the shared key-setup skeleton (search/key-setup.ts):
-// the flow, spinner, redaction, headless fallback, and reopen guard live in
-// the skeleton. What's Parallel-specific is only the spec — and unlike Exa
-// there is no subclass: the anonymous tier is the default product, so there
-// is no mcp.json key to import or duplicate to remove. The wizard exists for
-// users who want the raised rate limits, not for search to work at all.
-//
-// Validation issues one web_search through the same MCP client the adapter
-// uses (Bearer header): an invalid key 401s before metering, a valid one
-// spends one free-tier (or ~$0.001 paid) search.
-//
-// The key is never rendered (masked in previews, redacted from error text).
+// Validation is one search through the adapter's own client, and an invalid key
+// 401s before metering.
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -32,7 +25,7 @@ import { configPath, loadConfig, saveConfig, type PiWebConfig } from "../config.
 const DASHBOARD_URL = "https://platform.parallel.ai";
 const VALIDATE_TIMEOUT_MS = 20_000;
 
-// ── Key validation (one cheap search; 401s arrive before metering) ───────────
+// Key validation (one cheap search; 401s arrive before metering)
 
 export async function validateParallelKey(key: string, signal?: AbortSignal): Promise<ValidationResult> {
   try {
@@ -54,7 +47,7 @@ export async function validateParallelKey(key: string, signal?: AbortSignal): Pr
   }
 }
 
-// ── The Parallel spec + opener ───────────────────────────────────────────────
+// The Parallel spec + opener
 
 const parallelSpec: KeySetupSpec = {
   title: "Parallel setup",

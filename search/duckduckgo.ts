@@ -1,10 +1,6 @@
-// DuckDuckGo adapter — the real adapter at the SearchProvider seam.
-//
-// Two implementations behind one interface:
-//   1. uvx ddgs — TLS fingerprinting, VQD tokens, no captcha (primary)
-//   2. HTML scraping — fallback when uvx unavailable
-//
-// Auto-installs uv on first use if missing.
+// DuckDuckGo adapter: uvx ddgs first (TLS fingerprinting, VQD tokens, no
+// captcha), HTML scraping when uvx is unavailable. uv auto-installs on first
+// use if missing.
 
 import type { SearchOptions, SearchResult } from "./search.ts";
 import { hasUvx, installUv, searchViaDdgs, REGENCY_TO_TIMELIMIT } from "./ddgs-uv.ts";
@@ -12,7 +8,7 @@ import { hasUvx, installUv, searchViaDdgs, REGENCY_TO_TIMELIMIT } from "./ddgs-u
 const DDG_HTML_URL = "https://html.duckduckgo.com/html/";
 const TIMEOUT_MS = 25_000;
 
-// ── Degraded-mode surfacing ─────────────────────────────────────────────────
+// Degraded-mode surfacing
 
 export type DdgsFallbackReason = "no-uv" | "ddgs-failed";
 
@@ -33,7 +29,7 @@ export function withDdgsNotice(
   return noted;
 }
 
-// ── Public interface ─────────────────────────────────────────────────────────
+// Public interface
 
 export async function searchDuckDuckGo(
   query: string,
@@ -107,7 +103,7 @@ async function searchViaHtml(
   return results;
 }
 
-// ── Parsing internals ────────────────────────────────────────────────────────
+// Parsing internals
 // Regex-based parsing of DDG's HTML endpoint. No DOM library needed.
 // Tested at the seam via exported parseResults.
 
@@ -163,7 +159,7 @@ export function parseResults(
   return results;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// Helpers
 
 const ENTITY_MAP: Record<string, string> = {
   "&amp;": "&",

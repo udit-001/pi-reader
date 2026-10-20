@@ -1,20 +1,10 @@
-// openalex-setup.ts — guided OpenAlex API key setup (`/openalex-setup`).
+// openalex-setup.ts — `/openalex-setup`, the thinnest instance of the skeleton:
+// no mcp.json import or removal place, because this key never lived there.
 //
-// The thinnest instance of the shared key-setup skeleton: no import place,
-// no removal place — the key is the same conceptual object as the Exa key
-// (a free credential raising a keyless budget 10×) wearing the same flow
-// minus the mcp.json places.
-//
-// Validation issues one singleton work lookup through the same wire shape
-// the adapter uses — $0.00 when the key is valid (singletons are free),
-// cheaper than Exa's $0.005 probe. Rejection classes mirror the papers
-// error contract: key rejected (401/403), credits exhausted (429 with zero
-// remaining), unreachable.
-//
-// The done screen queries /rate-limit (free) and prints the real daily
-// budget and reset — feedback the Exa wizard cannot give.
-//
-// The key is never rendered (masked in previews, redacted from error text).
+// Validation is one singleton work lookup, which is free — so a valid key costs
+// nothing to prove, unlike Exa's metered probe. Rejection classes mirror the
+// papers error contract, and the done screen reads the real budget from
+// /rate-limit.
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -33,7 +23,7 @@ const VALIDATE_TIMEOUT_MS = 20_000;
 /** Any real work id — the singleton lookup is free, so the probe costs nothing. */
 const PROBE_WORK = "W3161425918";
 
-// ── Validation — one free singleton lookup ───────────────────────────────────
+// Validation — one free singleton lookup
 
 /** Map a probe response to the shared validation shape. Pure; exported for
  *  tests — the fetch wrapper around it is the only I/O. */
@@ -69,7 +59,7 @@ export async function validateOpenAlexKey(key: string, signal?: AbortSignal): Pr
   }
 }
 
-// ── The done-screen budget readout (free /rate-limit call) ───────────────────
+// The done-screen budget readout (free /rate-limit call)
 
 /** The real daily budget and reset, straight from the endpoint. Never
  *  invented: a failed or unreadable readout is reported as such, and the
@@ -91,7 +81,7 @@ export async function openAlexBudgetLines(key: string): Promise<string[]> {
   }
 }
 
-// ── The OpenAlex spec + opener ───────────────────────────────────────────────
+// The OpenAlex spec + opener
 
 const openalexSpec: KeySetupSpec = {
   title: "OpenAlex setup",

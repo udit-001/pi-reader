@@ -1,17 +1,9 @@
-// Next.js App Router flight extractor — the local tier for client-rendered
-// Next pages. RSC pages embed their content as JSON rows in inline
-// <script>self.__next_f.push([1,"..."])</script> chunks; Readability finds an
-// empty body on those, so this decodes the payloads and walks the serialized
-// element tree to Markdown before the page is handed to remote fallbacks.
+// Next.js App Router flight extractor: RSC pages embed their content as JSON rows
+// in `self.__next_f.push` chunks, and Readability reads an empty body on those.
+// This decodes the payloads locally, before the page reaches the remote fallbacks.
 //
-// Adapted from pi-web-access (MIT) © nicobailon, with two changes: the script
-// regex tolerates attributes and surrounding whitespace, and a thin main chunk
-// falls through to the sweep over the remaining chunks instead of giving up.
-//
-// Interface: extractNextFlightContent(html) → { title, content } | null.
-// Null means "not a flight page / nothing usable" — the caller keeps its
-// fallback chain. Pure function; tests cross this same seam
-// (test/next-flight.test.ts).
+// Adapted from pi-web-access (MIT) © nicobailon. Null means "not a flight page" and
+// the caller keeps its chain.
 
 const MIN_CONTENT_LENGTH = 100;
 const MIN_FALLBACK_CHUNK_LENGTH = 50;
@@ -87,7 +79,7 @@ export function extractNextFlightContent(html: string): NextFlightContent | null
   return content.length > MIN_CONTENT_LENGTH ? { title, content } : null;
 }
 
-// ── Chunk collection ─────────────────────────────────────────────────────────
+// Chunk collection
 // Each inline script pushes a JSON-string-escaped fragment; fragments decode
 // to lines of "hexId:payload". Duplicate ids keep the longest payload (later
 // stream updates win).
@@ -121,7 +113,7 @@ function collapseBlankLines(content: string): string {
   return content.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-// ── Flight tree → Markdown ───────────────────────────────────────────────────
+// Flight tree → Markdown
 // A parsed chunk is either an element ["$", tag, key, props] or an array of
 // nodes. Strings like "$L<id>" reference other chunks and resolve recursively
 // with cycle protection; "$<Something>" protocol strings are dropped.

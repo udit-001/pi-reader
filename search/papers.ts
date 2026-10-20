@@ -1,25 +1,10 @@
-// papers.ts — the papers vertical dispatcher: `provider: "papers"`.
-// Explicit-only: never chosen by auto-routing — searching the scholarly
-// record is a deliberate dispatch, not an intent the router guesses — so this
-// adapter lives outside the auto chain and is dispatched only when the agent
-// names it.
+// papers.ts — the papers vertical dispatcher: `provider: "papers"`, two backends
+// behind `index` (OpenAlex, Europe PMC).
 //
-// Two backends behind one call (PIWEB-14 OpenAlex, PIWEB-15 Europe PMC),
-// selected with `index` (default "openalex"):
-//   openalex  — OpenAlex: open scholarly metadata across all disciplines,
-//               ~250M works, optional free key sent as an Authorization
-//               bearer header (the mailto politeness param is retired).
-//   europepmc — Europe PMC: biomedical full text — PubMed abstracts, PMC
-//               copies, preprints, patents; the DOI, PMC URL, and OA tag
-//               reach the agent, not just the abstract page.
-// Both normalize into the same PaperRecord shape (search/paper-backend.ts:
-// year, authors, venue, citedBy, oaUrl, doi flat keys beside the standard
-// title/url/snippet) — no per-backend forking downstream.
-//
-// Failure is in-band, never degrade-to-text: prose cannot substitute for
-// paper records, so every failure throws PaperError with the contract
-// grammar (named backend, no-results/backend-down/malformed distinction,
-// retry `index`, manual-URL escape hatch) and the entry passes it verbatim.
+// Explicit-only: scholarly search is a deliberate dispatch, not an intent the
+// router guesses, so this lives outside the auto chain. Failure throws
+// PaperError with the retry `index` and the manual-URL hatch, passed through
+// verbatim. See docs/papers.md for the reasons.
 
 import type { SearchOptions, PaperIndexName } from "./search.ts";
 import {
@@ -51,7 +36,7 @@ const DEFAULT_PAGE_SIZE = 10;
  *  guard read this one array. */
 export const PAPER_INDEXES: readonly PaperIndexName[] = ["openalex", "europepmc"];
 
-// ── Raw shape (OpenAlex work — trimmed live capture 2026-09-25) ───────────────
+// Raw shape (OpenAlex work — trimmed live capture 2026-09-25)
 // Only the fields normalization reads are named; the rest (topics, mesh,
 // funders, counts_by_year, …) are dropped no-ops — nothing the agent does with
 // a paper needs them.
@@ -61,7 +46,7 @@ export const PAPER_INDEXES: readonly PaperIndexName[] = ["openalex", "europepmc"
  *  charges per request, so full-record payloads (4.5× larger) are pure
  *  waste. Verified live: nested keys (open_access, primary_topic, …)
  *  project fine. The DOI-seed record fetch is a free singleton and stays
- *  unprojected. Pure; exported. */
+ *  unprojected. Pure. */
 export const OPENALEX_SELECT = "id,doi,title,publication_year,cited_by_count,is_retracted,type,open_access,best_oa_location,primary_location,authorships,locations,primary_topic,ids,fwci,referenced_works,related_works,counts_by_year,topics,keywords,abstract_inverted_index";
 
 export interface OpenAlexWork {
@@ -135,11 +120,11 @@ export interface OpenAlexWork {
   [key: string]: unknown;
 }
 
-// ── Pure seams (OpenAlex): DOI parse, URL choice, OA URL choice ──────────
+// Pure seams (OpenAlex): DOI parse, URL choice, OA URL choice
 
 /** Keep at most the first `cap` entries of a W-id list, tolerating absent —
  *  the wire carries URL forms ("https://openalex.org/W…"), the record keeps
- *  bare ids. Pure; exported for tests. */
+ *  bare ids. Pure. */
 export function capIds(ids: string[] | null | undefined, cap: number): string[] | undefined {
   if (!Array.isArray(ids)) return undefined;
   const out: string[] = [];
@@ -155,7 +140,7 @@ export function capIds(ids: string[] | null | undefined, cap: number): string[] 
  *  (never the current year — it is always partial and reads as a crash).
  *  Counts only within the paper's own window. Returns {recent, trend}: rising
  *  when the newest year outscores the previous, fading when it underscores by
- *  half or more, steady otherwise. Needs ≥ 2 known years. Pure; exported. */
+ *  half or more, steady otherwise. Needs ≥ 2 known years. Pure. */
 export function citationTrend(counts: Array<{ year: number; cited_by_count: number }> | null | undefined, now = new Date().getUTCFullYear()): { recent: number | undefined; trend: "rising" | "steady" | "fading" | undefined } {
   if (!Array.isArray(counts) || counts.length === 0) return { recent: undefined, trend: undefined };
   const byYear = new Map(counts.map((c) => [c.year, c.cited_by_count]));
@@ -169,7 +154,7 @@ export function citationTrend(counts: Array<{ year: number; cited_by_count: numb
 
 /** Abstract: rebuild plaintext from OpenAlex's token-position inverted index
  *  (word → positions), then truncate to 300 chars. Absent/empty → undefined
- *  — never invented. Pure; exported for tests. */
+ *  — never invented. Pure. */
 export function abstractFromInvertedIndex(idx: Record<string, number[]> | null | undefined): string | undefined {
   if (idx === null || typeof idx !== "object") return undefined;
   const slots: Array<string | undefined> = [];
@@ -190,7 +175,7 @@ export function abstractFromInvertedIndex(idx: Record<string, number[]> | null |
 /** OpenAlex carries the DOI as an https URL ("https://doi.org/10.1038/…");
  *  agents expect the bare identifier ("10.1038/…"). Works without a DOI come
  *  back as an explicit null (not a missing key), so both are tolerated.
- *  Absent, null, or not a doi.org URL → null. Pure; exported for tests. */
+ *  Absent, null, or not a doi.org URL → null. Pure. */
 export function parseDoi(doiUrl: string | null | undefined): string | null {
   if (typeof doiUrl !== "string") return null;
   const m = doiUrl.match(/^https?:\/\/doi\.org\/(.+)$/i);
@@ -201,7 +186,7 @@ export function parseDoi(doiUrl: string | null | undefined): string | null {
  *  work carries, ranked by the shared policy (chooseFetchableUrl in
  *  paper-backend.ts). Candidates in backend preference order: every
  *  location's landing page, then the primary landing, then the best-OA
- *  landing, then the DOI. Pure; exported for tests. */
+ *  landing, then the DOI. Pure. */
 export function chooseRecordUrl(w: OpenAlexWork): string | null {
   const seen = new Set<string>();
   const candidates: string[] = [];
@@ -221,7 +206,7 @@ export function chooseRecordUrl(w: OpenAlexWork): string | null {
 
 /** `oaUrl` — the best reachable full text, through the same fetchability
  *  policy: best_oa_location's PDF, then its landing page, then the top-level
- *  oa_url. Absent (null) when closed. Pure; exported for tests. */
+ *  oa_url. Absent (null) when closed. Pure. */
 export function chooseOaUrl(w: OpenAlexWork): string | null {
   return chooseFetchableUrl([
     w.best_oa_location?.pdf_url,
@@ -230,11 +215,11 @@ export function chooseOaUrl(w: OpenAlexWork): string | null {
   ]);
 }
 
-// ── Pure seam: normalization (agent-POV, OpenAlex) ────────────────────────────
+// Pure seam: normalization (agent-POV, OpenAlex)
 
 /** OpenAlex carries the ROR as an https URL ("https://ror.org/05a0ya142");
  *  the record keeps the bare identifier, the way it keeps a bare DOI. Absent
- *  or non-ROR → null (never invented). Pure; module-private. */
+ *  or non-ROR → null (never invented). Pure. */
 function bareRor(ror: string | null | undefined): string | null {
   if (typeof ror !== "string") return null;
   const m = ror.match(/^https?:\/\/ror\.org\/(.+)$/i);
@@ -272,7 +257,7 @@ function barePmcid(id: string | null | undefined): string | null {
  *  both collapse to one. The stable id dedupes when the API gives one, the
  *  display name otherwise (the same lab must not appear twice under two
  *  spellings). No institution is invented; a work that lists none → undefined.
- *  Pure; module-private. */
+ *  Pure. */
 function dedupeInstitutions(authorships: OpenAlexWork["authorships"]): PaperInstitution[] | undefined {
   const seen = new Set<string>();
   const out: PaperInstitution[] = [];
@@ -296,20 +281,10 @@ function dedupeInstitutions(authorships: OpenAlexWork["authorships"]): PaperInst
   return out.length > 0 ? out : undefined;
 }
 
-/** OpenAlex works → PaperRecords. year←publication_year, authors←authorships
- *  (display name plus the bare author id and ORCID), venue←primary_location
- *  .source (name, type, bare S-id), citedBy←cited_by_count, oaUrl←chooseOaUrl
- *  (absent when closed), doi←parseDoi, pmid/pmcid←ids, url←chooseRecordUrl,
- *  retracted←is_retracted, topic←primary_topic (name, bare T-id), type←type,
- *  institutions←authorships.institutions (name, type, country, bare I-id,
- *  ROR) — plus the deep-research keys:
- *  fwci←fwci, refs←referenced_works (capped 40), related←related_works
- *  (capped 10), openalexId←id, field←topics[0].field, keywords←the first 3
- *  keyword names, recentCitations/citationTrend←counts_by_year's last three
- *  complete years, content←abstract rebuilt from the inverted index and
- *  truncated to ~300 chars. Enrichment keys absent-tolerant, never
- *  invented. Works with no record URL are dropped — no url, no action.
- *  Pure; exported for tests. */
+/** OpenAlex works → PaperRecords: same flat keys as Europe PMC, plus the
+ *  deep-research keys (fwci, refs, related, field, keywords, trend, abstract).
+ *  Enrichment keys are absent-tolerant, never invented. A work with no record
+ *  URL is dropped — no url, no action. */
 export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
   const records: PaperRecord[] = [];
   for (const w of works) {
@@ -400,14 +375,14 @@ export function normalizePaperResults(works: OpenAlexWork[]): PaperRecord[] {
   return records;
 }
 
-// ── Pure seam: request params ────────────────────────────────────────────────
+// Pure seam: request params
 
 /** The OpenAlex `filter=` value for the search constraints — one comma list
  *  (the API's grammar). Year exact: publication_year:2023; range:
  *  from_publication_date,to_publication_date; OA: is_oa:true; a citation
  *  walk's leg adds cites:{W} (forward) or cited_by:{W} (backward — the
  *  seed's own references, resolved server-side in one request; verified
- *  live). Pure; exported. */
+ *  live). Pure. */
 export function buildOpenAlexFilter(filters?: PaperFilters, leg?: string, direction: "cites" | "citedBy" = "cites"): string {
   const parts: string[] = [];
   // Retracted works default to server-side exclusion (the reading-candidate
@@ -423,7 +398,7 @@ export function buildOpenAlexFilter(filters?: PaperFilters, leg?: string, direct
   return parts.join(",");
 }
 
-// ── Pure seam: the expression door (PIWEB-24/26) ─────────────────────────────
+// Pure seam: the expression door (/26)
 
 /** The filter language's own spelling of "not retracted" — the plugin's
  *  clause, merged into the agent's expression by default. */
@@ -433,7 +408,7 @@ export const OPENALEX_RETRACTION_CLAUSE = "is_retracted:false";
  *  works API accepts, each reading as `<token> <meaning>`. The description
  *  below and the decline message are both built from this list, so the
  *  operator vocabulary the agent reads in the schema and again on failure is
- *  one list (PIWEB-31). */
+ *  one list. */
 export const OPENALEX_FILTER_GRAMMAR: ReadonlyArray<{ token: string; meaning: string }> = [
   { token: ":", meaning: "binds any field to a value" },
   { token: ",", meaning: "joins clauses as AND" },
@@ -531,7 +506,7 @@ export const EXPRESSION_PARAM_DESCRIPTION =
  *  every clause must read `field:value`, with a field name that carries no
  *  whitespace and a value that is not empty. That structural test is what
  *  keeps the merge rule off foreign text — OQL (`works where year is (2020)`)
- *  and prose both fail it. Pure; module-private. */
+ *  and prose both fail it. Pure. */
 function splitFilterClauses(expression: string): string[] | null {
   const clauses: string[] = [];
   let buf = "";
@@ -555,14 +530,11 @@ function splitFilterClauses(expression: string): string[] | null {
   return out;
 }
 
-/** Fold the plugin's retraction clause into the agent's own filter
- *  expression — the door's one piece of new logic. The clause is appended
- *  only when the expression does not already carry an `is_retracted`
- *  condition, either polarity: an agent that asked FOR retracted works must
- *  not be contradicted. The agent's clauses are never rewritten, reordered
- *  or dropped, and `includeRetracted` leaves the expression alone. Text the
- *  filter grammar cannot read → null, so the caller declines in band instead
- *  of corrupting it. Pure; exported for tests. */
+/** Append the retraction clause to the agent's own filter expression, and only
+ *  when it carries no `is_retracted` condition at either polarity: an agent that
+ *  asked FOR retracted works must not be contradicted. The agent's clauses are
+ *  never rewritten or reordered. Unreadable text → null, so the caller declines
+ *  in band instead of corrupting it. */
 export function mergeRetractionClause(expression: string, includeRetracted?: boolean): string | null {
   const trimmed = expression.trim();
   const clauses = splitFilterClauses(trimmed);
@@ -576,7 +548,7 @@ export function mergeRetractionClause(expression: string, includeRetracted?: boo
  *  the other syntax an agent may already hold: it names its own entity and its
  *  own clauses. Recognizing it lets the decline answer with the translation
  *  instead of reporting anonymous junk; a miss costs only the generic message,
- *  which is still correct. Pure; module-private. */
+ *  which is still correct. Pure. */
 function looksLikeOql(text: string): boolean {
   return /^\s*[A-Za-z_]+\s+where\b/i.test(text) || /\bgroup\s+by\b/i.test(text);
 }
@@ -586,7 +558,7 @@ function looksLikeOql(text: string): boolean {
  *  turns back by the time a call fails, and this is the moment it has to be
  *  read. The retraction scope closes both branches — the clause rides the
  *  filter form only, so an OQL query meets a translation rather than a
- *  silently unexcluded result set. Pure; module-private. */
+ *  silently unexcluded result set. Pure. */
 function expressionDecline(expression: string): string {
   const diagnosis = looksLikeOql(expression)
     // No echo of the offending text: the worked pair already carries an OQL
@@ -605,7 +577,7 @@ function expressionDecline(expression: string): string {
  *  would intersect silently — or dropped. An expression the
  *  filter grammar cannot read is rejected in band (the backend would 400 it
  *  anyway, and rerouting an OpenAlex-only syntax to the other index is not a
- *  recovery). Pure; exported for tests. */
+ *  recovery). Pure. */
 export function buildOpenAlexExpressionFilter(filters: PaperFilters): string {
   const conflicts: string[] = [];
   if (filters.year !== undefined) conflicts.push("year");
@@ -655,12 +627,8 @@ export interface PaperParamsOptions {
 }
 
 /** The OpenAlex works query — what to ask, never how to authenticate: the key
- *  rides the Authorization header at the transport seam (openAlexHeaders), so
- *  it never enters the URL. `per_page`-sized; `searchMode` picks the search
- *  parameter (absent → `search`); `filter` set only when the caller carries
- *  constraints (search or citation walk); `sort` set only when filters ask for
- *  a ranking (the API default is relevance); `search` omitted when the query is
- *  empty (a walk has none). Pure; exported for tests. */
+ *  rides the Authorization header at the transport seam, so it never enters the
+ *  URL. */
 export function buildPaperParams(query: string, numResults: number, options: PaperParamsOptions = {}): URLSearchParams {
   const { filter, sort, cursor, searchMode } = options;
   const params = new URLSearchParams({
@@ -679,7 +647,7 @@ export function buildPaperParams(query: string, numResults: number, options: Pap
   return params;
 }
 
-// ── Key resolution — config wins, env fallback, keyless tolerated ───────────
+// Key resolution — config wins, env fallback, keyless tolerated
 
 /** Precedence: config `papers.openalexApiKey` wins, env `OPENALEX_API_KEY` is
  *  the fallback, absent or blank → keyless (the call must work without a
@@ -697,7 +665,7 @@ function readOpenAlexKey(): string | null {
   return resolveOpenAlexKey(loadConfig()?.papers?.openalexApiKey, process.env.OPENALEX_API_KEY);
 }
 
-// ── Metering error contract (PIWEB-19) ────────────────────────────────────
+// Metering error contract
 
 /** The metering reading off one response — the numbers the 429 contract
  *  classifies from. One shape: `rateLimitHeaders` produces it, the thrown error
@@ -769,15 +737,11 @@ export function parseOpenAlexRateLimitHeaders(h: Headers): OpenAlexRateLimit {
   return rateLimitHeaders(h);
 }
 
-/** The 429/401/403 slice of the backend-down contract. Classified from the
- *  wire's own reading — never a live probe: a zero remaining (or remaining-USD)
- *  → daily credits exhausted; any other metering signal → temporary throttling
- *  (a `Retry-After`, or a positive remaining for the burst limit); 401/403 →
- *  key rejected. Keyless exhaustion names the free key and /openalex-setup;
- *  keyed exhaustion names the reset (from X-RateLimit-Reset — seconds to
- *  midnight UTC). The key value itself never appears in any text. Non-metering
- *  statuses → null — the caller falls back to the generic message. Pure;
- *  exported for tests. */
+/** The 429/401/403 slice of backend-down, classified from the wire's metering
+ *  headers rather than a probe: zero remaining → daily credits exhausted (names
+ *  the free key, or the reset countdown when keyed), any other metering signal →
+ *  temporary throttling, 401/403 → key rejected. Non-metering statuses → null.
+ *  The key value never appears in any text. */
 export function openAlexErrorDetail(status: number, rateLimit: OpenAlexRateLimit, keyed: boolean): string | null {
   const { remaining, remainingUsd, resetSeconds, retryAfterSeconds } = rateLimit;
   if (status === 401 || status === 403) {
@@ -829,7 +793,7 @@ function openAlexBackendDown(err: unknown, keyed: boolean): PaperError {
   return new PaperError(paperError("backend-down", "openalex", err instanceof Error ? err.message : String(err)));
 }
 
-// ── Adapter (OpenAlex) ───────────────────────────────────────────────────────
+// Adapter (OpenAlex)
 
 /** Injectable seams so the adapter is testable without network. */
 export interface OpenAlexDeps {
@@ -926,14 +890,11 @@ function bareOpenAlexId(id: string): string {
   return id.replace(/^https?:\/\/openalex\.org\//, "");
 }
 
-/** The OpenAlex citation walk (PIWEB-16, made exact by PIWEB-21). Both
- *  directions are one server-side works query on the seed's W-id, filters
- *  combined in the same filter list: forward = `cites:{seed}` (works citing
- *  the seed), backward = `cited_by:{seed}` (the seed's own references —
- *  verified live: 133 refs returned in one request where the forward filter
- *  returned 8,092). DOI seeds resolve through one free singleton record
- *  fetch first; PMID/PMCID seeds are Europe PMC's vocabulary — the in-band
- *  error names the other index with the concrete identifier. */
+/** The OpenAlex citation walk: both directions are one server-side works query
+ *  on the seed's W-id (verified live: 133 refs backward in one request, where the
+ *  forward filter returned 8,092). DOI seeds resolve through one free singleton
+ *  fetch first; a PMID/PMCID seed is Europe PMC's vocabulary, and the error names
+ *  that index instead. */
 async function searchOpenAlexWalk(
   graph: PaperCitationGraph,
   n: number,
@@ -1069,15 +1030,11 @@ async function searchOpenAlex(
   return fetchOpenAlexWorks(params, n, options, deps, key);
 }
 
-// ── Dispatch ─────────────────────────────────────────────────────────────────
+// Dispatch
 
-/** Search the papers vertical. `index` selects the backend ("openalex"
- *  default, "europepmc" for biomedical full text). Throws PaperError whose
- *  message IS the in-band error text — named backend, retry hint, status
- *  distinction — so the entry passes it through verbatim. One shape for every
- *  call: a free-text query, constrained by `filters.expression` where the
- *  adapter accepts it, or turned into a citation traversal by
- *  `filters.citationGraph`. */
+/** Search the papers vertical; `index` selects the backend. Throws PaperError
+ *  whose message is the in-band error text, so the entry passes it through
+ *  verbatim. */
 export async function searchPapers(
   query: string,
   options: SearchOptions = {},

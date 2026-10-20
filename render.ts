@@ -1,23 +1,9 @@
-// render.ts — transcript presentation for web_search.
-//
-// The module's interface is pi's renderer seam: `renderCall` and
-// `renderResult`, attached to the web_search registration by spreading
-// `webSearchRenderers` into it. The contract with `execute()` is the
-// `WebSearchDetails` payload that tool already returns — this module reads
-// that structured payload, never the text content, which stays aimed at the
-// model. Collapsed: provider, count, top rows. Expanded: every row with its
-// snippet. People-category rows (Exa LinkedIn profiles) render through a
-// dedicated `peopleView`: markdown heading markers from the scraped page are
-// stripped, the name comes from the row title, and the full profile text is
-// shown as-is — deliberately no field splitting, since profiles differ in
-// what they carry. Collapsed caps at COLLAPSED_ROWS one-liners; expanded
-// reveals every row's full text. The machine timestamp becomes a short
-// relative date. The TUI transcript changes; what the model sees does not.
-//
-// Internal seam: `searchView()` is pure — details + view options in, plain
-// view model out — so collapsed/expanded/error shaping is testable with no
-// theme, no TUI, and no live session. Theme colors, the Text component, and
-// the lastComponent reuse live only in the callbacks.
+// render.ts — transcript presentation for web_search. It reads the
+// WebSearchDetails payload, never the text content, which stays aimed at the
+// model. searchView() is pure so view shaping is testable without a theme or a
+// live session. People rows (Exa LinkedIn scrapes) show the profile text whole:
+// profiles share no field set, so splitting them into named fields invents
+// structure the source never had.
 
 import { Text } from "@earendil-works/pi-tui";
 import type {
@@ -27,7 +13,7 @@ import type {
   ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 
-// ── Details contract (shared with execute()) ────────────────────────────────
+// Details contract (shared with execute())
 
 export interface WebSearchDetailsRow {
   title: string;
@@ -49,7 +35,7 @@ export interface WebSearchDetails {
   results?: WebSearchDetailsRow[];
 }
 
-// ── View model (pure — the testable seam) ───────────────────────────────────
+// View model (pure — the testable seam)
 
 /** Collapsed rows shown before the "…N more" hint — Radius's count. */
 export const COLLAPSED_ROWS = 3;
@@ -112,7 +98,7 @@ export function searchView(
   };
 }
 
-// ── People view (pure — the testable seam) ──────────────────────────────────
+// People view (pure — the testable seam)
 
 export interface PeopleRowView {
   index: number;
@@ -172,13 +158,10 @@ function shortUrl(url: string): string {
   return url.replace(/^https?:\/\/(www\.)?/, "");
 }
 
-/** Parse one people-category row for display: the name comes from the row
- *  title, and the profile text is the scraped snippet with markdown heading
- *  markers stripped and the name prefix removed. Deliberately no field
- *  splitting — profiles differ in what they carry, so everything the scrape
- *  has is shown as-is, never re-shaped or dropped. When the source itself
- *  cut the text mid-word (Exa caps the scrape), a trailing … marks the cut
- *  as upstream so it doesn't read as the renderer trimming. */
+/** Parse one people-category row for display. No field splitting: profiles differ
+ *  in what they carry, so the scraped text is shown whole. When the source cut it
+ *  mid-word (Exa caps the scrape), a trailing … marks the cut as upstream rather
+ *  than as the renderer trimming. */
 function parsePeopleRow(row: WebSearchDetailsRow): { name: string; profile?: string; url: string } {
   const name = (row.title || "(untitled)").trim();
   let profile = cleanScrapeText(row.snippet ?? "");
@@ -246,7 +229,7 @@ export function peopleView(
   };
 }
 
-// ── Renderer callbacks (theme + TUI assembly only) ──────────────────────────
+// Renderer callbacks (theme + TUI assembly only)
 
 interface WebSearchCallArgs {
   query?: string;

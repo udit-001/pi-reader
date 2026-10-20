@@ -11,7 +11,7 @@ export interface SearchResult {
 
 export type SearchSource = "ddg" | "wikipedia" | "hn" | "context7";
 
-/** Exported separately so the parser is testable offline. */
+/** */
 export function parseDdgLite(html: string): SearchResult[] {
   const { document } = parseHTML(html);
   const links = Array.from(document.querySelectorAll("a")).filter((a: any) => {
@@ -117,12 +117,11 @@ export interface SearchOutcome {
 }
 
 /**
- * auto: ddg first (broadest), then wikipedia, then hn, then context7; stop at the first source that returns anything.
- * All are rate-limited free endpoints; failures are expected and reported, not fatal.
- *
- * context7 sits last because it only knows libraries, so on a general query it would answer confidently and wrongly.
- * It earns the last slot by being the steadiest of the four: when the other three are down it still replies.
- * Ask for it by name to search library docs directly.
+ * The last-resort tier, tried in order: ddg, wikipedia, hn, context7. All are
+ * rate-limited free endpoints, so failures are expected and reported rather than
+ * fatal. context7 sits last because it only knows libraries and would answer a
+ * general query confidently and wrongly — though it is the steadiest of the four,
+ * so it earns the slot.
  */
 export async function webSearch(
   query: string,

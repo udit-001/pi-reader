@@ -19,7 +19,7 @@ function repoParts(url: URL): { owner: string; repo: string; rest: string[] } | 
 }
 
 /** URL path segments arrive percent-encoded; a space or non-ASCII path must
- *  reach the filesystem decoded. Pure; exported for tests. */
+ *  reach the filesystem decoded. Pure. */
 export function decodeSegment(segment: string): string {
   try {
     return decodeURIComponent(segment);
@@ -180,7 +180,7 @@ const SHA_NOTE =
 
 /** The note for a clone that could not run. A SHA-shaped ref gets the same
  *  explanation the full-SHA shortcut gives: `--branch` takes a branch name, and
- *  a short or uppercase SHA is not one. Pure; exported for tests. */
+ *  a short or uppercase SHA is not one. Pure. */
 export function cloneFailureNote(ref: string | undefined, reason: string): string {
   return ref && SHA_LIKE_RE.test(ref) ? SHA_NOTE : `Note: clone failed (${reason}) — showing the API view instead.`;
 }

@@ -1,18 +1,9 @@
-// curl-backed fetch tier — the local rescue for bot-walled pages.
+// curl-backed fetch tier, the local rescue for bot-walled pages.
 //
-// Node's fetch gets 403s from sites (e.g. openai.com) that accept the same
-// request from system curl with a real Chrome header set — the check fires on
-// transport/header shape, not deep TLS. This module shells out to curl
-// (present everywhere, zero dependencies) and, when a curl-impersonate binary
-// is installed, prefers it for a true Chrome TLS fingerprint.
-//
-// Interface: curlGetText(url, opts) → { status, contentType, text } | null.
-// Null means "curl unavailable / transport failed" — the caller keeps its
-// fallback chain. https/http schemes only. Policy (which statuses trigger a
-// retry) lives with the caller.
-//
-// buildCurlArgs and parseCurlResponse are exported for their own tests
-// (not for callers).
+// Some sites 403 Node's fetch and accept the same request from system curl with a
+// real Chrome header set — the check reads transport and header shape, not deep
+// TLS. A curl-impersonate binary is preferred when installed. Null means
+// unavailable, and the caller keeps its fallback chain.
 
 import { execFile } from "node:child_process";
 import { resolveValidatedHost, MAX_REDIRECTS } from "./handlers/handler.ts";
@@ -59,7 +50,7 @@ export interface CurlArgsOptions {
   resolves?: string[];
 }
 
-/** Build the full argv for one curl request. Pure; exported for tests. */
+/** Build the full argv for one curl request. Pure. */
 export function buildCurlArgs(url: string, opts: CurlArgsOptions = {}): string[] {
   const secs = Math.max(1, Math.round((opts.timeoutMs ?? 30_000) / 1000));
   const u = new URL(url);
@@ -106,7 +97,7 @@ export interface CurlResponse {
   location: string | null;
 }
 
-/** Parse `-i` output into status, content type, and body. Pure; exported for tests.
+/** Parse `-i` output into status, content type, and body. Pure.
  * Redirect chains (`--location`) emit one header block per hop — the final
  * response wins; each intermediate head is stripped. */
 export function parseCurlResponse(raw: string): CurlResponse | null {

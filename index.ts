@@ -1,22 +1,6 @@
-// pi-reader — web search (DuckDuckGo + Exa MCP) and URL→Markdown
-// fetch for the Pi coding agent. Zero config: reads the Exa MCP key from the
-// same ~/.pi/agent/mcp.json pi uses; DuckDuckGo needs no key at all.
-//
-// Tools:
-//   web_search — search the web. provider: "auto" (DuckDuckGo → Exa MCP
-//     fallback), "duckduckgo", "exa", or "news" (ddgs news vertical — dated,
-//     outlet-attributed). Exa supports category filters, domains, recency,
-//     and full content/summary extraction via the web_search_advanced_exa
-//     tool on the remote MCP.
-//   web_fetch — fetch URL(s) as clean Markdown. Structured handlers render
-//     known sites directly (GitHub/GitLab repos: metadata+README, releases,
-//     issues/PRs, raw files; package registries; Wikipedia, HN, Reddit,
-//     Stack Exchange, arXiv); everything else falls through the free remote
-//     fallback chain (Jina, markdown.new) to Exa MCP. Optional: answer a
-//     prompt about the pages using the current pi model.
-//
-// Shape: thin entry. The depth lives in search.ts (provider seam + result
-// normalization) and fetch.ts (content-type sniffing + conversion).
+// pi-reader — `web_search` and `web_fetch` for the Pi coding agent, zero config.
+// The entry stays thin: params, output formatting, and issue-hint consumption;
+// the depth lives in search/ and fetch/.
 
 import type {
   AgentToolResult,
@@ -45,14 +29,14 @@ import { fetchContent, summarizeContent, type FetchResult } from "./fetch/fetch.
 
 /** The citation-edge vocabulary as agent-facing prose, composed from the one
  *  list that holds it so the description and the in-band note cannot drift from
- *  the tokens the adapter forwards (PIWEB-31). */
+ *  the tokens the adapter forwards. */
 const CITATION_EDGE_PROSE = OPENALEX_CITATION_EDGES
   .map((e) => `'${e.token}:W…' (${e.meaning})`)
   .join(" / ");
 
 /** The ordering vocabulary as agent-facing prose, composed from the one table
  *  that holds it so the description cannot name a key the adapters do not
- *  forward, or omit one they do (PIWEB-24). */
+ *  forward, or omit one they do. */
 const SORT_PROSE = PAPER_SORTS
   .map((s) => `'${s.key}' (${s.condition})`)
   .join(", ");
@@ -65,7 +49,7 @@ const SEARCH_MODE_PROSE = PAPER_SEARCH_MODES
   .map((m) => `'${m.key}' (${m.condition})`)
   .join(", ");
 
-// ── Schemas ──────────────────────────────────────────────────────────────────
+// Schemas
 
 const providerSchema = Type.Optional(
   Type.Union(
@@ -310,7 +294,7 @@ const webFetchParams = Type.Object({
 type WebSearchParams = Static<typeof webSearchParams>;
 type WebFetchParams = Static<typeof webFetchParams>;
 
-// ── Extension entry ──────────────────────────────────────────────────────────
+// Extension entry
 
 // The adapter notes rate-limit/missing-key issues as they happen, even when
 // callers auto-fallback and swallow the error. This surfaces them once, with

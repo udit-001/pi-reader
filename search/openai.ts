@@ -1,17 +1,11 @@
-// openai.ts — Codex web search: OpenAI's hosted `web_search` tool on the
-// ChatGPT/Codex subscription Pi already holds. No API key, no separate signup.
+// openai.ts — Codex web search: OpenAI's hosted `web_search` on the
+// ChatGPT/Codex subscription Pi already holds. Credentials come from Pi's model
+// registry, so there is no key of our own.
 //
-// The seam mirrors exa-mcp.ts: searchOpenAI(query, options, ctx) ->
-// { answer, results }. Everything behind it is implementation: credential
-// resolution through Pi's model registry, endpoint selection, request
-// building, SSE parsing, citation extraction, and key redaction.
-//
-// This is the first provider whose `answer` is model-authored prose rather
-// than a rendering of the rows — OpenAI's search is model-mediated: the model
-// decides the queries, the server runs them, the model writes a grounded
-// answer with url_citation annotations. search.ts returns that answer verbatim
-// and falls back to buildAnswer only when the model returned citations with no
-// text.
+// Search here is model-mediated: the model writes the queries and the answer.
+// That makes this the one provider whose `answer` is prose rather than a
+// rendering of the rows, which is why a thin answer is the model's doing and not
+// a ranking bug.
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config.ts";
@@ -44,7 +38,7 @@ interface OpenAIAuth {
   useCodexEndpoint: boolean;
 }
 
-// ── Model selection ─────────────────────────────────────────────────────────
+// Model selection
 // Prefer the cheapest tier that still orchestrates well. "luna" is the cheap
 // tier on this account; "terra" is the mid tier; then any versioned gpt id.
 // Price tiers ("pro"/"ultra") are excluded. The numeric-aware sort keeps e.g.
@@ -57,7 +51,6 @@ const MODEL_PREFERENCE: ReadonlyArray<(id: string) => boolean> = [
   (id) => /^gpt-\d/.test(id),
 ];
 
-/** Pure; exported for tests. */
 export function pickSearchModel<T extends { id: string }>(models: readonly T[]): T | undefined {
   const candidates = models
     .filter((m) => !m.id.split("-").some((s) => EXCLUDED_MODEL_SEGMENTS.has(s)))
@@ -69,7 +62,7 @@ export function pickSearchModel<T extends { id: string }>(models: readonly T[]):
   return candidates[0];
 }
 
-// ── JWT helpers ─────────────────────────────────────────────────────────────
+// JWT helpers
 // Codex credentials are ChatGPT JWTs. The account id lives under the OpenAI
 // auth claim; a token carrying that claim is a Codex token, not an API key.
 
@@ -85,19 +78,17 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
   }
 }
 
-/** Pure; exported for tests. */
 export function isCodexJwt(token: string): boolean {
   return !!decodeJwtPayload(token)?.["https://api.openai.com/auth"];
 }
 
-/** Pure; exported for tests. */
 export function extractAccountId(token: string): string | undefined {
   const auth = decodeJwtPayload(token)?.["https://api.openai.com/auth"];
   const id = auth && typeof auth === "object" ? (auth as Record<string, unknown>).chatgpt_account_id : undefined;
   return typeof id === "string" && id.trim().length > 0 ? id.trim() : undefined;
 }
 
-// ── Credential resolution ───────────────────────────────────────────────────
+// Credential resolution
 
 function toRequestHeaders(headers: Record<string, string | null> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -143,15 +134,15 @@ async function resolveAuth(ctx?: ExtensionContext): Promise<OpenAIAuth | undefin
   return undefined;
 }
 
-// ── Request building ────────────────────────────────────────────────────────
+// Request building
 
 interface NormalizedDomains {
   allowed_domains?: string[];
   blocked_domains?: string[];
 }
 
-/** Pure; exported for tests. `+`/bare domains are allowed, `-` prefixed are
- *  blocked. Returns null when nothing usable was given. */
+/** `+`/bare domains are allowed, `-` prefixed are blocked.
+ *  Returns null when nothing usable was given. */
 export function normalizeDomainFilters(domains: string[] | undefined): NormalizedDomains | null {
   if (!domains?.length) return null;
   const allowed: string[] = [];
@@ -173,13 +164,11 @@ export function normalizeDomainFilters(domains: string[] | undefined): Normalize
     : null;
 }
 
-/** Pure; exported for tests. */
 export function buildWebSearchTool(options: SearchOptions): Record<string, unknown> {
   const filters = normalizeDomainFilters(options.domains);
   return { type: "web_search", ...(filters ? { filters } : {}) };
 }
 
-/** Pure; exported for tests. */
 export function buildInstructions(options: SearchOptions): string {
   const lines = [
     "Search the web and return a concise answer grounded only in the web results.",
@@ -229,8 +218,8 @@ function withTimeout(signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-// ── Response parsing ────────────────────────────────────────────────────────
-// Pure seams, exported for tests. The stream carries `output_item.done` for
+// Response parsing
+// The stream carries `output_item.done` for
 // each item; `response.completed` can arrive with an EMPTY output array (the
 // Codex endpoint does this), so completed output is used only when non-empty.
 
@@ -252,7 +241,7 @@ export interface ParsedOpenAIResponse {
   webSearchCallSeen: boolean;
 }
 
-/** Pure; exported for tests. Accepts a streamed SSE body or a plain JSON body. */
+/** Accepts a streamed SSE body or a plain JSON body. */
 export function parseOpenAIResponse(text: string): ParsedOpenAIResponse {
   const trimmed = text.trim();
 
@@ -300,7 +289,7 @@ export function parseOpenAIResponse(text: string): ParsedOpenAIResponse {
   return { output, webSearchCallSeen };
 }
 
-/** Pure; exported for tests. OpenAI appends `utm_source=openai` to cited URLs. */
+/** OpenAI appends `utm_source=openai` to cited URLs. */
 export function cleanSourceUrl(rawUrl: string): string {
   try {
     const url = new URL(rawUrl);
@@ -333,7 +322,7 @@ function addResult(results: SearchResult[], seen: Set<string>, url: unknown, tit
   });
 }
 
-/** Pure; exported for tests. Citations first (they carry titles and context),
+/** Citations first (they carry titles and context),
  *  then any extra URLs the search call saw. */
 export function extractSearchResults(output: unknown[], numResults?: number): SearchResult[] {
   const results: SearchResult[] = [];
@@ -371,7 +360,6 @@ export function extractSearchResults(output: unknown[], numResults?: number): Se
     : results;
 }
 
-/** Pure; exported for tests. */
 export function extractAnswer(output: unknown[]): string {
   const parts: string[] = [];
   for (const item of output) {
@@ -383,7 +371,7 @@ export function extractAnswer(output: unknown[]): string {
   return parts.join("\n").trim();
 }
 
-// ── Public interface ────────────────────────────────────────────────────────
+// Public interface
 
 async function runSearch(query: string, options: SearchOptions, auth: OpenAIAuth): Promise<OpenAISearchResult> {
   const response = await fetch(auth.responsesUrl, {

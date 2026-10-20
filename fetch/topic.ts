@@ -1,9 +1,8 @@
 /**
- * Return the sections of a document that answer a question, instead of its first N lines.
- * Reference pages open with navigation and a preamble, so the head of the document is reliably the least useful part of it.
- *
- * Scoring is deliberately in memory rather than through the FTS index: that index stores one row per document, so it ranks documents against each other and cannot rank sections within one.
- * Moving to per-section rows is a schema change this does not need.
+ * Return the sections that answer a question, instead of the first N lines: a
+ * reference page opens with navigation, so its head is reliably the least useful
+ * part. Scoring is in memory because the FTS index stores one row per document and
+ * cannot rank sections within one.
  */
 
 /**

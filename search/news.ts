@@ -1,23 +1,22 @@
-// news.ts — the news vertical adapter: `provider: "news"`, backed by the ddgs
-// news subcommand (bing/duckduckgo/yahoo engines — free, keyless).
+// news.ts — the news vertical, on the ddgs news subcommand.
 //
-// Normalization is verbatim and invents nothing: dates pass through exactly as
-// the engines emit them (clean ISO and source junk alike); the outlet becomes
-// `author`. When the ddgs news path is unavailable (uvx missing or the call
-// failing) the adapter degrades to text search with the same query and window,
-// a visible notice, and a degraded flag so the caller can label honestly.
+// Normalization invents nothing: a date passes through exactly as the engine
+// emitted it, junk included, because a cleaned-up date would be a claim the
+// source never made. When the news path fails the adapter degrades to text
+// search with a visible notice and a degraded flag, and reports the provider as
+// `duckduckgo` so a degraded answer never masquerades as news.
 
 import type { SearchOptions, SearchResult } from "./search.ts";
 import { hasUvx, newsViaDdgs, type DdgsRawRow } from "./ddgs-uv.ts";
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 
-// ── Normalization (pure seam) ─────────────────────────────────────────────────
+// Normalization (pure seam)
 
 export type DdgsNewsRow = DdgsRawRow;
 
 /** ddgs news rows → SearchResult. Verbatim mapping: title→title, url→url,
  *  body→snippet, date→publishedDate (unmodified), source→author, image dropped.
- *  Rows without a url are dropped. Pure; exported for tests. */
+ *  Rows without a url are dropped. Pure. */
 export function normalizeNewsResults(rows: DdgsNewsRow[]): SearchResult[] {
   const results: SearchResult[] = [];
   for (const r of rows) {
@@ -33,7 +32,7 @@ export function normalizeNewsResults(rows: DdgsNewsRow[]): SearchResult[] {
   return results;
 }
 
-// ── Degrade notice ────────────────────────────────────────────────────────────
+// Degrade notice
 
 export type NewsDegradeReason = "no-uv" | "ddgs-failed";
 
@@ -53,7 +52,7 @@ export function withNewsNotice(
   return noted;
 }
 
-// ── Adapter ───────────────────────────────────────────────────────────────────
+// Adapter
 
 export interface NewsOutcome {
   results: SearchResult[];

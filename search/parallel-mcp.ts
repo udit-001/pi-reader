@@ -1,21 +1,10 @@
-// Parallel MCP adapter — the third real adapter at the SearchProvider seam.
+// Parallel MCP adapter, on the same client glue as Exa. The anonymous free tier
+// is the product, not a degraded state: no key works, and a key only raises
+// limits. The key rides the Authorization header, never the URL, so it cannot
+// leak into transport errors.
 //
-// Policy layered over the shared MCP client glue (mcp-client.ts): a lazy
-// singleton client over StreamableHTTP, kept alive for the process lifetime,
-// with one reconnect-and-retry on connection failure. Tool-level errors
-// (McpToolError) are never retried — a rate limit won't heal by reconnecting.
-//
-// Key difference from Exa: the anonymous free tier is the default product.
-// No key = works (fast mode, per-session rate limits). An optional key
-// (PARALLEL_API_KEY or /parallel-setup) raises the rate limits and unlocks
-// connection-level overrides; it rides the Authorization header, never the
-// URL, so it cannot leak into transport error messages. Because a missing key
-// is a valid configuration, the only issue worth noting is rate-limiting.
-//
-// One stable session_id per process (generated lazily, reused for every
-// call): the server keys free-tier rate limiting to it, so a fresh id per
-// call would defeat the shared budget; a stable id keeps one agent session
-// inside one bucket, which is what the docs prescribe.
+// One stable session_id per process, because the server buckets free-tier limits
+// to it — a fresh id per call would reset the shared budget.
 
 import type { Client } from "@modelcontextprotocol/client";
 import { callMcpTool, connectMcp, McpToolError } from "./mcp-client.ts";
@@ -27,7 +16,7 @@ import type { SearchOptions, SearchResult } from "./search.ts";
 export const PARALLEL_MCP_URL = "https://search.parallel.ai/mcp";
 const CALL_TIMEOUT_MS = 60_000;
 
-// ── Credential resolution ─────────────────────────────────────────────────────
+// Credential resolution
 // pi-reader.json is canonical; the environment is the fallback. Both are
 // optional — resolution returns null and the client connects anonymously.
 // Resolved lazily and cached, so a newly saved key needs no restart.
@@ -65,7 +54,7 @@ export function parallelKeySource(): string | null {
   return null;
 }
 
-// ── Session identity (free-tier rate-limit bucket) ────────────────────────────
+// Session identity (free-tier rate-limit bucket)
 
 let sessionId: string | null = null;
 
@@ -74,7 +63,7 @@ function resolveSessionId(): string {
   return sessionId;
 }
 
-// ── Issue noting (rate-limit hints) ───────────────────────────────────────────
+// Issue noting (rate-limit hints)
 // Only rate-limiting is an issue: anonymous is a supported configuration, so
 // there is no missing-key state to report (unlike Exa). Noted at the public
 // boundary so one-shot validation clients don't pollute session hints.
@@ -108,7 +97,7 @@ async function withIssueNoting<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-// ── MCP client (lazy singleton, keep-alive, one reconnect) ───────────────────
+// MCP client (lazy singleton, keep-alive, one reconnect)
 
 let clientPromise: Promise<Client> | null = null;
 /** Key the live client was connected with — a wizard-saved key must replace
@@ -201,7 +190,7 @@ async function callParallelToolRaw(
   }
 }
 
-// ── Public interface ─────────────────────────────────────────────────────────
+// Public interface
 
 export async function searchParallelMcp(
   query: string,
@@ -222,7 +211,7 @@ export async function searchParallelMcp(
   return results.slice(0, limit);
 }
 
-// ── Response parsing ─────────────────────────────────────────────────────────
+// Response parsing
 // web_search returns sanitized JSON:
 //   { "search_id": "search_…", "results": [
 //       { "url": "…", "title": "…", "publish_date": "…" | null,

@@ -1,24 +1,16 @@
-// paper-backend.ts — the shared record seam for the papers vertical.
+// paper-backend.ts — the shared record seam for the papers vertical: record
+// shape, snippet, and error contract, owned by neither backend so one backend's
+// quirks cannot leak into the other's rows.
 //
-// With two real backends (OpenAlex, Europe PMC via `search/`) the flat record
-// shape, the display snippet, and the in-band error contract live in a module
-// neither backend owns — otherwise one backend's quirks leak into the other's
-// output and every row reads a different grammar downstream. Every backend
-// normalizes into `PaperRecord` (PIWEB-14's contract, unchanged), renders
-// through `buildPaperSnippet`, and reports failure through `paperError` —
-// named backend, the retry `index` where rerouting can serve the request, the
-// manual-URL escape hatch, and the no-results/backend-down/malformed
-// distinction.
-//
-// No degrade-to-text anywhere in the vertical: prose cannot substitute for
-// paper records, so failure always fails in-band, never fakes rows.
+// Failure is in band, never degrade-to-text: prose cannot substitute for a paper
+// record, so a failure must read as one rather than as rows.
 
 import type { SearchResult, PaperIndexName } from "./search.ts";
 
-// ── PaperRecord — the record shape (the seam's result contract) ──────────────
+// PaperRecord — the record shape (the seam's result contract)
 
 /** Paper keys ride on the standard SearchResult as flat extra keys — the agent
- *  (and PIWEB-16's citation traversal) reads them without a new result
+ *  (and's citation traversal) reads them without a new result
  *  taxonomy. Absent when the API doesn't provide the field; never invented. */
 export interface PaperRecord extends SearchResult {
   /** Publication year. */
@@ -233,9 +225,9 @@ export function isPaperRecord(r: SearchResult): r is PaperRecord {
  *  tests all agree on the width. */
 export const DEFAULT_PAGE_SIZE = 10;
 
-// ── Pure seam: snippet ────────────────────────────────────────────────────────
+// Pure seam: snippet
 
-// ── PaperPage — the papers module's return contract ──────────────────────────
+// PaperPage — the papers module's return contract
 
 /** One page of a papers call: the records, the cursor for the next page
  *  when the adapter serves one, and the index's own match count when it
@@ -263,13 +255,9 @@ export interface PaperPageMeta {
   total?: number;
 }
 
-/** One page of results: the records sliced to the caller's page size, plus
- *  the adapter's own handle for the next page and match count when it served
- *  them. Both backends return their page through this, so the page boundary
- *  and the set size are part of the module's contract rather than a
- *  per-adapter detail. An empty or absent handle leaves `nextCursor` off the
- *  page — never an empty string; a count that is not a finite number leaves
- *  `total` off — never a NaN. Pure; exported for tests. */
+/** One page of results: the records sliced to the caller's page size, plus the
+ *  adapter's own next-page handle and match count. An absent handle leaves
+ *  `nextCursor` off rather than empty, and a non-finite count leaves `total` off. */
 export function paperPage(results: PaperRecord[], limit: number, meta: PaperPageMeta = {}): PaperPage {
   const page: PaperPage = { results: results.slice(0, limit) };
   const { nextCursor, total } = meta;
@@ -302,7 +290,7 @@ export interface PaperSnippetMeta {
  *    "Nature Biotechnology · 2020 · 2387 citations · closed · Anzalone et al."
  *  Tokens join with " · "; missing fields tolerated (no invented tokens).
  *  Shared by every backend — one snippet shape, wherever the record came
- *  from. Pure; exported for tests. */
+ *  from. Pure. */
 export function buildPaperSnippet(meta: PaperSnippetMeta): string {
   const tokens: string[] = [];
   if (meta.venue) tokens.push(meta.venue);
@@ -320,26 +308,14 @@ export function buildPaperSnippet(meta: PaperSnippetMeta): string {
   return tokens.join(" · ");
 }
 
-// ── Pure seam: record URL choice ─────────────────────────────────────────────
+// Pure seam: record URL choice
 
-/** The record's `url` is the canonical place the agent acts on — the link a
- *  human clicks and the fetch chain resolves. doi.org is a poor default for
- *  it: the resolution hop rate-limits under volume (429s bite when an agent
- *  walks a result set), and where it lands is the most bot-walled corner of
- *  publishing (Cloudflare challenges, auth transit pages). Every backend
- *  carries copies that fetch cleanly — PMC full text, DOAJ, repository and
- *  publisher pages — so the policy ranks candidates by fetchability:
- *
- *    4  PMC full-text copies (ncbi.nlm.nih.gov/pmc/, europepmc.org/article/PMC…)
- *    3  any other publisher/repository/preprint page
- *    2  doi.org resolution
- *    1  bare metadata records (openalex.org/W…, europepmc.org/article/MED…)
- *
- *  Ties break by candidate order — backends pass their own preference first.
- *  Closed works with doi.org as the only candidate keep it; the bare DOI
- *  always rides the record's `doi` key, so a copy-URL never costs citation
- *  seeds. Shared by every backend — one URL policy, wherever the record came
- *  from. Pure; exported for tests. */
+/** The record's `url` is the place the agent acts on, ranked by fetchability
+ *  rather than by authority: doi.org rate-limits per IP under a result-set walk
+ *  and lands on the most bot-walled corner of publishing, while the PMC and
+ *  repository copies fetch keylessly. The bare DOI always rides `doi`, so a
+ *  copy URL never costs a citation seed. Ties break by candidate order — each
+ *  backend passes its own preference first. */
 export function chooseFetchableUrl(candidates: Array<string | null | undefined>): string | null {
   const rank = (u: string): number => {
     if (/^https?:\/\/(?:www\.)?ncbi\.nlm\.nih\.gov\/pmc\//i.test(u)) return 4;
@@ -363,17 +339,12 @@ export function chooseFetchableUrl(candidates: Array<string | null | undefined>)
   return best;
 }
 
-// ── Filters + citation traversal (PIWEB-16) ───────────────────────────────
+// Filters + citation traversal
 
 /** The orderings the interface offers, each with the condition that earns it.
- *  One table: the always-loaded description is composed from it in the entry,
- *  and each adapter maps the keys it serves — so a key cannot be documented
- *  without being served, or served without being documented. The type is
- *  derived from the keys, so the vocabulary and the table are one thing rather
- *  than two that can drift.
- *
- *  `fwci` is the one ordering not every adapter serves: Europe PMC computes no
- *  field-normalized impact, so it declines that key in band rather than
+ *  The entry composes the always-loaded description from this table and the type
+ *  is derived from its keys, so a key cannot be documented without being served.
+ *  Europe PMC computes no `fwci`, so it declines that key in band rather than
  *  answering it with a different ordering. */
 export const PAPER_SORTS = [
   { key: "citedBy", condition: "descending citation count — the 'find papers on X which are highly cited' ask" },
@@ -383,16 +354,10 @@ export const PAPER_SORTS = [
 
 export type PaperSort = (typeof PAPER_SORTS)[number]["key"];
 
-/** The matchers the interface offers for the free-text query, each with the
- *  condition that earns it. One table: the always-loaded description is
- *  composed from it in the entry, and each adapter maps the keys it serves — so
- *  a key cannot be documented without being served, or served without being
- *  documented. The type is derived from the keys, so the vocabulary and the
- *  table are one thing.
- *
- *  The default — OpenAlex's stemmed keyword search — is deliberately absent: it
- *  is the absence of the parameter, and a value for it would be a no-op the
- *  agent has to learn. The description names it in prose instead. */
+/** The free-text matchers the interface offers, each with the condition that
+ *  earns it. Description and type both derive from this table, as above.
+ *  OpenAlex's stemmed keyword search is deliberately absent: it is the absence of
+ *  the parameter, and a value for it would be a no-op to learn. */
 export const PAPER_SEARCH_MODES = [
   { key: "exact", condition: "matches literally and unstemmed — the mode wildcards (`*`, `?`) require" },
   { key: "semantic", condition: "matches by meaning from an embedding — give it a paragraph, not a word or two; caps at 50 results" },
@@ -406,13 +371,13 @@ export const ABSTRACT_MAX = 300;
 
 /** Truncate to `max` characters with a visible ellipsis — the one place that
  *  decides what a cut-off looks like, so an abstract preview and a backend's
- *  complaint read the same way. Pure; exported for tests. */
+ *  complaint read the same way. Pure. */
 export function elide(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 /** Constrain a papers search, or turn it into a citation walk. Shared across
- *  backends so PIWEB-15's same-shape normalizers stay the only fork point. */
+ *  backends so's same-shape normalizers stay the only fork point. */
 export interface PaperFilters {
   /** Exact publication year. */
   year?: number;
@@ -422,13 +387,10 @@ export interface PaperFilters {
   yearRange?: number[];
   /** Restrict to open-access-readable results. */
   openAccess?: boolean;
-  /** Order results away from relevance. `"citedBy"` is descending citation
-   *  count (the "highly cited" ask), `"date"` is newest-first. Both adapters
-   *  ask the backend to sort the whole set, not the fetched page: OpenAlex
-   *  maps to `cited_by_count:desc` / `publication_date:desc`, Europe PMC to
-   *  `CITED desc` / `P_PDATE_D desc` through EUROPEPMC_SORTS. A Europe PMC
-   *  citation walk is the one exception — its routes take no sort, so the
-   *  ordering applies to the page the endpoint returns (see applySort). */
+  /** Order results away from relevance: citedBy is the "highly cited" ask, date is
+   *  newest-first. Both adapters sort the whole set server-side, except a Europe PMC
+   *  walk, whose routes take no sort — there the ordering applies to the fetched
+   *  page (see applySort). */
   sort?: PaperSort;
   /** Which matcher the free-text `query` uses, away from the default stemmed
    *  keyword search — `exact` for literal text and the wildcards only it
@@ -443,14 +405,10 @@ export interface PaperFilters {
    *  so it is opt-in. The works adapter has no synonym expansion and declines
    *  it in band. */
   synonym?: boolean;
-  /** Europe PMC only: request the identifiers-only enumeration tier — each
-   *  match comes back as its source-scoped identifiers and nothing else, so
-   *  enumerating a large set costs a fraction of a full-record page. The rows
-   *  still carry a `url` derived from the pair, which is what makes each one
-   *  actionable. The tier belongs to the search endpoint alone: Europe PMC's
-   *  /references and /citations routes ignore `resultType` and return full
-   *  entries, so a citation walk declines this in band, and OpenAlex has no such
-   *  mode and declines it too. */
+  /** Europe PMC only: the identifiers-only tier, so enumerating a large set costs
+   *  a fraction of a full-record page. It belongs to the search endpoint alone —
+   *  the walk routes ignore `resultType` and return full entries, so a walk
+   *  declines it rather than answering it under a cheap-tier label. */
   idsOnly?: boolean;
   /** Opaque cursor for the OpenAlex works endpoint — the `meta.next_cursor`
    *  one call hands back, passed unmodified to the next to enumerate a
@@ -458,25 +416,15 @@ export interface PaperFilters {
    *  adapters decline it in band). One call is one request: the interface
    *  never follows the cursor itself. */
   cursor?: string;
-  /** The agent's own OpenAlex filter list, in the API's grammar — the
-   *  `filters.expression` schema description in index.ts is the operator and
-   *  family reference. This is the way to any constraint the dedicated filters
-   *  do not carry, to a citation query across several papers in one request
-   *  (`cites:W1|W2|W3`), and to a single work by identifier (`doi:10.…`,
-   *  `ids.pmid:…`). It IS the filter list, so
-   *  `year`/`yearRange`/`openAccess`/`citationGraph` passed beside it are
-   *  refused in band with the destination named — never appended into a silent
-   *  intersect. The retraction clause is the one clause the plugin adds itself.
-   *  OpenAlex only — Europe PMC's query language is different and it declines
-   *  this in band, naming the identifier form its own query accepts. */
+  /** The agent's own OpenAlex filter list, in the API's grammar (the schema
+   *  description is the operator reference). It IS the filter list, so the named
+   *  filters passed beside it are refused in band rather than appended into a
+   *  silent intersect. OpenAlex only: Europe PMC declines it, naming the form its
+   *  own query accepts. */
   expression?: string;
-  /** Citation traversal: "cites" (default) — works that cite the paper;
-   *  "citedBy" — the paper's own references. It replaces the free-text query.
-   *  Each adapter serves it its own way: the works adapter composes
-   *  `cites:`/`cited_by:` into the filter expression it sends, the biomedical
-   *  adapter through its /citations and /references endpoints, because the
-   *  expression is declined there and its query language has no citation
-   *  operator to offer instead. */
+  /** Citation traversal: "cites" (works citing the paper) or "citedBy" (its own
+   *  references). It replaces the free-text query. Each adapter serves it its own
+   *  way, because Europe PMC's query language has no citation operator. */
   citationGraph?: PaperCitationGraph;
   /** Retracted works: excluded by default on both backends through each
    *  adapter's own server-side filter — OpenAlex's `is_retracted:false`,
@@ -501,7 +449,7 @@ export type PaperSeed =
 /** The seed a citation walk starts from — whatever the agent already holds
  *  from a prior papers row or a paper page: bare DOI, PMID, PMCID, or an
  *  OpenAlex W-id (bare or URL form). Unrecognizable → null; never guessed.
- *  Pure; exported for tests. */
+ *  Pure. */
 export function parsePaperSeed(seed: string): PaperSeed | null {
   const s = seed.trim();
   if (s === "") return null;
@@ -517,14 +465,10 @@ export function parsePaperSeed(seed: string): PaperSeed | null {
   return null;
 }
 
-/** Order results away from relevance for the one surface whose endpoint
- *  cannot: Europe PMC's citation-walk routes take no sort (verified live — a
- *  `sort` sent there is ignored). Records without a count or year keep their
- *  order (stable sort) rather than being dropped.
- *
- *  It orders only the keys a walk's records can carry, and `fwci` is not one —
- *  no such metric reaches an EPMC record — so the adapter's decline has to keep
- *  that key from arriving here. Pure; exported for tests. */
+/** Order results away from relevance for the one surface whose endpoint cannot:
+ *  Europe PMC's walk routes ignore `sort` (verified live). A record without a
+ *  count or year keeps its place rather than being dropped. `fwci` never reaches
+ *  here — no such metric arrives on an EPMC record. */
 export function applySort(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
   if (filters?.sort === "citedBy") {
     return records.toSorted((a, b) => (b.citedBy ?? -1) - (a.citedBy ?? -1));
@@ -538,8 +482,7 @@ export function applySort(records: PaperRecord[], filters?: PaperFilters): Paper
 /** Year constraints on citation-walk results: Europe PMC's walk endpoints
  *  take no filter params (the documented approximation), so the constraint
  *  applies to the normalized records. A record whose year is unknown can't
- *  be verified — dropped rather than smuggled past the filter. Pure;
- *  exported for tests. */
+ *  be verified — dropped rather than smuggled past the filter. Pure. */
 export function applyYearFilter(records: PaperRecord[], filters?: PaperFilters): PaperRecord[] {
   const year = filters?.year;
   const range = filters?.yearRange;
@@ -555,7 +498,7 @@ export function applyYearFilter(records: PaperRecord[], filters?: PaperFilters):
 
 /** Stable serialization for the search-cache key — filters change results, so
  *  they ride the key; but key order must not. An all-empty filter object
- *  serializes like no filters at all. Pure; exported for tests. */
+ *  serializes like no filters at all. Pure. */
 export function filtersCacheKey(f?: PaperFilters): string {
   if (!f) return "";
   const parts = [
@@ -576,13 +519,10 @@ export function filtersCacheKey(f?: PaperFilters): string {
   return parts.some((p) => p !== "") ? parts.join("|") : "";
 }
 
-/** The paper-specific row lines for the tool envelope. The subject tags print
- *  on every row, before the authority block — the topic question is asked of
- *  every result. The authority signals sit under one heading — work type,
- *  venue kind, retraction and its notice — with the affiliation set and ORCIDs
- *  beside them; the branch-narrow fields (funding, compounds, language,
- *  publication status, evidence availability, full-text copies) print only when
- *  the page is a single record, the lookup shape. Pure; exported for tests. */
+/** The paper-specific row lines for the tool envelope. Subject tags and the
+ *  authority block print on every row — both questions are asked of every result —
+ *  while the narrow fields print only on a single-record page, where the cost is
+ *  paid once instead of per row. */
 export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
   const lines: string[] = [];
   const meta: string[] = [];
@@ -653,7 +593,7 @@ export function renderPaperExtras(r: PaperRecord, single: boolean): string[] {
   return lines;
 }
 
-// ── In-band error contract ───────────────────────────────────────────────────
+// In-band error contract
 
 export type PaperBackendStatus = "no-results" | "backend-down" | "malformed";
 
@@ -665,19 +605,15 @@ const INDEX_SCOPE: Record<PaperIndexName, string> = {
   europepmc: `index: "europepmc" (biomedical full text: PubMed, PMC copies, preprints, patents)`,
 };
 
-/** `otherIndex` — the fallback `index` value the agent is told to try. Pure;
- *  exported for tests. */
+/** `otherIndex` — the fallback `index` value the agent is told to try. Pure. */
 export function otherIndex(index: PaperIndexName): PaperIndexName {
   return index === "openalex" ? "europepmc" : "openalex";
 }
 
-/** Build the in-band error for a failed papers search. One single home per
- *  meaning: every papers failure reads through this template, so the agent
- *  always sees the same error grammar — backend named, cause distinguished
- *  (no-results vs backend-down vs malformed), the manual URL named where one
- *  exists, and the retry `index` offered where rerouting can actually serve
- *  the request (a `malformed` clause belongs to one adapter's syntax, so its
- *  caller passes `null`). Pure; exported for tests. */
+/** The single home for a failed papers search, so every failure reads in the same
+ *  grammar. The retry `index` is offered only where rerouting could serve the
+ *  request — a `malformed` clause belongs to one adapter's syntax, so its caller
+ *  passes `null`. */
 export function paperError(
   status: PaperBackendStatus,
   failedIndex: PaperIndexName,

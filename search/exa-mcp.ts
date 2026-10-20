@@ -1,18 +1,10 @@
-// Exa MCP adapter — the second real adapter at the SearchProvider seam.
+// Exa MCP adapter: policy layered over the shared MCP glue. A lazy keep-alive
+// singleton, with one reconnect-and-retry — a rate-limited or invalid key never
+// heals by reconnecting, so tool-level errors are not retried.
 //
-// Policy layered over the shared MCP client glue (mcp-client.ts): a lazy
-// singleton client over StreamableHTTP, kept alive for the process lifetime,
-// with one reconnect-and-retry on connection failure. Tool-level errors
-// (McpToolError) are never retried — a rate-limited or invalid key won't heal
-// by reconnecting.
-//
-// Credentials come from pi-reader's own config (~/.pi/agent/pi-reader.json, written
-// by /exa-setup) with the EXA_API_KEY env var as fallback. mcp.json is not
-// read here — the wizard's opt-in import and the dedup detector own that file.
-//
-// Response parsing is hidden behind two small functions: searchExaMcp and
-// searchExaAdvanced. Everything else (client lifecycle, result extraction,
-// sanitizing) is implementation detail.
+// The key comes from pi-reader's config (~/.pi/agent/pi-reader.json, written by
+// /exa-setup), then EXA_API_KEY. mcp.json is the wizard's import source, never a
+// runtime key source: a stale entry there must not shadow a key saved later.
 
 import type { Client } from "@modelcontextprotocol/client";
 import { callMcpTool, connectMcp, McpToolError } from "./mcp-client.ts";
@@ -25,7 +17,7 @@ export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const EXA_TOOLS = "web_search_exa,web_fetch_exa,web_search_advanced_exa";
 const CALL_TIMEOUT_MS = 60_000;
 
-// ── Credential resolution ─────────────────────────────────────────────────────
+// Credential resolution
 // pi-reader.json is canonical; the environment is the fallback. Resolved lazily
 // and cached, so rotating the key needs no restart.
 
@@ -66,7 +58,7 @@ function endpointUrl(key: string): string {
   return `${resolveBaseUrl()}?exaApiKey=${encodeURIComponent(key)}&tools=${encodeURIComponent(EXA_TOOLS)}`;
 }
 
-// ── Public interface ─────────────────────────────────────────────────────────
+// Public interface
 
 export async function searchExaMcp(
   query: string,
@@ -118,7 +110,7 @@ export async function fetchExaMcp(
   return parseCrawlResults(text, urls);
 }
 
-// ── MCP client (lazy singleton, keep-alive, one reconnect) ───────────────────
+// MCP client (lazy singleton, keep-alive, one reconnect)
 
 export interface CallExaOptions {
   /** Use this key instead of the resolved one (wizard validation). */
@@ -202,7 +194,7 @@ async function callExaToolRaw(
   }
 }
 
-// ── Issue noting (rate-limit / missing-key hints) ────────────────────────────
+// Issue noting (rate-limit / missing-key hints)
 // Wrapped at the public boundary rather than inside callExaTool so one-shot
 // validation clients (wizard, candidate keys) don't pollute session hints.
 
@@ -216,7 +208,7 @@ async function withIssueNoting<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-// ── Response parsing ─────────────────────────────────────────────────────────
+// Response parsing
 
 // web_search_exa returns blocks like:
 //   Title: X\nURL: https://...\nPublished: ...\nAuthor: ...\nHighlights:\n...
@@ -324,7 +316,7 @@ export function parseCrawlResults(
   return requested.map((u) => byUrl.get(u) ?? { url: u, title: "", content: "", error: "no content returned" });
 }
 
-// ── Date helpers ─────────────────────────────────────────────────────────────
+// Date helpers
 
 function recencyStartDate(recency: "day" | "week" | "month" | "year"): string {
   const now = Date.now();

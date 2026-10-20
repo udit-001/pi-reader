@@ -1,8 +1,7 @@
-// search.ts — deep module: provider seam + result normalization + answer synthesis
-//
-// The SearchProvider seam sits here. Multiple adapters are real adapters
-// behind a small interface. Everything the caller needs to know is in
-// SearchResponse; everything behind the seam is an implementation detail.
+// search.ts — the provider seam: routing, result normalization, answer
+// synthesis. Callers see only SearchResponse; every adapter behind the seam is
+// an implementation detail, which is what keeps a third provider a registration
+// rather than a refactor.
 
 import { searchDuckDuckGo } from "./duckduckgo.ts";
 import { searchExaMcp, searchExaAdvanced } from "./exa-mcp.ts";
@@ -20,7 +19,7 @@ import { homedir } from "node:os";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// Types
 
 export type SearchProviderName = "duckduckgo" | "exa" | "parallel" | "openai" | "wikipedia" | "hn" | "context7" | "news" | "images" | "videos" | "papers";
 
@@ -88,7 +87,7 @@ export interface SearchResponse {
   total?: number;
 }
 
-// ── SearchProvider seam ──────────────────────────────────────────────────────
+// SearchProvider seam
 // Two adapters means a real seam. Each satisfies this contract and does
 // provider-specific work (HTML parsing, JSON-RPC, normalization) behind it.
 
@@ -165,7 +164,7 @@ const autoProviders: Record<AutoProviderName, SearchProvider> = {
 // The papers vertical — scholarly literature (OpenAlex). PaperRecord's flat
 // keys ride on the standard SearchResult so agents get year/venue/citations
 // without a new result taxonomy. Explicit-only: never chosen by auto-routing
-// (PIWEB-14).
+//.
 const papersProvider: SearchProvider = {
   async search(query, options) {
     const page = await searchPapers(query, options);
@@ -221,14 +220,11 @@ const freeProviders: SearchProvider = {
   },
 };
 
-// ── Intent-aware auto routing ───────────────────────────────────────────────
-// The agent expresses intent (category, content, domains); availability is
-// runtime state only the tool observes. autoChain is the single routing seam:
-// a pure function of intent returning [primary, failure-fallback] provider
-// names. News-shaped intent (category: "news") runs the fidelity ladder —
-// Exa semantic news primary when alive; on an Exa failure (quota death,
-// missing key) the news vertical takes over with dates and outlets, and its
-// own degrade lands on text. Any other intent keeps the ddg↔exa pair.
+// Intent-aware auto routing
+// The agent expresses intent; availability is runtime state only the tool
+// observes, so routing is a pure function of the former — which is what makes it
+// testable. News intent runs the fidelity ladder (Exa, then the news vertical
+// with dates and outlets, then text); every other intent keeps the ddg↔exa pair.
 
 export type AutoProviderName = "duckduckgo" | "exa" | "news";
 
@@ -241,7 +237,7 @@ export function autoChain(options: SearchOptions): [AutoProviderName, AutoProvid
   return exaShaped ? ["exa", "duckduckgo"] : ["duckduckgo", "exa"];
 }
 
-// ── Search cache ────────────────────────────────────────────────────────────
+// Search cache
 // Cache search results to avoid re-fetching and to survive DDG captcha.
 
 const SEARCH_CACHE_DIR = join(homedir(), ".pi", "agent", "pi-reader-cache", "search");
@@ -261,7 +257,7 @@ interface CachedSearch {
 /** The search-cache key: every option that changes the row set rides it, or a
  *  later call replays an earlier one's rows. The page size is one of them —
  *  asking for 200 rows after a 10-row call is a different request, and a shared
- *  key would answer it with the ten. Pure; exported for tests. */
+ *  key would answer it with the ten. Pure. */
 export function searchCacheKey(query: string, options: SearchOptions & { provider?: SearchProviderName | "auto" }): string {
   // Hash query + options to create a unique cache key
   const parts = [
@@ -311,7 +307,7 @@ function writeSearchCache(key: string, data: CachedSearch): void {
   }
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// Public API
 
 /** Providers whose results are never cached: their answers cost quota (Exa's
  *  API key, OpenAI's subscription window). One set, so a third quota provider
@@ -406,7 +402,7 @@ export async function webSearch(
   return response;
 }
 
-// ── Answer synthesis ─────────────────────────────────────────────────────────
+// Answer synthesis
 // Pure function. Source-linked, skimmable. The caller never touches individual
 // provider quirks — they get { answer, results }.
 

@@ -8,13 +8,10 @@ import {
 } from "./handler.ts";
 
 /**
- * ORCID handler. orcid.org is a JavaScript app: plain HTTP clients get a
- * placeholder page, so profiles are served from the pub.orcid.org v3 REST API.
- * - markdown mode, orcid.org/{id}: rendered profile — name, affiliations,
- *   public works deduped and newest-first.
- * - raw mode: the API's exact JSON body (fetchRaw opt-in — the raw bypass
- *   would otherwise return the JS shell).
- * - pub.orcid.org URLs: served as-is with JSON content negotiation.
+ * ORCID handler. orcid.org is a JS app, so plain clients get a placeholder page
+ * and profiles come from the pub.orcid.org v3 REST API instead. Raw mode serves
+ * that API's JSON through the fetchRaw opt-in; pub.orcid.org URLs are served as
+ * they are.
  */
 
 const API = "https://pub.orcid.org/v3.0";

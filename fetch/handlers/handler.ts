@@ -128,11 +128,10 @@ export async function resolveValidatedHost(
 }
 
 /**
- * SSRF guard: model-supplied URLs must not reach loopback, link-local, or private-range addresses (cloud metadata endpoints, intranet services).
- * Checks the scheme, the hostname, literal IPs, and DNS-resolved addresses.
- * `allowPrivateNetwork` (pi-reader.json, default false) skips the private-address
- * checks — the scheme check always applies. This is the fast-fail preflight;
- * the transport enforces the same rule at connect time via guardedLookup.
+ * SSRF guard: a model-supplied URL must not reach loopback, link-local, or
+ * private-range addresses. This is the fast-fail preflight; the transport enforces
+ * the same rule at connect time via guardedLookup, so both stay in force.
+ * `allowPrivateNetwork` skips the private-address checks, never the scheme check.
  */
 export async function assertPublicTarget(
   url: URL,

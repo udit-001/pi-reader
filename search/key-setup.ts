@@ -1,14 +1,5 @@
-// key-setup.ts — the shared key-setup wizard skeleton (PIWEB-22).
-//
-// A keyed provider's setup is the same conceptual flow wearing different
-// copy: intro → dashboard → hidden paste (bracketed-paste handling, masking)
-// → validate → save (masked preview, atomic write) → done, plus the spinner,
-// the headless "print the manual path" fallback, secret redaction, and the
-// reopen guard. This module owns all of that once; a provider's wizard is a
-// spec (static copy + validate/save hooks) and — where it has extras — a
-// thin subclass (Exa's mcp.json import and dedupe-removal places live there,
-// never here).
-//
+// key-setup.ts — the shared key-setup wizard skeleton. A provider supplies copy
+// plus validate/save hooks; its extras live in a thin subclass, never here.
 // The key is never rendered: masked in previews, redacted from error text.
 
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -20,7 +11,7 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 const SPINNER_MS = 100;
 const WIZARD_WIDTH = 72;
 
-// ── Masking / redaction ──────────────────────────────────────────────────────
+// Masking / redaction
 
 /** Scrub a secret from text before it can reach an error surface. */
 export function redact(text: string, secret: string): string {
@@ -28,7 +19,7 @@ export function redact(text: string, secret: string): string {
   return text;
 }
 
-// ── Validation result — one shape for every keyed provider ──────────────────
+// Validation result — one shape for every keyed provider
 
 export type ValidationOk = { ok: true };
 export type ValidationFail =
@@ -37,10 +28,9 @@ export type ValidationFail =
   | { ok: false; kind: "unreachable"; reason: string };
 export type ValidationResult = ValidationOk | ValidationFail;
 
-// ── Pure seam: the hidden paste buffer ───────────────────────────────────────
+// Pure seam: the hidden paste buffer
 
-/** What one input event does to the paste buffer. Pure; exported for tests —
- *  every provider's paste place rides this one implementation. */
+/** What one input event does to the paste buffer. — every provider's paste place rides it. */
 export interface PasteOutcome {
   /** The next buffer value. */
   key: string;
@@ -58,7 +48,7 @@ export interface PasteOutcome {
  *  append, backspace deletes, bracketed paste (ESC[200~ … ESC[201~) replaces
  *  the buffer with its content minus newlines, enter submits a non-empty
  *  buffer, close keys request backing out, other escape sequences are not
- *  text and are ignored. Pure; exported for tests. */
+ *  text and are ignored. Pure. */
 export function applyPasteInput(current: string, data: string): PasteOutcome {
   const quiet: PasteOutcome = { key: current, changed: false, clearError: false, submit: false, back: false };
   if (matchesKey(data, Key.enter) || data === "\r") {
@@ -81,7 +71,7 @@ export function applyPasteInput(current: string, data: string): PasteOutcome {
   return quiet;
 }
 
-// ── The spec — what makes a provider's wizard its own ────────────────────────
+// The spec — what makes a provider's wizard its own
 
 export interface KeySetupSpec {
   /** Wizard title, e.g. "Exa setup". Also the reopen-guard key. */
@@ -115,7 +105,7 @@ export interface KeySetupSpec {
   writeErrorHint: string;
 }
 
-// ── The skeleton wizard ──────────────────────────────────────────────────────
+// The skeleton wizard
 
 export type WizardPhase = "intro" | "paste" | "validating" | "save" | "remove" | "done" | "error";
 
@@ -194,7 +184,7 @@ export class KeySetupWizard {
     this.requestRender();
   }
 
-  // ── Protected hooks — the subclass extension points ────────────────────────
+  // Protected hooks — the subclass extension points
 
   /** First shot at every input event; true = handled. Subclass phases
    *  (import keys, remove) ride this. */
@@ -244,7 +234,7 @@ export class KeySetupWizard {
     return this.spec.doneLines?.() ?? [];
   }
 
-  // ── Flow internals ─────────────────────────────────────────────────────────
+  // Flow internals
 
   protected go(phase: WizardPhase): void {
     this.phase = phase;
@@ -354,7 +344,7 @@ export class KeySetupWizard {
     this.spinnerTimer = null;
   }
 
-  // ── Rendering ───────────────────────────────────────────────────────────────
+  // Rendering
 
   render(width: number): string[] {
     if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
@@ -477,7 +467,7 @@ export class KeySetupWizard {
     }
   }
 }
-// ── Opening ──────────────────────────────────────────────────────────────────
+// Opening
 
 /** Wizards currently open, keyed by title — one reopen guard for every
  *  provider's command. */
