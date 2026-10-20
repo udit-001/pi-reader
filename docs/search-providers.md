@@ -1,86 +1,62 @@
 # Search providers
 
-Reference for `search/` and `config.ts`. Open this before touching a provider, auto-routing, recency/page behavior, or Exa key/config handling. Param semantics live in the schema descriptions in `index.ts`.
+Reference for `search/` and `config.ts`. Param semantics live in the schema descriptions in `index.ts`; this doc carries the routing policy and the wire traps the code cannot record.
 
-## Routing (`search/search.ts`)
+## Routing
 
-- `provider: "auto"` → `autoChain()`: the single routing seam — a pure function of intent returning `[primary, failure-fallback]` provider names. Exa-shaped params (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback. Pin changes in `test/routing.test.ts`.
-- For news intent (`category: "news"`) the chain is the fidelity ladder's first two rungs: Exa semantic news primary when alive; on an Exa *failure* (quota death, missing key) the news vertical takes over with dates and outlets, and its own degrade lands on text. Fallback fires on provider failure (throw) only — never on empty results. A degraded response carries `degraded: true` on the `SearchResponse`, and `shouldCacheSearch()` refuses to cache it — so a news-intent query that fell all the way to text is not pinned for the TTL and the ladder recovers.
-- `wikipedia`, `hn`, `context7`, `news`, and `images` are free, keyless, explicit-only — never chosen as the auto *primary* and never in the fallback chain for non-news intent. When DDG and Exa both fail, the free-provider tier (`wikipedia`/`hn`/`context7`) runs as the last fallback.
-- `parallel` is free (anonymous tier) and explicit-only — `auto` never selects it: it is the *second* independent index, kept for the agent to reach for when DDG is captcha-walled or thin (the schema bullet says so), not a silent third leg of the chain. Adding it to `autoChain` is a one-line change if that proves wrong in practice.
-- `openai` (Codex web search) is explicit-only too, but not free: it spends ChatGPT/Codex subscription quota, so `auto` never selects it. See below.
-- Exa runs one of two calls: a plain query → `searchExaMcp`; any Exa-shaped param → `searchExaAdvanced`.
-- Successful results are cached for 1 hour (key: query + provider + options). Exa results are never cached — they cost quota.
+`autoChain()` is the routing seam: a pure function of intent params returning `[primary, failure-fallback]`. It runs behind `provider: "auto"`, the default. Pin every change in `test/routing.test.ts`.
 
-## DuckDuckGo: the ddgs/uvx path (`search/ddgs-uv.ts`)
+- **Exa-shaped params** (`category`, `includeContent`, `includeSummary`, non-empty `domains`) route Exa-first with DDG fallback; anything else routes DDG-first with Exa fallback.
+- **News intent** walks the fidelity ladder's first two rungs: Exa semantic news, and on an Exa *failure* the news vertical (dates and outlets), whose own degrade lands on text.
+- **Fallback fires on provider failure, never on empty results** — an empty page is an answer. A degraded response carries `degraded: true`, and `shouldCacheSearch()` refuses it: pinning a fallen-back news query for the TTL would stop the ladder from ever recovering.
+- **Free and explicit-only:** `wikipedia`, `hn`, `context7`, `news`, `images`. Never an auto primary, never in the fallback chain for non-news intent. When DDG and Exa both fail, `wikipedia`/`hn`/`context7` run as the last resort.
+- **`parallel`** is free on the anonymous tier and explicit-only: the *second* index for a captcha-walled or thin DDG, not a silent third leg. One line in `autoChain()` if practice proves otherwise.
+- **`openai`** (Codex) is explicit-only because it spends subscription quota; `auto` never spends money the agent did not ask for. Same rule, same cache refusal, as Exa.
 
-- Primary: `uvx ddgs text` — TLS fingerprinting and VQD token handling for free. JSON output lands in a private per-call dir (`mkdtemp`, 0700 — a local user can't pre-place a symlink at a guessable path to feed fake results), removed in `finally`.
-- uvx resolution: official install location first (`~/.local/bin/uvx`, `.exe` on Windows), then bare `uvx` so PATH resolves it (brew, apt, pip, scoop). Missing → auto-installed once via the official installer, then probed again.
-- Session-start warm-up (`warmDdgs`): once per process, fire-and-forget, never blocks or throws. Moves the one-time uv/ddgs download off the first search; failure is silent because the HTML fallback covers search. The one exception: when warm-up *installs* uv, the user is told — `curl | sh` from astral.sh never runs invisibly.
-- Degraded fallback: HTML scraping. Its results carry a visible notice so the agent knows quality dropped.
-- `recency` maps to ddgs `-t` letter codes via `REGENCY_TO_TIMELIMIT` — the single source of truth for both the ddgs and HTML adapters, and for the news vertical. `page` maps to `-p`. `domains` become `site:` / `-site:` operators.
+## DuckDuckGo: the ddgs/uvx path
 
-## News vertical (`search/news.ts`)
+- **`uvx ddgs` is the primary** because it brings TLS fingerprinting and VQD handling for free — the reason the HTML path is the fallback and not the design.
+- **Per-call output lands in a private dir** (`mkdtemp`, 0700): a world-readable guessable path lets a local user pre-place a symlink and feed fake results.
+- **Warm-up is fire-and-forget,** once per process, and silent on failure because the HTML fallback covers search. The one exception: when warm-up *installs* uv, the user is told — `curl | sh` from astral.sh never runs invisibly.
+- `REGENCY_TO_TIMELIMIT` is the single recency table for the ddgs adapter, the HTML adapter, and news; `page` and `domains` map through the same plan.
 
-- `provider: "news"` → `uvx ddgs news` (bing/duckduckgo/yahoo engines — free, keyless). The argv plan is the text plan generalized to a subcommand param (`buildDdgsArgs`); news accepts the same flag set including `-t` d/w/m/y and `-p`.
-- Normalization is verbatim — invents nothing: `date`→`publishedDate` (clean ISO and source junk like `"Opinion2 days ago"` pass through unmodified), `body`→`snippet`, `source` outlet→`author`, `image` dropped, url-less rows dropped. `domains` is not supported — `newsViaDdgs` strips it before the shared seam, matching `imagesViaDdgs`.
-- Degrade, don't fail: uvx missing or the ddgs news call failing → text search (same query, same window) with a visible `[News: …]` notice on the last result; the provider label then reports `duckduckgo` so a degraded answer never masquerades as news.
-- The answer builder and the tool's result lines/details render `publishedDate` and `author` for every provider (news and Exa alike).
+## Verticals: what is policy, not plumbing
 
-## Images vertical (`search/images.ts`)
+**News.** Normalization invents nothing — the source's own date string passes through unmodified, including junk like `"Opinion2 days ago"`; a cleaned-up date would be a claim the backend never made. `domains` is stripped before the shared seam because the news engines do not support it. Degrade lands on text, and the provider label then reports `duckduckgo`: a degraded answer must not masquerade as news.
 
-- `provider: "images"` → `uvx ddgs images` (free, keyless). Explicit-only — it lives outside `autoProviders`, and `AutoProviderName` (the chain's key type) doesn't include it, so the compiler holds it out of the auto chain.
-- Normalization is agent-POV: `image`→`url` (the direct, hotlinkable origin — the thumbnail and the source-page url are dropped), `title` verbatim, and dims+source collapse into the snippet (`W×H · via source`; each token optional, non-numeric dims ignored, image-less rows dropped). The default renderer needs no changes.
-- No degrade-to-text: text results cannot substitute for images, so failure surfaces as an in-band error instead of fake results.
-- `license` (`share|commercial|modify`) maps to the ddgs `-lic` request filter via `LICENSE_TO_FLAG` (values verified live); `"any"` is the server default, so no flag is emitted.
-- The images engines reject ddgs `-t` outright (`KeyError` on every backend, verified live — the CLI `--help` lies), so `buildDdgsArgs` drops timelimit on the images path and `recency` is documented as unsupported in the schema description.
+**Images.** The row points at the direct origin, never the thumbnail or the source page — the agent's verb is embed or vision-check, and both need the image. No degrade-to-text: text cannot substitute for an image, so failure is an in-band error rather than plausible-looking results. `license` is a request-time filter, and `"any"` emits no flag (the server default). The engines reject ddgs `-t` outright (`KeyError` on every backend, verified live against a `--help` that advertises it), so the images path drops timelimit and the schema marks `recency` unsupported.
 
-## Videos vertical (`search/videos.ts`)
+**Videos.** The one vertical that bypasses ddgs: ddgs's only backend here uses an HTTP client (`primp`, TLS-spoofed) that `v.js` 403-bans, while the endpoint accepts a plain browser-UA fetch (verified live). The row points at the watch URL, since the agent acts on the video rather than a page about it. No retries on 403 — a fingerprint ban is not retry-recoverable, and the plain-UA client exists to avoid earning one. The fragile seam is the VQD token regex (pinned by a markup fixture); its failure names the text-search-plus-`domains: ["youtube.com"]` workaround.
 
-- `provider: "videos"` → **direct DDG v.js client** (free, keyless) — the one vertical that bypasses ddgs. Reason: ddgs's videos engine is the only backend behind the vertical, and its HTTP client (`primp`, TLS-fingerprint-spoofed) is 403-banned from `v.js`; the endpoint itself is open to a plain browser-UA fetch (verified live). Two GETs: `duckduckgo.com/?q=` → regex out the VQD token → `duckduckgo.com/v.js?…&vqd=…` → JSON rows.
-- Explicit-only — outside `autoProviders` (compiler-held out of the chain), dispatched only when the agent names it.
-- Normalization is agent-POV: `content`→`url` (the watch URL — the agent acts on the video, not a page), `uploader`→`author` (falls back to `publisher`), `published`→`publishedDate` verbatim, and duration+views+via collapse into the snippet (`13:59:10 · 1.2M views · via freeCodeCamp.org`). Dropped: `embed_html`, `embed_url`, `image_token`, `images`, `description`, `thumbnail_*` — no agent verb acts on them.
-- `recency` binds at the source via the `f=publishedAfter:{d|w|m|y}` slot of the v.js filter string; `page` via `s=(page-1)*60`. `domains` is not supported.
-- No degrade-to-text. The fragile seam is the VQD regex (markup-pinned fixture test); a missing token, non-200, or non-JSON response surfaces as an actionable in-band error naming the cause and the text + `domains: ["youtube.com"]` workaround. No 403 retries — a fingerprint ban isn't retry-recoverable, and the boring-UA client exists precisely to avoid earning one.
+## Papers
 
-## Papers vertical (`search/papers.ts`)
+Two backends behind one dispatch, one record shape, failure always in band. The reasons are in [papers.md](papers.md).
 
-- Explicit-only like the other verticals: two backends behind one dispatch, one shared record shape, failure always in-band. The rationale — why in-band rather than degrade, why explicit-only, why this backend pair (and why Semantic Scholar waits), the key + metering contract, and the citation-graph approximation — is [papers.md](papers.md).
+## Codex web search
 
-## Codex web search (`search/openai.ts`)
+- **No API key:** auth resolves through `ctx.modelRegistry` (`openai-codex`, then `openai` with ChatGPT OAuth), so this rides the subscription Pi already holds. No credential → `OpenAISearchUnavailableError` whose message is the recovery path, passed through verbatim.
+- **Search is model-mediated:** the model writes the queries and the answer. This is the only provider whose `answer` is model prose rather than `buildAnswer(results)` — which means a sparse answer is the model's doing, not a ranking bug.
+- **The Codex endpoint sends `response.completed` with an empty `output`,** so the parse seam collects `output_item.done` items and trusts the completed payload only when non-empty. Default model is the newest `luna`-tier Codex model (then `terra`, then the newest versioned id); `pro`/`ultra` are excluded as disproportionate to a search call.
 
-- `provider: "openai"` runs OpenAI's hosted `web_search` tool on the ChatGPT/Codex subscription Pi already holds — no API key. Auth resolves through `ctx.modelRegistry` (`openai-codex` first, then `openai` with ChatGPT OAuth); `getApiKeyAndHeaders` yields the token, and `chatgpt-account-id` is read from the JWT. No credential → `OpenAISearchUnavailableError`, whose message is the recovery path (run `/login`, or use `duckduckgo`/`exa`) and is passed through verbatim by the entry.
-- Explicit-only and quota-costed: `auto` never spends subscription quota silently, and `shouldCacheSearch()` refuses it — the same rule as Exa.
-- Search is model-mediated: the model picks the queries, OpenAI runs them server-side, and the model writes the answer. So this is the one provider whose `SearchResponse.answer` is model-authored prose, not `buildAnswer(results)`; the adapter falls back to `buildAnswer` only when the model returned citations with no text.
-- Model and endpoint: `openai.searchModel` pins the model (sent verbatim); default is the newest `luna`-tier Codex model, then `terra`, then the newest versioned id (`pro`/`ultra` excluded). The endpoint is the Codex subscription one for Codex auth, `api.openai.com/v1/responses` for a plain API key; `openai.responsesUrl` overrides.
-- Parse seam (exported for tests): `parseOpenAIResponse` collects `output_item.done` items — the Codex endpoint sends `response.completed` with an **empty** `output`, so the completed payload is used only when non-empty. `extractSearchResults` prefers `url_citation` annotations (title + snippet), then adds `web_search_call` action sources, deduping and stripping `utm_source=openai`.
+## Exa MCP
 
-## Exa MCP (`search/exa-mcp.ts`)
+- **Key precedence:** `~/.pi/agent/pi-reader.json` (`exa.apiKey`), then `EXA_API_KEY`. `mcp.json` is a wizard *import source*, never a runtime key source — a stale entry there must not shadow a key the user saved later. Resolution is lazy and cached; `resetExaKeyCache()` after a wizard write makes a new key live without a restart.
+- **Network errors are expected** on remote SSE JSON-RPC: the adapter retries once, the router falls back to DDG.
+- **`redactSecret()` (`search/redact.ts`)**, shared with Codex, wraps every error leaving the adapter, so a key never reaches the transcript. Short values are skipped because they occur in ordinary text.
 
-- Remote JSON-RPC over SSE — network errors are expected: the adapter retries once, then auto-routing falls back to DDG.
-- Key resolution, in order: `~/.pi/agent/pi-reader.json` (`exa.apiKey`, written by the wizard) → `EXA_API_KEY` env var. `mcp.json` is a wizard *import source*, never a runtime key source. Resolution is lazy and cached; `resetExaKeyCache()` after a wizard write makes a new key live without restart.
-- Keyless and rate-limited failures call `noteExaIssue()`; the entry consumes it once per tool call (`consumeExaIssue` in `finally`), so the hint fires once per tool call, not per provider attempt. Every error leaving `callExaTool` passes `redactSecret()` (`search/redact.ts`, shared with the Codex adapter) — the key never reaches the agent transcript (short values are skipped: they occur in ordinary text).
+## Parallel MCP
 
-## Parallel MCP (`search/parallel-mcp.ts`)
+- **Anonymous is the product, not a degraded state.** No key → free tier (fast mode). A key raises limits and rides the `Authorization` header through `connectMcp`'s `authToken`, never the URL, so it cannot leak into transport errors — the one call-site difference from Exa's keyed-URL composition.
+- **One `session_id` UUID per process,** generated lazily: the server buckets free-tier limits to it, and a fresh id per call would reset the shared budget.
+- **The query goes verbatim as both `objective` and `search_queries[]`:** pi-reader has no richer intent, and a paraphrase would lose the agent's wording.
+- **`null` (anonymous) is a valid key resolution,** so there is no missing-key state — only rate limiting, in the same once-per-call hint grammar as Exa.
+- An invalid key 401s at call time (verified live), which is what makes wizard validation honest rather than optimistic.
+- Cached like DDG, not a `QUOTA_PROVIDERS` member: the free tier costs nothing, and caching a keyed search saves the paid one.
 
-- Remote MCP over streamable HTTP — same client glue as Exa (`connectMcp`/`callMcpTool`), same policy shape: lazy singleton keep-alive client, one reconnect-and-retry on connection-level failure, `McpToolError` (server answered) never retried. The client is replaced when the resolved key changes, so a wizard-saved key takes over the connection instead of being shadowed.
-- **Anonymous is the product, not a degraded state.** No key → the free tier (fast mode, `session_id`-bucketed rate limits). A key (wizard or `PARALLEL_API_KEY`) raises limits; it rides the `Authorization` header via `connectMcp`'s `authToken` (never the URL, so it cannot leak into transport errors) — the one call-site difference from Exa's keyed-URL composition. An invalid key 401s at call time (verified live), which is what makes wizard validation honest.
-- One `session_id` UUID per process, generated lazily and sent on every call: the server buckets free-tier rate limits to it, and a fresh id per call would defeat the shared budget.
-- Key resolution, in order: `~/.pi/agent/pi-reader.json` (`parallel.apiKey`) → `PARALLEL_API_KEY` env var; `null` (anonymous) is a valid resolution — there is no missing-key issue state, only rate-limiting (`classifyParallelError` → `noteParallelIssue`, consumed once per tool call by the entry, same grammar as Exa's).
-- Tool contract: `web_search` requires `objective` + `search_queries[]`; the adapter sends the query verbatim as both (pi-reader has no richer intent, and paraphrasing would lose the agent's wording). `numResults` slices client-side — the server returns its page. Exa-shaped params (category/domains/recency/includeContent) are ignored; the schema bullet says so at the call site.
-- Parse seam (exported for tests, fixtures mirror a live anonymous probe): JSON `{search_id, results:[{url,title,publish_date,excerpts[]}]}` → `SearchResult` (excerpts join+trim to 500 chars as everywhere else, `null` publish_date dropped). Non-JSON or a missing results array throws — never silently returns an empty page.
-- Cached like DDG (not a `QUOTA_PROVIDERS` member): the free tier costs no money, and caching a keyed search saves the paid one.
+## Config
 
-## Config (`config.ts`)
+One file, `~/.pi/agent/pi-reader.json`, owned entirely by `config.ts`: atomic writes, forgiving reads (missing or malformed → null, never a throw at startup). Non-obvious keys: `parallel.apiKey` absent is a valid state; `hints.mcpDuplicate` persists a one-time explanation; `openai.searchModel` is sent verbatim.
 
-- Single file: `~/.pi/agent/pi-reader.json`. Writes are atomic (tmp + rename); reads are forgiving — missing or malformed resolves to null.
-- Keys in use: `exa.apiKey`, `exa.url` (endpoint override), `parallel.apiKey`, `parallel.url` (endpoint override; both optional — anonymous is the default), `papers.openalexApiKey` (OpenAlex metering — [papers.md](papers.md)), `openai.searchModel` / `openai.responsesUrl` (Codex search — above), `allowPrivateNetwork` (fetch-guard escape hatch — [fetch-pipeline.md](fetch-pipeline.md)), `maxRepoSizeMB` (clone size gate — [github.md](github.md)), `hints.mcpDuplicate` (persisted dedupe flag, below).
+## Wizards
 
-## Wizard (`/exa-setup`, `/parallel-setup`, `/openalex-setup`; skeleton in `search/key-setup.ts`)
-
-- One shared skeleton (`search/key-setup.ts`) owns the flow — intro → dashboard → hidden paste → validate → save (masked preview, atomic write) → done — plus the spinner, redaction, the headless manual-path fallback, and the reopen guard. A provider's wizard is a spec plus a thin subclass for its extras.
-- `/exa-setup` (`search/exa-setup.ts`) validates, previews, and writes the key atomically. Imports a key from `mcp.json` when present (checks `~/.pi/agent/mcp.json`, `~/.pi/mcp.json`, `./.pi/mcp.json`) and dedupes the entry — those two places live in the Exa instance, never the skeleton.
-- `/openalex-setup` (`search/openalex-setup.ts`) is the thinnest instance: validation is one free singleton work lookup (401/403 → key rejected, 429 → rate-limited, classified by the same grammar as the papers error contract), and the done screen reads the real daily budget and reset from the free `/rate-limit` endpoint.
-- `/parallel-setup` (`search/parallel-setup.ts`) is a plain spec instance — no subclass: there is no mcp.json key to import or duplicate to remove (the anonymous tier never had one). Its intro states the actual contract: search works keyless; a key raises limits. Validation is one free-tier search through the adapter's own client (invalid key → 401 → rejected before metering).
-- Duplicate detection: an `mcp.json` exa entry with `directTools` puts Exa's raw tools beside `web_search` in every session. Detected at session start; the full explanation fires once (persisted via `hints.mcpDuplicate`), later sessions get a brief reminder while the condition persists. Both self-heal when the entry is removed.
-- A wizard opens only via its command — it needs keyboard focus, so headless mode prints the manual path (config shape + key URL) instead.
+One skeleton owns the flow, the spinner, redaction, the headless manual-path fallback, and the reopen guard; each provider is a spec plus a thin subclass. Two rules live outside the skeleton because one provider owns them: the `mcp.json` import and duplicate removal belong to the Exa instance, and the duplicate warning fires once per install (persisted) then drops to a brief reminder while the condition persists — an Exa `directTools` entry otherwise puts raw Exa tools beside `web_search` in every session. A wizard opens only via its command: it needs keyboard focus, so headless prints the manual path instead.

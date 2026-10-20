@@ -1,48 +1,37 @@
 # Fetch pipeline
 
-Reference for `fetch/fetch.ts`, `fetch/handlers/`, and `cache/`. Open this before touching the fetch chain, the SSRF/network guard, or the cache — and when debugging a URL that returns nothing. Param semantics live in the schema descriptions in `index.ts`.
+Reference for `fetch/fetch.ts`, `fetch/curl-fetch.ts`, `fetch/topic.ts`, `fetch/handlers/`, `cache/`. Values, thresholds, and param semantics live in the code and in the schema descriptions in `index.ts`; this doc carries the ordering and the reasons for it.
 
 ## The chain
 
-`fetchContent()` tries tiers in order until one serves the URL:
+`fetchContent()` walks tiers in order until one serves the URL:
 
-1. **Local** — verbatim markdown/text/JSON passthrough; HTML → Defuddle → Markdown; Next.js RSC flight decode when Readability finds nothing; regex extraction last; bot-walled pages get one `curl` retry with a real Chrome profile before leaving the machine.
+1. **Local** — passthrough, Defuddle, Next.js RSC decode, regex last. A bot-walled page gets one `curl` retry with a real Chrome profile (`curl-fetch.ts`) before leaving the machine: Node's fetch earns 403s from sites that accept the same request over system curl.
 2. **Jina Reader** — renders JS; free.
 3. **markdown.new** — free.
-4. **Exa MCP** — quota'd, last resort.
+4. **Exa MCP** — quota'd, so last.
 
-A tier's output thinner than `MIN_FALLBACK_CONTENT` (50 chars) is discarded and the chain continues.
+A tier thinner than `MIN_FALLBACK_CONTENT` is discarded and the chain continues.
 
-Known-site URLs short-circuit the chain: `fetch/handlers/registry.ts` resolves a handler (GitHub, GitLab, 8 registries, Wikipedia, Reddit, HN, Stack Exchange, arXiv, ORCID, RSS/Atom feeds, next-flight) and `fetchWithHandler()` renders structured content. `mode: "raw"` skips handlers, extraction, topic, and cache, except handlers that opt in with `fetchRaw` (see `MagpiHandler`): a site whose public URL is a JS app shell (orcid.org) declares where its canonical body lives, and raw serves that instead.
+**Known sites short-circuit the chain.** `fetch/handlers/registry.ts` resolves a handler and `fetchWithHandler()` renders structure instead of text. `mode: "raw"` skips handlers, extraction, topic, and cache — except a handler that opts in with `fetchRaw` (`MagpiHandler`): a site whose public URL is a JS shell declares where its canonical body lives. orcid.org is the live case.
 
-## Constants (`fetch/fetch.ts`)
+## The guard
 
-| Constant | Value | Why |
-|----------|-------|-----|
-| `FETCH_TIMEOUT_MS` | 30s | per fetch |
-| `FALLBACK_TIMEOUT_MS` | 20s | per remote tier |
-| `FETCH_BODY_CAP` | 5 MB | response bytes buffered per fetch (OOM guard) |
-| `DEFAULT_MAX_CHARS` | 20_000 | per page returned; a real reading sample, not a teaser |
-| `CACHE_TTL_HOURS` | 168 | 7 days |
+Every path to content goes through `httpGet` (`fetch/handlers/handler.ts`), and the test suite pins that. Four layers, each closing a different hole:
 
-## SSRF / network guard
+- `assertPublicTarget` blocks loopback, link-local, and private ranges — cloud metadata and intranet included.
+- A DNS preflight resolves once and blocks when any address is private.
+- A process-wide dispatcher wraps `dns.lookup` (`guardedLookup`) so no address connects unvalidated; the preflight alone leaves a rebinding window.
+- Redirects are followed by hand so every hop re-runs the preflight.
 
-Every path to content goes through `httpGet` (`fetch/handlers/handler.ts`):
+Escape hatch: `allowPrivateNetwork: true` in `~/.pi/agent/pi-reader.json`.
 
-- `assertPublicTarget` blocks loopback, link-local, and private-range targets (cloud metadata, intranet).
-- A DNS preflight resolves the hostname once and blocks when any resolved address is private.
-- A process-wide dispatcher wraps `dns.lookup` (`guardedLookup`) so no address reaches a connection unvalidated — closing the rebinding window between preflight and connect.
-- Redirects are followed manually so every hop re-runs the preflight (`MAX_REDIRECTS` cap).
+## Topic
 
-The escape hatch is `allowPrivateNetwork: true` in `~/.pi/agent/pi-reader.json`. Route new fetch paths through `httpGet` so they inherit the guard — the test suite pins this.
+`topic` selects matching sections through `matchTopic` (`fetch/topic.ts`) after extraction and before the char cap, so a matched section is not truncated by the page it shares with unmatched ones.
 
-## Topic extraction
+## Cache
 
-`topic` selects the matching sections via `fetch/topic.ts` (`matchTopic`) instead of returning full content. Applies after extraction, before the char cap.
-
-## Cache (`cache/`)
-
-- Root: `~/.pi/agent/pi-reader-cache/`. Clone checkouts deliberately live outside it (see [github.md](github.md)) — a checkout deleted mid-session under the agent's `read` is worse than disk.
-- URL canonicalization (`canonicalize`): drop fragments and tracking params (`utm_*`, `fbclid`, …), sort the query, lowercase the host. The canonical form is both the cache key and the URL actually fetched.
-- Content lives on disk; a sqlite index (`cachedb.ts`) tracks metadata. `prune()` enforces the TTL.
-- Search results cache separately under `search/` with a 1-hour TTL — see [search-providers.md](search-providers.md).
+- `canonicalize` drops fragments and tracking params (`utm_*`, `fbclid`, …), sorts the query, lowercases the host. The canonical form is both the cache key and the URL actually fetched, so a tracking-tagged copy and its clean form cannot fork into two entries.
+- Repo checkouts deliberately live outside the cache root: an LRU that evicts a checkout mid-session pulls the path out from under the agent's next `read`. See [github.md](github.md).
+- Search results cache separately from pages, on their own shorter TTL — see [search-providers.md](search-providers.md).

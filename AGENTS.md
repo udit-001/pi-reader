@@ -1,65 +1,65 @@
 # AGENTS.md — pi-reader
 
-Pi extension: web search (DuckDuckGo + Exa MCP) and URL→Markdown fetch. Two providers, zero config.
+Pi extension: `web_search` (DuckDuckGo, Exa, Parallel, papers, news/images/videos, Codex) and `web_fetch` (URL→Markdown). Zero config on the default path.
 
-## Build
+## Gate
 
-No build step — TypeScript runs directly via Node's `--test` loader (`npm run typecheck`, `npm test`). Gate for every commit: both green. Wire-drift check for the papers vertical (real API calls — OpenAlex metered, Europe PMC keyless — skipped by default): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`.
+`npm run typecheck && npm test` — both green before every commit. No build step: TypeScript runs through Node's `--test` loader.
 
-## Architecture
+Papers wire-drift (real API calls, metered, skipped by default): `PIWEB_LIVE_SMOKE=1 node --test test/papers-live-smoke.test.ts`. Run it whenever a papers request shape, projection, or error mapping changes.
 
-**Seam model.** The entry (`index.ts`) is thin — registers tools, maps params, formats output. Depth lives in the deep modules, grouped by responsibility:
+## The seam model
+
+The entry (`index.ts`) stays thin: registers the two tools, maps params, formats output, consumes issue hints once per call. Depth lives in the deep modules:
 
 | Module | Seam |
 |--------|------|
 | `search/search.ts` | Provider seam: routing, fallback, answer synthesis |
-| `search/ddgs-uv.ts` | ddgs adapter seam: shared argv plan (`buildDdgsArgs`), private tmp dir, warm-up, recency/license maps |
-| `search/news.ts`, `search/images.ts`, `search/duckduckgo.ts` | ddgs verticals: news, images, and the HTML degrade |
-| `search/videos.ts` | Videos vertical: direct DDG v.js client, keyless |
-| `search/papers.ts`, `search/paper-backend.ts`, `search/europepmc.ts` | Papers vertical: backend dispatch (`index`), shared record seam, Europe PMC backend |
-| `search/openai.ts` | Codex web search: OpenAI's hosted `web_search` on the Pi ChatGPT/Codex subscription — auth via `ctx.modelRegistry`, explicit-only, quota-costed |
-| `fetch/fetch.ts` | URL→Markdown: local extraction → free services → Exa fallback |
-| `fetch/handlers/` | Per-site structured rendering (GitHub, registries, HN, feeds, …) |
-| `fetch/github-clone.ts` | Local checkouts: `ensureClone` (gh→git, checkout-size gate, runtime cache), `renderRepoView`, `resolveTreePath` (slash refs) |
-| `fetch/github-issue-pr.ts` | Issue/PR documents: gh-first with REST fallback, one deterministic renderer |
+| `search/ddgs-uv.ts`, `duckduckgo.ts`, `news.ts`, `images.ts`, `videos.ts` | ddgs seam and its verticals: shared argv plan (`buildDdgsArgs`), private tmp dir, warm-up, recency map, direct v.js client |
+| `search/papers.ts`, `paper-backend.ts`, `europepmc.ts` | Papers vertical: backend dispatch (`index`), shared record, Europe PMC backend |
+| `search/openai.ts` | Codex web search: hosted `web_search` on the Pi ChatGPT/Codex subscription, explicit-only, quota-costed |
+| `search/mcp-client.ts`, `exa-mcp.ts`, `parallel-mcp.ts` | MCP glue and the two remote providers: transport, key resolution, retry, parse seam; policy stays in the adapters |
+| `search/key-setup.ts`, `exa-setup.ts`, `parallel-setup.ts`, `openalex-setup.ts` | Wizard skeleton (paste→validate→save→done, spinner, redaction, headless path, reopen guard) and its three instances |
+| `search/exa-issue.ts`, `redact.ts` | One-shot issue hint per tool call; `redactSecret` keeps keys out of the transcript |
+| `fetch/fetch.ts`, `curl-fetch.ts` | URL→Markdown: local extraction → free services → Exa; the bot-wall curl rescue |
+| `fetch/handlers/`, `topic.ts` | Per-site structured rendering (GitHub, registries, HN, feeds, …); `matchTopic` section extraction |
+| `fetch/github-clone.ts`, `github-issue-pr.ts` | Local checkouts (`ensureClone`, `renderRepoView`, `resolveTreePath`); issue/PR documents, gh-first with REST fallback |
 | `cache/cache.ts` | Fetch cache on disk: lookup/store/prune, sqlite index in `cachedb.ts` |
 | `config.ts` | All config file I/O: `~/.pi/agent/pi-reader.json`, atomic |
-| `search/exa-mcp.ts` | Exa MCP transport: JSON-RPC, SSE, key resolution |
-| `search/key-setup.ts` | Wizard skeleton: the paste→validate→save→done flow, spinner, redaction, headless fallback, reopen guard |
-| `search/exa-setup.ts` | Exa wizard instance: mcp.json import + dedupe removal on the shared skeleton |
-| `search/openalex-setup.ts` | OpenAlex wizard instance: free-probe validation, /rate-limit budget readout |
-| `search/exa-issue.ts` | Shared state: classify Exa failures for one-shot hints |
+| `render.ts` | Transcript view: `searchView()` is pure; theme and TUI stay in the callbacks |
 
-**Two adapters = real seam.** One adapter is hypothetical; two is the proof. A third provider satisfies `SearchProvider` in `search/search.ts` and registers in the provider map. The auto-router `autoChain()` decides the `[primary, failure-fallback]` pair by intent params — a pure function, tested separately.
+**Two adapters = real seam.** One adapter is hypothetical; two is the proof. A third provider satisfies `SearchProvider` in `search/search.ts` and registers in the provider map. `autoChain()` picks the `[primary, failure-fallback]` pair by intent params — a pure function, tested on its own.
 
-**Fetch chain priority:** local (Defuddle, regex) → Jina Reader (renders JS) → markdown.new → Exa MCP. Free tiers first; Exa is the quota'd last resort.
+**Fetch chain:** local (Defuddle, regex, one curl retry) → Jina Reader → markdown.new → Exa MCP. Free tiers first.
 
-**Deep dives (docs/).** This file carries seams and rules; the docs carry mechanism.
+## Deep dives
 
-- [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the fetch chain, its guard, caps, timeouts, and cache. Open before touching the chain, the network guard, or the cache, or when a URL returns nothing.
-- [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path, Exa transport, keys, and wizards. Open before touching a provider, routing, recency/page behavior, or key/config handling.
-- [`docs/github.md`](docs/github.md) — repo checkouts and issue/PR rendering. Open before touching `github-clone.ts` or `github-issue-pr.ts`.
-- [`docs/papers.md`](docs/papers.md) — the papers vertical (OpenAlex + Europe PMC backends, deep-research keys, retracted-by-default, key + metering). Open before touching scholarly search, citation traversal, paper-record normalization, or a paper row's URL choice.
+This file carries seams and rules; `docs/` carries mechanism. Open the doc whose subject you are about to change.
+
+- [`docs/fetch-pipeline.md`](docs/fetch-pipeline.md) — the fetch chain, its guard, caps, timeouts, cache.
+- [`docs/search-providers.md`](docs/search-providers.md) — routing, the ddgs/uvx path, every provider, keys, config, wizards.
+- [`docs/github.md`](docs/github.md) — repo checkouts and issue/PR rendering.
+- [`docs/papers.md`](docs/papers.md) — the papers vertical: backends, record shape, citation walks, metering.
 
 ## Conventions
 
 - **Imports:** `.ts` extensions everywhere (`import { x } from "./foo.ts"`). NodeNext resolution.
-- **Schemas:** Typebox (`Type.Object`, `Type.Union`, `Type.Literal`) — tool params are Typebox, not zod. Schema descriptions in `index.ts` are the single param reference (the README carries none) — change a param's behavior and its description in the same commit. The papers filter-expression description is composed from `EXPRESSION_PARAM_DESCRIPTION` in `search/papers.ts`, beside the merge rule it describes, so the operator and family vocabulary the description names is the same list the tests assert the adapter forwards.
-- **Errors:** tool `execute()` returns errors in band: try/catch → `{ content: [{ type: "text", text: <actionable hint> }] }`, so the agent always gets a recovery path instead of a throw.
-- **Exa issues:** adapters call `noteExaIssue()` on rate-limit or missing-key; the entry calls `consumeExaIssue()` once in `finally` — the hint fires once per tool call, not per provider attempt.
-- **Tests:** `node:test` + `node:assert/strict`, one `test()` per behavior, fixtures in-line. Test the parse seam, not the HTTP layer.
-- **Config:** `config.ts` owns all file I/O. Writes are atomic (tmp + rename); reads are forgiving — missing or malformed reads as null.
-- **Docs:** edits to `docs/` or this file follow the writing-great-skills framework — one single source of truth per meaning, no-ops pruned sentence by sentence, duplication collapsed, leading words over restatements.
+- **Schemas:** Typebox only. The schema descriptions in `index.ts` are the single param reference — a param's behavior and its description change in the same commit. The papers filter grammar is composed from `EXPRESSION_PARAM_DESCRIPTION` in `search/papers.ts`, beside the merge rule it describes, so the vocabulary the description names is the list the tests assert.
+- **Errors in band:** `execute()` catches → `{ content: [{ type: "text", text: <recovery path> }] }`. The agent gets the next action, never a throw.
+- **Exa issues:** adapters call `noteExaIssue()`; the entry calls `consumeExaIssue()` once in `finally`, so the hint fires once per tool call.
+- **Tests:** `node:test` + `node:assert/strict`, one `test()` per behavior, fixtures inline. Test the parse seam, not the HTTP layer.
+- **Config:** `config.ts` owns all file I/O. Writes atomic (tmp + rename); reads forgiving (missing or malformed → null).
+- **Docs:** one owner per meaning. A fact stated in two files is a bug in the second one.
 
 ## Adding a feature
 
-1. **Search provider** — add an adapter satisfying `SearchProvider` in `search/search.ts`, register it in the provider map, and extend `autoChain()` if it has Exa-equivalent intent params (`test/routing.test.ts`).
-2. **Fetch fallback** — insert into the chain in `fetch/fetch.ts` before Exa; it must be free or Exa-backed.
-3. **Tool param** — Typebox schema in `index.ts`, pass-through to the deep module, routing test in `test/routing.test.ts` when it affects auto-routing.
-4. **Exa tool** — wrapper in `search/exa-mcp.ts`, exposed via `searchExaAdvanced()` or a new export; test the parse seam.
+1. **Search provider** — adapter satisfying `SearchProvider` in `search/search.ts`, registered in the provider map; extend `autoChain()` only for Exa-equivalent intent params. Done when `test/routing.test.ts` pins both the route and the fallback.
+2. **Fetch fallback** — insert into the chain in `fetch/fetch.ts` before Exa; it must be free or Exa-backed. Done when a fixture URL resolves through the new tier and the tiers below it still pass.
+3. **Tool param** — Typebox schema in `index.ts`, pass-through to the deep module, routing test when it moves `autoChain()`. Done when the schema description, the behavior, and the test agree.
+4. **MCP tool** — wrapper on `search/mcp-client.ts` exposed through its adapter (`searchExaAdvanced()` or a new export); keep policy (auth, retry) in the adapter. Done when the parse seam has a live-shaped fixture test.
 
 ## Gotchas
 
 - `noUncheckedIndexedAccess` is on — array access returns `T | undefined`; use `!` only after a bounds check.
-- DuckDuckGo HTML is scraped, not API'd: `parseResults()` breaks silently (empty results) when DDG changes markup. Verify with real fixtures.
+- DuckDuckGo HTML is scraped, not API'd: `parseResults()` degrades to empty results when DDG changes markup, with no error. Verify against real fixtures.
 - Exa MCP is remote JSON-RPC over SSE — network errors are expected; the adapter retries once, the auto-router falls back to DDG.
