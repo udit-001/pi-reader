@@ -491,6 +491,12 @@ export default function piWeb(pi: ExtensionAPI): void {
             resultCount: response.results.length,
             ...(params.category ? { category: params.category } : {}),
             ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
+            // Only openai's answer is model-authored prose; every other
+            // provider's is buildAnswer(rows) — a view of the rows below,
+            // not a fact worth its own surface presence.
+            ...(response.provider === "openai" && response.answer
+              ? { answer: response.answer }
+              : {}),
             results: response.results.map((r) => ({
               title: r.title,
               url: r.url,

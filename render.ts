@@ -12,14 +12,28 @@
 // shown as-is — deliberately no field splitting, since profiles differ in
 // what they carry. Collapsed caps at COLLAPSED_ROWS one-liners; expanded
 // reveals every row's full text. The machine timestamp becomes a short
-// relative date. The TUI transcript changes; what the model sees does not.
+// relative date. Papers-provider rows render through a dedicated
+// `papersView`: the row's snippet is already the composed ranking line
+// (venue · year · citations · badges — one shape, every backend), so the
+// view reads it rather than re-composing it, appends the fwci the snippet
+// deliberately omits, and — expanded — adds the resolvable link (OA URL or
+// doi.org), the citation trend, and the abstract excerpt. Collapsed keeps
+// the summary line and hides the rest; expand reveals all. The openai
+// provider adds one more object: its answer is
+// model-authored prose, so it rides in details and renders as a muted prose
+// block under the header — markdown markers stripped, preview-trimmed when
+// collapsed, full when expanded, pre-wrapped with a hanging indent like the
+// people blocks. Other providers' answers are buildAnswer(rows), a view of
+// the rows themselves, and never ride in details. Citation rows whose only
+// title is the URL render that URL once, shortened. The TUI transcript
+// changes; what the model sees does not.
 //
 // Internal seam: `searchView()` is pure — details + view options in, plain
 // view model out — so collapsed/expanded/error shaping is testable with no
 // theme, no TUI, and no live session. Theme colors, the Text component, and
 // the lastComponent reuse live only in the callbacks.
 
-import { Text } from "@earendil-works/pi-tui";
+import { Text, hyperlink, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type {
   AgentToolResult,
   Theme,
@@ -35,7 +49,8 @@ export interface WebSearchDetailsRow {
   snippet: string;
   publishedDate?: string;
   author?: string;
-  /** Papers rows carry ~30 more fields; the renderer reads none of them. */
+  /** Papers rows carry ~30 more fields; `papersView` reads the human-ranking
+   *  ones (fwci, doi, oaUrl, trend, abstract) — the rest stay model-only. */
   [key: string]: unknown;
 }
 
@@ -46,6 +61,10 @@ export interface WebSearchDetails {
   nextCursor?: string;
   /** Requested Exa category; only "people" changes the transcript view. */
   category?: string;
+  // Only provider "papers" and category "people" switch the transcript view.
+  /** The openai provider's model-authored answer — the only provider whose
+   *  answer is prose rather than a rendering of the rows. */
+  answer?: string;
   results?: WebSearchDetailsRow[];
 }
 
@@ -55,15 +74,21 @@ export interface WebSearchDetails {
 export const COLLAPSED_ROWS = 3;
 /** Expanded snippet length — Radius's budget: enough to judge, not to read. */
 export const SNIPPET_CHARS = 220;
-/** People profile text wraps at this width with a hanging indent; wider
- *  terminals keep the row's block shape, narrower ones fall back to the
- *  TUI's own full-width wrap. */
-export const PEOPLE_WRAP_COLS = 96;
+/** Collapsed answer preview — enough to judge whether the grounded prose is
+ *  on track, not to read it; expand for the whole thing. */
+export const ANSWER_PREVIEW_CHARS = 240;
+/** Prose blocks — people profiles, openai answers — wrap at this width with
+ *  a hanging indent; wider terminals keep the block's shape, narrower ones
+ *  fall back to the TUI's own full-width wrap. */
+export const PROSE_WRAP_COLS = 96;
 
 export interface SearchRowView {
   index: number;
   title: string;
   url: string;
+  /** The row had no real title — the title IS the URL, shortened; it renders
+   *  once, as the link itself. */
+  titleIsUrl: boolean;
   publishedDate?: string;
   snippet?: string;
 }
@@ -72,6 +97,10 @@ export interface SearchView {
   provider?: string;
   count: number;
   query: string;
+  /** Model-authored answer (openai only), markdown markers stripped and
+   *  pre-wrapped with a hanging indent; collapsed carries a trimmed preview,
+   *  expanded the whole prose. */
+  answer?: string[];
   rows: SearchRowView[];
   hiddenCount: number;
   nextCursor?: string;
@@ -84,28 +113,52 @@ export interface SearchViewOptions {
 }
 
 /** Shape details for the transcript. Collapsed caps at COLLAPSED_ROWS with no
- *  snippets; expanded shows every row with a whitespace-normalized snippet. */
+ *  snippets; expanded shows every row with a whitespace-normalized snippet.
+ *  A model-authored answer, when present, is markdown-stripped, then
+ *  preview-trimmed collapsed and full expanded — always pre-wrapped with a
+ *  hanging indent so the block keeps its shape on wrap. */
 export function searchView(
   details: WebSearchDetails | undefined,
   options: SearchViewOptions,
 ): SearchView {
   const rows = details?.results ?? [];
   const shown = options.expanded ? rows : rows.slice(0, COLLAPSED_ROWS);
+  const answer = details?.answer ? cleanProse(details.answer) : undefined;
   return {
     provider: details?.provider,
     count: details?.resultCount ?? rows.length,
     query: options.query,
-    rows: shown.map((row, i) => ({
-      index: i + 1,
-      title: row.title || "(untitled)",
-      url: row.url,
-      ...(row.publishedDate ? { publishedDate: row.publishedDate } : {}),
-      ...(options.expanded && row.snippet
-        ? {
-          snippet: row.snippet.replace(/\s+/g, " ").trim().slice(0, SNIPPET_CHARS),
-        }
-        : {}),
-    })),
+    ...(answer
+      ? {
+        // Collapsed cuts by visible width — embedded hyperlink escapes count
+        // zero, and the … lands only when something was actually cut.
+        answer: wrapHanging(
+          options.expanded ? answer : truncateToWidth(answer, ANSWER_PREVIEW_CHARS, "…"),
+          PROSE_WRAP_COLS,
+          "   ",
+        ),
+      }
+      : {}),
+    rows: shown.map((row, i) => {
+      // Untitled citations carry the URL as the title; show it once,
+      // shortened, as the link itself instead of `url — url`.
+      const urlTitle = /^https?:\/\//i.test(row.title);
+      return {
+        index: i + 1,
+        title: urlTitle ? shortUrl(row.title) : row.title || "(untitled)",
+        titleIsUrl: urlTitle,
+        url: row.url,
+        ...(row.publishedDate ? { publishedDate: row.publishedDate } : {}),
+        ...(options.expanded && row.snippet
+          ? {
+            // Same markdown cleanup the answer gets — snippets cut from
+            // LLM prose carry the same **bold** artifacts — and the same
+            // visible-width cut, marked only when something was cut.
+            snippet: truncateToWidth(cleanProse(row.snippet), SNIPPET_CHARS, "…"),
+          }
+          : {}),
+      };
+    }),
     hiddenCount: options.expanded ? 0 : Math.max(0, rows.length - COLLAPSED_ROWS),
     ...(details?.nextCursor ? { nextCursor: details.nextCursor } : {}),
     ...(details?.error ? { error: details.error } : {}),
@@ -153,6 +206,19 @@ function cleanScrapeText(text: string): string {
     .trim();
 }
 
+/** Strip the markdown an LLM-authored answer carries for a chat surface —
+ *  bold/italic and inline-code markers drop — then collapse runs of
+ *  whitespace. Links become real OSC 8 hyperlinks: the label stays short,
+ *  the terminal gets the full clickable target. */
+function cleanProse(text: string): string {
+  return text
+    .replace(/\[([^\]]*)\]\(([^)]*)\)/g, (_m, label: string, url: string) => hyperlink(label, url))
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Format a machine timestamp the way a person reads it: relative inside a
  *  month, otherwise a short date. Unparseable input returns undefined. */
 function formatSearchDate(iso: string, now: number): string | undefined {
@@ -193,24 +259,13 @@ function parsePeopleRow(row: WebSearchDetailsRow): { name: string; profile?: str
   };
 }
 
-/** Word-wrap `text` to `width` columns and prefix every line with `indent`,
- *  so a long paragraph keeps its hanging indent no matter how wide the
- *  paragraph runs. Terminals narrower than `width` re-wrap the TUI's way
- *  (flat, like today); wider ones keep the row's block shape. */
+/** Wrap `text` to `width` visible columns and prefix every line with
+ *  `indent`, so a long paragraph keeps its hanging indent no matter how wide
+ *  it runs. ANSI/OSC-safe: an embedded hyperlink moves whole to the next
+ *  line instead of being cut, and tokens longer than the width hard-break
+ *  without loss. Terminals narrower than `width` re-wrap the TUI's way. */
 function wrapHanging(text: string, width: number, indent: string): string[] {
-  const lines: string[] = [];
-  let line = "";
-  for (const word of text.split(" ")) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (candidate.length <= width) {
-      line = candidate;
-    } else {
-      if (line) lines.push(line);
-      line = word.length > width ? word.slice(0, width) : word;
-    }
-  }
-  if (line) lines.push(line);
-  return lines.map((l) => indent + l);
+  return wrapTextWithAnsi(text, width).map((l) => indent + l);
 }
 
 /** Shape people-category details for the transcript. Collapsed shows the top
@@ -231,7 +286,7 @@ export function peopleView(
     rows: shown.map((row, i) => {
       const { profile, ...parsed } = parsePeopleRow(row);
       const profileLines = options.expanded && profile
-        ? wrapHanging(profile, PEOPLE_WRAP_COLS, "   ")
+        ? wrapHanging(profile, PROSE_WRAP_COLS, "   ")
         : undefined;
       return {
         index: i + 1,
@@ -313,7 +368,10 @@ export const webSearchRenderers: Pick<
       for (const row of view.rows) {
         lines.push(`${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.name)}`);
         if (row.profile) lines.push(...row.profile);
-        const meta = [shortUrl(row.url), ...(row.publishedDate ? [row.publishedDate] : [])].join(" · ");
+        const meta = [
+          hyperlink(shortUrl(row.url), row.url),
+          ...(row.publishedDate ? [row.publishedDate] : []),
+        ].join(" · ");
         lines.push(`   ${theme.fg("dim", meta)}`);
       }
       if (view.hiddenCount > 0) {
@@ -326,19 +384,32 @@ export const webSearchRenderers: Pick<
       return text;
     }
     const view = searchView(details, { expanded, query });
-    if (view.count === 0) {
+    // An answer with zero citations is a success — the model returned prose
+    // with no url_citation rows — so "No results" would misreport it.
+    if (view.count === 0 && !view.answer) {
       text.setText(theme.fg("muted", `No results for “${view.query}”`));
       return text;
     }
     const header: string[] = [];
     if (view.provider) header.push(theme.fg("dim", `${view.provider} ·`));
-    header.push(theme.fg("success", `${view.count} result${view.count === 1 ? "" : "s"}`));
-    header.push(theme.fg("dim", ` for “${view.query}”`));
+    // The count drops when there is nothing to count and prose to show —
+    // "0 results" above a rendered answer reads as failure.
+    if (view.count > 0 || !view.answer) {
+      header.push(theme.fg("success", `${view.count} result${view.count === 1 ? "" : "s"}`));
+      header.push(theme.fg("dim", ` for “${view.query}”`));
+    } else {
+      header.push(theme.fg("dim", `for “${view.query}”`));
+    }
     const lines = [header.join(" ")];
+    if (view.answer) lines.push(...view.answer);
     for (const row of view.rows) {
-      let line = `${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`;
+      // Links are real OSC 8 hyperlinks: short label, full clickable target.
+      const label = row.titleIsUrl
+        ? theme.fg("accent", hyperlink(row.title, row.url))
+        : theme.fg("accent", row.title);
+      let line = `${theme.fg("muted", `${row.index}.`)} ${label}`;
       if (row.publishedDate) line += theme.fg("dim", ` — ${row.publishedDate}`);
-      line += theme.fg("dim", ` — ${row.url}`);
+      if (!row.titleIsUrl) line += theme.fg("dim", ` — ${hyperlink(shortUrl(row.url), row.url)}`);
       lines.push(line);
       if (row.snippet) lines.push(`   ${theme.fg("muted", row.snippet)}`);
     }

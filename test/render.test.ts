@@ -4,9 +4,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+  ANSWER_PREVIEW_CHARS,
   COLLAPSED_ROWS,
-  PEOPLE_WRAP_COLS,
+  PROSE_WRAP_COLS,
   SNIPPET_CHARS,
   peopleView,
   searchView,
@@ -59,13 +61,106 @@ test("expanded: snippets are capped at SNIPPET_CHARS", () => {
   const d = details(1);
   d.results![0]!.snippet = "x".repeat(SNIPPET_CHARS * 2);
   const view = searchView(d, { expanded: true, query: "q" });
-  assert.equal(view.rows[0]!.snippet!.length, SNIPPET_CHARS);
+  assert.equal(stripTerminalSequences(view.rows[0]!.snippet!).length, SNIPPET_CHARS);
+  assert.ok(stripTerminalSequences(view.rows[0]!.snippet!).endsWith("…"));
+});
+
+test("expanded: snippet markdown markers are stripped", () => {
+  const d = details(1);
+  d.results![0]!.snippet = "t only **1.1×** on server-side rendering — see `docs`";
+  const view = searchView(d, { expanded: true, query: "q" });
+  assert.equal(view.rows[0]!.snippet, "t only 1.1× on server-side rendering — see docs");
 });
 
 test("count falls back to row count when the provider reported no total", () => {
   const d = details(3);
   delete d.resultCount;
   assert.equal(searchView(d, { expanded: false, query: "q" }).count, 3);
+});
+
+/** The answer block is pre-wrapped lines with a 3-space hanging indent;
+ *  unwrap for whole-string assertions. */
+function unwrap(lines: string[]): string {
+  return lines.map((l) => l.slice(3)).join(" ");
+}
+
+test("answer: collapsed carries a preview cut at ANSWER_PREVIEW_CHARS with a marker", () => {
+  const prose = Array.from({ length: 60 }, () => "word").join(" "); // 299 chars
+  const d = details(5, { provider: "openai", answer: prose });
+  const view = searchView(d, { expanded: false, query: "q" });
+  const cut = truncateToWidth(prose, ANSWER_PREVIEW_CHARS, "…");
+  assert.equal(unwrap(view.answer!), cut);
+  assert.ok(stripTerminalSequences(cut).length <= ANSWER_PREVIEW_CHARS);
+  assert.ok(stripTerminalSequences(cut).endsWith("…"));
+  // The row collapse contract is untouched by the answer block.
+  assert.equal(view.rows.length, COLLAPSED_ROWS);
+  assert.equal(view.hiddenCount, 5 - COLLAPSED_ROWS);
+});
+
+test("answer: a short answer shows in full when collapsed, no cut marker", () => {
+  const d = details(5, { provider: "openai", answer: "  a  short   answer " });
+  const view = searchView(d, { expanded: false, query: "q" });
+  assert.deepEqual(view.answer, ["   a short answer"]);
+});
+
+test("answer: expanded carries the whole whitespace-normalized prose", () => {
+  const prose = Array.from({ length: 60 }, () => "word").join(" ");
+  const d = details(5, { provider: "openai", answer: prose });
+  const view = searchView(d, { expanded: true, query: "q" });
+  assert.equal(unwrap(view.answer!), prose);
+});
+
+test("answer: markdown markers are stripped for display", () => {
+  const d = details(5, {
+    provider: "openai",
+    answer: "It is **v24.22.0** with `util.throttle()` — see [nodejs.org](https://nodejs.org/en/blog/release) for notes.",
+  });
+  const view = searchView(d, { expanded: true, query: "q" });
+  const raw = unwrap(view.answer!);
+  // Links keep the full target as an OSC 8 hyperlink; only the label shows.
+  assert.ok(raw.includes("https://nodejs.org/en/blog/release"));
+  assert.equal(
+    stripTerminalSequences(raw),
+    "It is v24.22.0 with util.throttle() — see nodejs.org for notes.",
+  );
+});
+
+test("answer: wrapped lines keep a hanging indent within the block width", () => {
+  const d = details(5, { provider: "openai", answer: "word ".repeat(60).trim() });
+  const view = searchView(d, { expanded: false, query: "q" });
+  assert.ok(view.answer!.length > 1);
+  assert.ok(view.answer!.every((l) => l.startsWith("   ")));
+  assert.ok(view.answer!.every((l) => l.length <= PROSE_WRAP_COLS + 3));
+});
+
+test("answer: zero citations with prose shapes as a success, not a miss", () => {
+  const d = details(0, { provider: "openai", answer: "grounded prose" });
+  const view = searchView(d, { expanded: false, query: "q" });
+  assert.equal(view.count, 0);
+  assert.equal(view.answer!.length, 1);
+  assert.equal(view.rows.length, 0);
+});
+
+test("answer: absent from details leaves the view unchanged", () => {
+  const view = searchView(details(5), { expanded: false, query: "q" });
+  assert.equal(view.answer, undefined);
+});
+
+test("rows: an untitled citation shows its URL once, shortened, as the link", () => {
+  const d = details(1);
+  d.results![0]!.title = "https://nodejs.org/en/blog/release/v26.0.0";
+  d.results![0]!.url = "https://nodejs.org/en/blog/release/v26.0.0";
+  const view = searchView(d, { expanded: false, query: "q" });
+  assert.equal(view.rows[0]!.title, "nodejs.org/en/blog/release/v26.0.0");
+  assert.equal(view.rows[0]!.url, "https://nodejs.org/en/blog/release/v26.0.0");
+  assert.equal(view.rows[0]!.titleIsUrl, true);
+});
+
+test("rows: titled rows keep title and url, not marked as url-titled", () => {
+  const view = searchView(details(1), { expanded: false, query: "q" });
+  assert.equal(view.rows[0]!.title, "Title 1");
+  assert.equal(view.rows[0]!.url, "https://example.com/1");
+  assert.equal(view.rows[0]!.titleIsUrl, false);
 });
 
 test("missing title renders as (untitled)", () => {
@@ -105,6 +200,7 @@ test("paper rows ride the web-row layout without a second branch", () => {
     index: 1,
     title: "Title 1",
     url: "https://example.com/1",
+    titleIsUrl: false,
     publishedDate: "2026-10-01",
     snippet: "Snippet 1",
   });
@@ -181,7 +277,7 @@ test("people: profile text keeps a hanging indent inside the wrap width", () => 
   const lines = view.rows[0]!.profile!;
   assert.ok(lines.length > 1);
   assert.ok(lines.every((l) => l.startsWith("   ")));
-  assert.ok(lines.every((l) => l.length <= PEOPLE_WRAP_COLS + 3));
+  assert.ok(lines.every((l) => l.length <= PROSE_WRAP_COLS + 3));
   assert.ok(lines.join(" ").includes("end."));
 });
 
