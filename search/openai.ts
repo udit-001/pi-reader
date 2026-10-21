@@ -311,6 +311,14 @@ export function cleanSourceUrl(rawUrl: string): string {
   }
 }
 
+/** Pure; exported for tests. The answer's markdown links carry the same
+ *  `utm_source=openai` the rows do — rows get cleanSourceUrl in addResult,
+ *  and the answer's link targets get it here, so every URL the provider
+ *  emits arrives cleaned. */
+export function cleanAnswerLinks(answer: string): string {
+  return answer.replace(/\]\(([^)]+)\)/g, (_m, url: string) => `](${cleanSourceUrl(url)})`);
+}
+
 function snippetAround(text: string, start: unknown, end: unknown): string {
   if (typeof start !== "number" || typeof end !== "number" || !text) return "";
   const snippet = text
@@ -402,7 +410,7 @@ async function runSearch(query: string, options: SearchOptions, auth: OpenAIAuth
   if (!parsed.webSearchCallSeen) {
     throw new Error("OpenAI web search returned no web_search_call — the selected model may not support the hosted tool.");
   }
-  const answer = extractAnswer(parsed.output);
+  const answer = cleanAnswerLinks(extractAnswer(parsed.output));
   const results = extractSearchResults(parsed.output, options.numResults);
   if (!answer && results.length === 0) throw new Error("OpenAI web search returned no answer or sources.");
   return { answer, results };

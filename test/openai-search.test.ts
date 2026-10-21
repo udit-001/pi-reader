@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import {
   buildInstructions,
   buildWebSearchTool,
+  cleanAnswerLinks,
   cleanSourceUrl,
   extractAccountId,
   extractAnswer,
@@ -81,6 +82,19 @@ test("openai: throws on a body with no parseable output", () => {
 
 test("openai: extractAnswer concatenates message text", () => {
   assert.equal(extractAnswer(parseOpenAIResponse(SSE).output), "The latest stable version is v24.21.0.");
+});
+
+test("openai: cleanAnswerLinks strips utm_source from answer link targets", () => {
+  assert.equal(
+    cleanAnswerLinks("see [nodejs.org](https://nodejs.org/en/blog?utm_source=openai) for notes"),
+    "see [nodejs.org](https://nodejs.org/en/blog) for notes",
+  );
+});
+
+test("openai: cleanAnswerLinks keeps other params and leaves bare text alone", () => {
+  // Only utm_source=openai is this provider's quirk; other utm values pass.
+  const answer = "keep [docs](https://example.com/a?utm_source=other&ref=x) and [bare](https://example.com/b)";
+  assert.equal(cleanAnswerLinks(answer), answer);
 });
 
 test("openai: citations come first, utm_source is stripped, sources dedupe against them", () => {
