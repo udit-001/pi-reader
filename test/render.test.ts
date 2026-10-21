@@ -10,6 +10,7 @@ import {
   COLLAPSED_ROWS,
   PROSE_WRAP_COLS,
   SNIPPET_CHARS,
+  papersView,
   peopleView,
   searchView,
   type WebSearchDetails,
@@ -307,4 +308,118 @@ test("people: older timestamps render as a short date, bad ones as undefined", (
   const view = expandedPeople(results, Date.parse("2027-02-15T00:00:00.000Z"));
   assert.equal(view.rows[0]!.publishedDate, "Oct 14, 2026");
   assert.equal(view.rows[1]!.publishedDate, undefined);
+});
+
+// ── papersView ───────────────────────────────────────────────────────────────────────
+
+function paperRow(extra: Partial<WebSearchDetailsRow> = {}): WebSearchDetailsRow {
+  return {
+    title: "Lichen Biology",
+    url: "https://example.org/works/W1",
+    snippet: "Cambridge University Press · 2008 · 414 citations",
+    fwci: 5.4933,
+    doi: "10.1017/cbo9780511790478",
+    oaUrl: "https://example.org/oa/W1",
+    recentCitations: 96,
+    citationTrend: "steady",
+    abstract: "  Lichens are   symbiotic organisms.  ",
+    ...extra,
+  };
+}
+
+function paperDetails(n: number, extra: Partial<WebSearchDetails> = {}): WebSearchDetails {
+  return {
+    provider: "papers",
+    resultCount: n,
+    results: Array.from({ length: n }, () => paperRow()),
+    ...extra,
+  };
+}
+
+test("papers: collapsed caps rows, keeps the ranking line, hides expanded-only fields", () => {
+  const view = papersView(paperDetails(10), { expanded: false, query: "lichen" });
+  assert.equal(view.rows.length, COLLAPSED_ROWS);
+  assert.equal(view.hiddenCount, 10 - COLLAPSED_ROWS);
+  assert.ok(
+    view.rows.every((r) =>
+      r.summary === "Cambridge University Press · 2008 · 414 citations · fwci 5.5"
+    ),
+  );
+  assert.ok(
+    view.rows.every((r) =>
+      r.trend === undefined && r.abstract === undefined
+    ),
+  );
+  // linkTarget is required data even collapsed — the renderer hides it, the
+  // view still carries it.
+  assert.ok(view.rows.every((r) => r.linkTarget === "https://example.org/oa/W1"));
+});
+
+test("papers: expanded reveals link, trend, and abstract on every row", () => {
+  const view = papersView(paperDetails(2), { expanded: true, query: "lichen" });
+  assert.equal(view.rows.length, 2);
+  assert.equal(view.hiddenCount, 0);
+  assert.ok(view.rows.every((r) => r.linkTarget === "https://example.org/oa/W1"));
+  assert.ok(view.rows.every((r) => r.trend === "96 recent (steady)"));
+  assert.ok(view.rows.every((r) => r.abstract === "Lichens are symbiotic organisms."));
+});
+
+test("papers: the link prefers the OA URL, falls back to doi.org, then the row URL", () => {
+  const noOa = papersView(
+    paperDetails(1, { results: [paperRow({ oaUrl: undefined })] }),
+    { expanded: true, query: "q" },
+  );
+  assert.equal(noOa.rows[0]!.linkTarget, "https://doi.org/10.1017/cbo9780511790478");
+  const neither = papersView(
+    paperDetails(1, {
+      results: [paperRow({ oaUrl: undefined, doi: undefined, url: "https://pubmed.example/W1" })],
+    }),
+    { expanded: true, query: "q" },
+  );
+  assert.equal(neither.rows[0]!.linkTarget, "https://pubmed.example/W1");
+});
+
+test("papers: absent fields invent nothing", () => {
+  const view = papersView(
+    paperDetails(1, { results: [{ title: "Bare Work", url: "https://example.org/W", snippet: "" }] }),
+    { expanded: true, query: "q" },
+  );
+  const r = view.rows[0]!;
+  assert.equal(r.title, "Bare Work");
+  assert.equal(r.summary, undefined);
+  // Nothing invented: the only link available is the row's own URL.
+  assert.equal(r.linkTarget, "https://example.org/W");
+  assert.equal(r.trend, undefined);
+  assert.equal(r.abstract, undefined);
+});
+
+test("papers: a short page hides nothing; retracted-false renders like no field", () => {
+  const view = papersView(
+    paperDetails(2, { results: [paperRow({ retracted: false }), paperRow()] }),
+    { expanded: false, query: "q" },
+  );
+  assert.equal(view.hiddenCount, 0);
+  assert.equal(view.rows.length, 2);
+  assert.equal(view.rows[0]!.summary, view.rows[1]!.summary);
+});
+
+test("papers: abstract excerpt caps at SNIPPET_CHARS with the cap marked", () => {
+  const long = "x".repeat(SNIPPET_CHARS * 2);
+  const view = papersView(
+    paperDetails(1, { results: [paperRow({ abstract: long })] }),
+    { expanded: true, query: "q" },
+  );
+  assert.equal(stripTerminalSequences(view.rows[0]!.abstract!).length, SNIPPET_CHARS);
+  assert.ok(stripTerminalSequences(view.rows[0]!.abstract!).endsWith("…"));
+});
+
+test("papers: nextCursor and error pass through", () => {
+  const view = papersView(paperDetails(1, { nextCursor: "cur-1" }), { expanded: false, query: "q" });
+  assert.equal(view.nextCursor, "cur-1");
+  const err = papersView(
+    { provider: "papers", error: "OpenAlex was unreachable" },
+    { expanded: true, query: "q" },
+  );
+  assert.equal(err.error, "OpenAlex was unreachable");
+  assert.equal(err.count, 0);
 });

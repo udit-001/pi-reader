@@ -107,10 +107,12 @@ export interface SearchView {
   error?: string;
 }
 
-export interface SearchViewOptions {
+export interface ViewOptions {
   expanded: boolean;
   query: string;
 }
+
+export type SearchViewOptions = ViewOptions;
 
 /** Shape details for the transcript. Collapsed caps at COLLAPSED_ROWS with no
  *  snippets; expanded shows every row with a whitespace-normalized snippet.
@@ -189,9 +191,7 @@ export interface PeopleView {
   error?: string;
 }
 
-export interface PeopleViewOptions {
-  expanded: boolean;
-  query: string;
+export interface PeopleViewOptions extends ViewOptions {
   /** Clock for the relative date; tests pin it instead of Date.now(). */
   now?: number;
 }
@@ -301,6 +301,120 @@ export function peopleView(
   };
 }
 
+// ── Papers view (pure — the testable seam) ───────────────────────────────
+
+export interface PapersRowView {
+  index: number;
+  title: string;
+  url: string;
+  /** The backend-composed ranking line — venue · year · citations · OA and
+   *  retracted badges — read as the row's snippet delivered it, with the
+   *  fwci the snippet deliberately omits appended. Never re-composed here:
+   *  one snippet shape, wherever the record came from. */
+  summary?: string;
+  /** Expanded only: the resolvable link target — the OA URL when the work
+   *  is open, else doi.org, else the row's canonical URL. Always present:
+   *  `url` is required data, so a link always renders. */
+  linkTarget: string;
+  /** Expanded only: citations over the last 3 complete years and, when the
+   *  index states it, their direction — "96 recent (rising)". */
+  trend?: string;
+  /** Expanded only: the abstract, prose-cleaned and capped at the generic
+   *  view's SNIPPET_CHARS budget, the cap marked. */
+  abstract?: string;
+}
+
+export interface PapersView {
+  provider?: string;
+  count: number;
+  query: string;
+  rows: PapersRowView[];
+  hiddenCount: number;
+  nextCursor?: string;
+  error?: string;
+}
+
+export type PapersViewOptions = ViewOptions;
+
+/** Typed read off a details row's open index signature. Absent, null, and
+ *  false all read as absent — a flag the index never asserted is never
+ *  shown, so `retracted: false` renders exactly like no field at all. */
+function paperField<T>(row: WebSearchDetailsRow, key: string): T | undefined {
+  const v = row[key];
+  return v === undefined || v === null || v === false ? undefined : (v as T);
+}
+
+/** Parse one papers row for display. The snippet is the ranking line and
+ *  passes through cleaned but whole; the view adds only what the snippet
+ *  deliberately omits — fwci, the resolvable link, the citation trend.
+ *  The abstract stays model-grade bulk: carried raw for papersView to cap
+ *  expanded, never re-shaped. */
+function parsePaperRow(row: WebSearchDetailsRow): Omit<PapersRowView, "index"> & { abstract?: string } {
+  const title = (row.title || "(untitled)").trim();
+  const summaryParts: string[] = [];
+  const snippet = cleanScrapeText(row.snippet ?? "");
+  if (snippet) summaryParts.push(snippet);
+  const fwci = paperField<number>(row, "fwci");
+  if (fwci !== undefined) summaryParts.push(`fwci ${fwci.toFixed(1)}`);
+  const doi = paperField<string>(row, "doi");
+  const linkTarget = paperField<string>(row, "oaUrl")
+    ?? (doi ? `https://doi.org/${doi}` : undefined)
+    ?? row.url;
+  const recent = paperField<number>(row, "recentCitations");
+  const direction = paperField<string>(row, "citationTrend");
+  const trend = recent !== undefined || direction !== undefined
+    ? [
+      ...(recent !== undefined ? [`${recent} recent`] : []),
+      ...(direction ? [`(${direction})`] : []),
+    ].join(" ")
+    : undefined;
+  const abstract = paperField<string>(row, "abstract");
+  return {
+    title,
+    url: row.url,
+    linkTarget,
+    ...(summaryParts.length ? { summary: summaryParts.join(" · ") } : {}),
+    ...(trend ? { trend } : {}),
+    ...(abstract ? { abstract } : {}),
+  };
+}
+
+/** Shape papers-provider details for the transcript. Collapsed keeps the
+ *  ranking line (title + summary) for the top COLLAPSED_ROWS and counts the
+ *  hidden remainder; expanded adds each row's link, trend, and abstract
+ *  excerpt. Collapse hides, expand reveals — nothing is cut mid-word except
+ *  the abstract, capped at the generic snippet's budget with the cap
+ *  marked. */
+export function papersView(
+  details: WebSearchDetails | undefined,
+  options: PapersViewOptions,
+): PapersView {
+  const rows = details?.results ?? [];
+  const shown = options.expanded ? rows : rows.slice(0, COLLAPSED_ROWS);
+  return {
+    provider: details?.provider,
+    count: details?.resultCount ?? rows.length,
+    query: options.query,
+    rows: shown.map((row, i) => {
+      // linkTarget rides in base: required data, the renderer decides when
+      // it displays. The trend and abstract collapse away.
+      const { abstract, trend, ...base } = parsePaperRow(row);
+      const excerpt = options.expanded && abstract
+        ? truncateToWidth(cleanProse(abstract), SNIPPET_CHARS, "…")
+        : undefined;
+      return {
+        ...base,
+        index: i + 1,
+        ...(options.expanded && trend ? { trend } : {}),
+        ...(excerpt ? { abstract: excerpt } : {}),
+      };
+    }),
+    hiddenCount: options.expanded ? 0 : Math.max(0, rows.length - COLLAPSED_ROWS),
+    ...(details?.nextCursor ? { nextCursor: details.nextCursor } : {}),
+    ...(details?.error ? { error: details.error } : {}),
+  };
+}
+
 // ── Renderer callbacks (theme + TUI assembly only) ──────────────────────────
 
 interface WebSearchCallArgs {
@@ -354,6 +468,40 @@ export const webSearchRenderers: Pick<
       return text;
     }
     const query = (context.args as WebSearchCallArgs | undefined)?.query ?? "";
+    if (details.provider === "papers") {
+      const view = papersView(details, { expanded, query });
+      if (view.count === 0) {
+        text.setText(theme.fg("muted", `No results for “${view.query}”`));
+        return text;
+      }
+      const header: string[] = [];
+      if (view.provider) header.push(theme.fg("dim", `${view.provider} ·`));
+      header.push(theme.fg("success", `${view.count} result${view.count === 1 ? "" : "s"}`));
+      header.push(theme.fg("dim", ` for “${view.query}”`));
+      const lines = [header.join(" ")];
+      for (const row of view.rows) {
+        lines.push(`${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`);
+        if (row.summary) lines.push(`   ${theme.fg("muted", row.summary)}`);
+        if (expanded) {
+          // The link always resolves: OA URL, then doi.org, then the row's
+          // own URL — same priority the model text uses.
+          const meta = [
+            hyperlink(shortUrl(row.linkTarget), row.linkTarget),
+            ...(row.trend ? [row.trend] : []),
+          ].join(" · ");
+          lines.push(`   ${theme.fg("dim", meta)}`);
+          if (row.abstract) lines.push(`   ${theme.fg("muted", row.abstract)}`);
+        }
+      }
+      if (view.hiddenCount > 0) {
+        lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
+      }
+      if (view.nextCursor) {
+        lines.push(theme.fg("dim", `Next cursor: pass filters.cursor for the next page.`));
+      }
+      text.setText(lines.join("\n"));
+      return text;
+    }
     if (details.category === "people") {
       const view = peopleView(details, { expanded, query });
       if (view.count === 0) {
