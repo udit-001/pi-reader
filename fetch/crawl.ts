@@ -164,7 +164,12 @@ export async function crawl(seed: string, options: CrawlOptions = {}): Promise<C
         { maxPages, depth, deadlineMs: CRAWL_DEADLINE_MS },
         options.signal,
       );
-      return shapeCrawl(out, maxPages);
+      const result = shapeCrawl(out, maxPages);
+      // A driver sweep that harvested nothing usable means discovery or
+      // fetching starved — bot-walled sites 403 the driver's plain urllib
+      // long before the TS chain's rescues would. The sweep still happens:
+      // fall through to the JS adapter.
+      if (result.pages.some((p) => !p.error && p.content)) return result;
     } catch (err) {
       if (options.signal?.aborted || isAbortError(err)) throw err;
       // Fall through — the sweep still happens on the plugin's own chain.
