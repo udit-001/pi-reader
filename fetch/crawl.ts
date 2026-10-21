@@ -180,11 +180,12 @@ export async function crawl(seed: string, options: CrawlOptions = {}): Promise<C
 
 /** The JS adapter: discover from the seed's raw HTML (the markdown
  *  extractor strips links entirely — the discovery probe must be raw), then
- *  harvest each candidate through the full fetch chain (local → Jina →
- *  markdown.new → Exa — JS-rendered pages included). Capped when the seed
+ *  harvest each candidate through the local fetch path — `localOnly`, so
+ *  sweeps never touch the remote fallback tiers. Bot-walled and JS-shell
+ *  sites are the documented ceiling of this adapter. Capped when the seed
  *  yielded at least the budget's worth of candidates. */
 async function jsCrawl(seed: string, maxPages: number, signal?: AbortSignal): Promise<CrawlResult> {
-  const probe = await fetchContent([seed], { mode: "raw", maxChars: 250_000, signal });
+  const probe = await fetchContent([seed], { mode: "raw", maxChars: 250_000, localOnly: true, signal });
   const raw = probe[0];
   if (!raw || raw.error || !raw.content) {
     throw new Error(raw?.error || "Seed page returned no HTML to sweep from");
@@ -192,7 +193,7 @@ async function jsCrawl(seed: string, maxPages: number, signal?: AbortSignal): Pr
   const links = candidateLinks(raw.content, seed, maxPages - 1);
   const capped = links.length >= maxPages - 1 && maxPages > 1;
   const targets = [seed, ...links];
-  const results = await fetchContent(targets, { signal });
+  const results = await fetchContent(targets, { localOnly: true, signal });
   return {
     source: "js",
     capped,

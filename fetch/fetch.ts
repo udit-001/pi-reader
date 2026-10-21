@@ -59,6 +59,10 @@ export interface FetchOptions {
   topic?: string;
   /** "raw" returns the exact response body (skips extraction, topic, and cache; a site handler may declare a fetchRaw projection — see MagpiHandler). */
   mode?: "markdown" | "raw";
+  /** Stop after the local fetch — no Jina/markdown.new/Exa fallbacks. The
+   *  crawl's JS adapter sets this: its sweeps stay on the machine's own
+   *  fetch path, never the remote services. */
+  localOnly?: boolean;
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
@@ -207,33 +211,36 @@ export async function fetchContent(
   if (failedUrls.length === 0) return local;
 
   // Free services: parallel across URLs, sequential across services.
+  // localOnly skips them — the crawl's adapters sweep with local fetches only.
   const rescued = new Map<string, FetchResult>();
-  await Promise.all(failedUrls.map(async (url) => {
-    for (const fetcher of FREE_FALLBACKS) {
+  if (!options.localOnly) {
+    await Promise.all(failedUrls.map(async (url) => {
+      for (const fetcher of FREE_FALLBACKS) {
+        try {
+          const r = await fetcher(url, options.signal);
+          if (r?.content.trim()) {
+            rescued.set(url, { url, title: r.title, content: r.content.slice(0, maxChars), error: null });
+            return;
+          }
+        } catch {
+          // service failed or rate-limited — try the next
+        }
+      }
+    }));
+
+    const stillMissing = failedUrls.filter((u) => !rescued.has(u));
+    if (stillMissing.length > 0) {
       try {
-        const r = await fetcher(url, options.signal);
-        if (r?.content.trim()) {
-          rescued.set(url, { url, title: r.title, content: r.content.slice(0, maxChars), error: null });
-          return;
+        const exa = await fetchExaMcp(stillMissing, maxChars, options.signal);
+        for (const r of exa) {
+          // Only trust Exa where it actually produced content.
+          if (!r.error && r.content.trim()) {
+            rescued.set(r.url, { url: r.url, title: r.title, content: r.content, error: null });
+          }
         }
       } catch {
-        // service failed or rate-limited — try the next
+        // Exa unavailable or failed — local results (with their errors) stand.
       }
-    }
-  }));
-
-  const stillMissing = failedUrls.filter((u) => !rescued.has(u));
-  if (stillMissing.length > 0) {
-    try {
-      const exa = await fetchExaMcp(stillMissing, maxChars, options.signal);
-      for (const r of exa) {
-        // Only trust Exa where it actually produced content.
-        if (!r.error && r.content.trim()) {
-          rescued.set(r.url, { url: r.url, title: r.title, content: r.content, error: null });
-        }
-      }
-    } catch {
-      // Exa unavailable or failed — local results (with their errors) stand.
     }
   }
 
