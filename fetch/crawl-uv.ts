@@ -57,7 +57,6 @@ from urllib.parse import urljoin, urlparse, unquote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import lxml.html
-from lxml import etree
 import trafilatura
 from trafilatura.sitemaps import sitemap_search
 
@@ -111,10 +110,6 @@ def guarded_fetch(url, timeout=20):
     return data, ctype
 
 
-def fetch_bytes(url, timeout=20):
-    return guarded_fetch(url, timeout)
-
-
 def fetch_html(url):
     data, ctype = guarded_fetch(url)
     if "text/html" not in ctype:
@@ -137,55 +132,31 @@ def same_host(url, host):
     return urlparse(url).netloc == host
 
 
-def fetch_bytes(url, timeout=20):
-    req = Request(url, headers=UA)
-    with urlopen(req, timeout=timeout) as res:
-        data = res.read()
-    if url.lower().endswith(".gz"):
-        data = gzip.decompress(data)
-    return data
-
-
-def loc_texts(root):
-    out = []
-    for e in root.iter():
-        if isinstance(e.tag, str) and e.tag.endswith("loc") and e.text:
-            out.append(e.text.strip())
-    return out
-
-
-def sitemap_urls(seed, max_pages, deadline):
-    """All sitemap URLs under the seed's directory: (all_matching, harvested).
-    empty all_matching -> caller falls back to link-walking."""
-    host = urlparse(seed).netloc
+def sitemap_urls(seed, deadline):
+    """Page links from the site's sitemaps, scoped to the seed's directory.
+    sitemap_search handles robots.txt discovery, sitemap indexes and gzip
+    itself and returns same-host links directly — no XML parsing here. It
+    wants the site root as input: a deep seed triggers its URL filter down
+    to that page's path and matches almost nothing."""
+    parsed = urlparse(seed)
+    site = f"{parsed.scheme}://{parsed.netloc}/"
     seed_dir = seed.rsplit("/", 1)[0] + "/"
-    seen, urls = set(), []
+    host = parsed.netloc
     try:
-        candidates = sitemap_search(seed, verbose=False) or []
+        links = sitemap_search(site, sleep_time=1.0, max_sitemaps=10) or []
     except Exception:
-        candidates = []
-    queue = list(candidates)[:5]
-    while queue and time.time() < deadline:
-        sm = queue.pop(0)
-        if sm in seen:
+        return []
+    urls, seen = [], set()
+    for u in links:
+        if time.time() > deadline:
+            break
+        u = str(u).split("#")[0]
+        if u in seen or not is_page_url(u) or not same_host(u, host):
             continue
-        seen.add(sm)
-        try:
-            root = etree.fromstring(fetch_bytes(sm))
-        except Exception:
+        if not u.startswith(seed_dir):
             continue
-        locs = loc_texts(root)
-        if isinstance(root.tag, str) and root.tag.endswith("sitemapindex"):
-            queue.extend(locs[:10])
-            continue
-        for u in locs:
-            u = u.split("#")[0]
-            if u in seen or not is_page_url(u) or not same_host(u, host):
-                continue
-            if not u.startswith(seed_dir):
-                continue
-            if u not in urls:
-                urls.append(u)
+        if u not in urls:
+            urls.append(u)
     return urls
 
 
@@ -257,7 +228,7 @@ def main():
     depth = int(sys.argv[3])
     deadline = time.time() + float(sys.argv[4])
 
-    urls = sitemap_urls(seed, max_pages, deadline)
+    urls = sitemap_urls(seed, deadline)
     if urls:
         source, found = "sitemap", len(urls)
         exhausted = found <= max_pages
