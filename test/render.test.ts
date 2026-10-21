@@ -9,13 +9,14 @@ import {
   COLLAPSED_ROWS,
   FETCH_PREVIEW_CHARS,
   PROSE_PREVIEW_CHARS,
-  PROSE_WRAP_COLS,
   SNIPPET_CHARS,
   fetchView,
   formatChars,
   papersView,
   peopleView,
   searchView,
+  shortUrl,
+  previewWrapWidth,
   type FetchDetails,
   type WebSearchDetails,
   type WebSearchDetailsRow,
@@ -94,7 +95,7 @@ test("answer: collapsed carries a preview cut at PROSE_PREVIEW_CHARS with a mark
   const d = details(5, { provider: "openai", answer: prose });
   const view = searchView(d, { expanded: false, query: "q" });
   const cut = truncateToWidth(prose, PROSE_PREVIEW_CHARS, "…").replace(/\x1b\[0m/g, "");
-  assert.equal(unwrap(view.answer!), cut);
+  assert.equal(view.answer, cut);
   assert.ok(stripTerminalSequences(cut).length <= PROSE_PREVIEW_CHARS);
   assert.ok(stripTerminalSequences(cut).endsWith("…"));
   // The row collapse contract is untouched by the answer block.
@@ -105,14 +106,14 @@ test("answer: collapsed carries a preview cut at PROSE_PREVIEW_CHARS with a mark
 test("answer: a short answer shows in full when collapsed, no cut marker", () => {
   const d = details(5, { provider: "openai", answer: "  a  short   answer " });
   const view = searchView(d, { expanded: false, query: "q" });
-  assert.deepEqual(view.answer, ["   a short answer"]);
+  assert.equal(view.answer, "a short answer");
 });
 
 test("answer: expanded carries the whole whitespace-normalized prose", () => {
   const prose = Array.from({ length: 60 }, () => "word").join(" ");
   const d = details(5, { provider: "openai", answer: prose });
   const view = searchView(d, { expanded: true, query: "q" });
-  assert.equal(unwrap(view.answer!), prose);
+  assert.equal(view.answer, prose);
 });
 
 test("answer: markdown markers are stripped for display", () => {
@@ -121,7 +122,7 @@ test("answer: markdown markers are stripped for display", () => {
     answer: "It is **v24.22.0** with `util.throttle()` — see [nodejs.org](https://nodejs.org/en/blog/release) for notes.",
   });
   const view = searchView(d, { expanded: true, query: "q" });
-  const raw = unwrap(view.answer!);
+  const raw = view.answer!;
   // Links keep the full target as an OSC 8 hyperlink; only the label shows.
   assert.ok(raw.includes("https://nodejs.org/en/blog/release"));
   assert.equal(
@@ -130,19 +131,19 @@ test("answer: markdown markers are stripped for display", () => {
   );
 });
 
-test("answer: wrapped lines keep a hanging indent within the block width", () => {
+test("answer: collapsed carries a trimmed preview, expanded the full prose — raw", () => {
   const d = details(5, { provider: "openai", answer: "word ".repeat(60).trim() });
   const view = searchView(d, { expanded: false, query: "q" });
-  assert.ok(view.answer!.length > 1);
-  assert.ok(view.answer!.every((l) => l.startsWith("   ")));
-  assert.ok(view.answer!.every((l) => l.length <= PROSE_WRAP_COLS + 3));
+  assert.ok(stripTerminalSequences(view.answer!).endsWith("…"));
+  const full = searchView(d, { expanded: true, query: "q" });
+  assert.equal(full.answer, "word ".repeat(60).trim());
 });
 
 test("answer: zero citations with prose shapes as a success, not a miss", () => {
   const d = details(0, { provider: "openai", answer: "grounded prose" });
   const view = searchView(d, { expanded: false, query: "q" });
   assert.equal(view.count, 0);
-  assert.equal(view.answer!.length, 1);
+  assert.equal(view.answer, "grounded prose");
   assert.equal(view.rows.length, 0);
 });
 
@@ -239,7 +240,7 @@ function expandedPeople(results: WebSearchDetailsRow[], now = Date.parse("2026-1
 test("people: markers stripped, name prefix removed, full text kept, upstream cut marked", () => {
   const view = expandedPeople([peopleRow(LINKEDIN_SNIPPET)]);
   const r = view.rows[0]!;
-  const profile = r.profile!.map((l) => l.slice(3)).join(" ");
+  const profile = r.profile!;
   assert.equal(r.name, "Addy Osmani");
   assert.equal(
     profile,
@@ -257,14 +258,14 @@ test("people: heading markers mid-text stripped, word-internal # preserved", () 
     "### mortgage agents platform",
     "Michael Vandi",
   )]);
-  const profile = view.rows[0]!.profile!.map((l) => l.slice(3)).join(" ");
+  const profile = view.rows[0]!.profile!;
   assert.equal(profile, "CEO @ Addy AI ex-AWS Software Engineer C# and backend mortgage agents platform…");
 });
 
 test("people: text ending in punctuation is not marked as cut", () => {
   const view = expandedPeople([peopleRow(
     "# Jane Doe Founder at Example Corp Austin, Texas (US) builds things.", "Jane Doe")]);
-  const profile = view.rows[0]!.profile!.map((l) => l.slice(3)).join(" ");
+  const profile = view.rows[0]!.profile!;
   assert.ok(profile.endsWith("builds things."));
   assert.ok(!profile.endsWith("…"));
 });
@@ -276,14 +277,13 @@ test("people: a row with no snippet shows only the name and url", () => {
   assert.equal(r.profile, undefined);
 });
 
-test("people: profile text keeps a hanging indent inside the wrap width", () => {
+test("people: expanded profile is raw text — wrapped at paint time, never cut", () => {
   const long = "word ".repeat(60) + "end.";
   const view = expandedPeople([peopleRow("# A B Role Somewhere (US) " + long)]);
-  const lines = view.rows[0]!.profile!;
-  assert.ok(lines.length > 1);
-  assert.ok(lines.every((l) => l.startsWith("   ")));
-  assert.ok(lines.every((l) => l.length <= PROSE_WRAP_COLS + 3));
-  assert.ok(lines.join(" ").includes("end."));
+  const profile = view.rows[0]!.profile!;
+  assert.ok(profile.includes("end."));
+  assert.ok(!profile.includes("\n"));
+  assert.ok(!profile.includes("\x1b"));
 });
 
 test("people: collapsed shows one-liner rows — profile withheld, remainder counted", () => {
@@ -450,15 +450,13 @@ test("fetch collapsed: caps rows at COLLAPSED_ROWS, counts hidden, no previews",
   assert.equal(view.rows[0]!.chars, fetchDetails(1).results![0]!.content.length);
 });
 
-test("fetch expanded: every page carries a hanging-indented preview cut at FETCH_PREVIEW_CHARS", () => {
+test("fetch expanded: every page carries a flattened preview cut at FETCH_PREVIEW_CHARS", () => {
   const view = fetchView(fetchDetails(2), { expanded: true });
   assert.equal(view.rows.length, 2);
   assert.equal(view.hiddenCount, 0);
-  const lines = view.rows[0]!.preview!;
-  assert.ok(lines.length > 1);
-  assert.ok(lines.every((l) => l.startsWith("   ")));
-  const preview = stripTerminalSequences(lines.join(""));
-  assert.ok(stripTerminalSequences(lines.join("")).length <= FETCH_PREVIEW_CHARS + 4 * lines.length);
+  const preview = stripTerminalSequences(view.rows[0]!.preview!);
+  assert.ok(preview.length <= FETCH_PREVIEW_CHARS + 1);
+  assert.ok(!preview.includes("\n"));
   assert.ok(preview.endsWith("…"));
 });
 
@@ -468,7 +466,7 @@ test("fetch: a truncated cut carries no style resets — the black-band bug", ()
   const prose = Array.from({ length: 120 }, () => "word").join(" "); // 599 chars — past the budget
   const d = fetchDetails(1);
   d.results![0]!.content = prose;
-  const preview = fetchView(d, { expanded: true }).rows[0]!.preview!.join("");
+  const preview = fetchView(d, { expanded: true }).rows[0]!.preview!;
   assert.ok(!preview.includes("\x1b"));
   assert.ok(stripTerminalSequences(preview).endsWith("…"));
 });
@@ -489,19 +487,35 @@ test("fetch: a failed page carries its error and no preview even expanded", () =
   assert.ok(view.rows[1]!.preview);
 });
 
-test("fetch summarized: model rides, summary pre-wrapped and preview-cut collapsed", () => {
+test("fetch summarized: model rides, summary raw — cut collapsed, full expanded", () => {
   const prose = Array.from({ length: 60 }, () => "word").join(" ");
   const d = fetchDetails(2, { summarized: true, model: "gpt-x", summary: prose });
   const collapsed = fetchView(d, { expanded: false });
   assert.equal(collapsed.model, "gpt-x");
-  assert.ok(collapsed.summary!.length > 1);
-  assert.ok(collapsed.summary!.every((l) => l.startsWith("   ")));
-  assert.ok(stripTerminalSequences(unwrap(collapsed.summary!)).endsWith("…"));
+  assert.ok(stripTerminalSequences(collapsed.summary!).endsWith("…"));
+  assert.ok(collapsed.summary!.length < prose.length);
   const expanded = fetchView(d, { expanded: true });
-  assert.equal(unwrap(expanded.summary!), prose);
+  assert.equal(expanded.summary, prose);
 });
 
 test("fetch: formatChars humanizes sizes", () => {
   assert.equal(formatChars(850), "850 chars");
   assert.equal(formatChars(12345), "12.3k chars");
+});
+
+test("shortUrl: query and fragment dropped, long paths middle-ellipsized", () => {
+  assert.equal(shortUrl("https://www.example.com/a/b?x=1#frag"), "example.com/a/b");
+  const deep = "en.wikipedia.org/w/" + "very/long/path/".repeat(6) + "page.html";
+  const short = shortUrl(`https://${deep}`);
+  assert.ok(short.length <= 48);
+  assert.ok(short.includes("…"));
+  assert.ok(short.startsWith("en.wikipedia.org/w/"));
+  assert.ok(short.endsWith("page.html"));
+});
+
+test("previewWrapWidth: flows at message width, floored on squeezed terminals", () => {
+  assert.equal(previewWrapWidth(300), 294); // flows with the terminal, no cap
+  assert.equal(previewWrapWidth(120), 114);
+  assert.equal(previewWrapWidth(80), 74);
+  assert.equal(previewWrapWidth(30), 40);   // floor — never unusably narrow
 });

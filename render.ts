@@ -22,20 +22,23 @@
 // provider adds one more object: its answer is
 // model-authored prose, so it rides in details and renders as a muted prose
 // block under the header — markdown markers stripped, preview-trimmed when
-// collapsed, full when expanded, pre-wrapped with a hanging indent like the
-// people blocks. Other providers' answers are buildAnswer(rows), a view of
-// the rows themselves, and never ride in details. Citation rows whose only
-// title is the URL render that URL once, shortened. web_fetch renders
-// through the same shape: fetchView() caps pages to one-liners (title, link,
-// size — failed pages show their error instead), expanded adds a bounded
-// content preview, and a model-authored summary (the prompt param) rides in
-// details like the openai answer does. The TUI transcript
-// changes; what the model sees does not.
+// collapsed, full when expanded. Other providers' answers are
+// buildAnswer(rows), a view of the rows themselves, and never ride in
+// details. Citation rows whose only title is the URL render that URL once,
+// shortened. web_fetch renders through the same shape: fetchView() caps
+// pages to one-liners (title, link, size — failed pages show their error
+// instead), expanded adds a bounded content preview, and a model-authored
+// summary (the prompt param) rides in details like the openai answer does.
+// All prose blocks — answers, profiles, previews, summaries — wrap at paint
+// time (PreviewText, pi-subagents' render-override pattern): the terminal's
+// width arrives only there, so blocks flow at message width. The TUI
+// transcript changes; what the model sees does not.
 //
-// Internal seam: `searchView()` is pure — details + view options in, plain
-// view model out — so collapsed/expanded/error shaping is testable with no
-// theme, no TUI, and no live session. Theme colors, the Text component, and
-// the lastComponent reuse live only in the callbacks.
+// Internal seam: `searchView()` and friends are pure — details + view
+// options in, plain view model out — so collapsed/expanded/error shaping is
+// testable with no theme, no TUI, and no live session. Theme colors, the
+// Text/PreviewText components, and the lastComponent reuse live only in the
+// callbacks.
 
 import {
   Text,
@@ -91,10 +94,6 @@ export const PROSE_PREVIEW_CHARS = 240;
 /** Expanded page-content preview — enough to recognize what arrived, not to
  *  read it; the full content went to the model. */
 export const FETCH_PREVIEW_CHARS = 360;
-/** Prose blocks — people profiles, openai answers — wrap at this width with
- *  a hanging indent; wider terminals keep the block's shape, narrower ones
- *  fall back to the TUI's own full-width wrap. */
-export const PROSE_WRAP_COLS = 96;
 
 export interface SearchRowView {
   index: number;
@@ -111,10 +110,10 @@ export interface SearchView {
   provider?: string;
   count: number;
   query: string;
-  /** Model-authored answer (openai only), markdown markers stripped and
-   *  pre-wrapped with a hanging indent; collapsed carries a trimmed preview,
-   *  expanded the whole prose. */
-  answer?: string[];
+  /** Model-authored answer (openai only), markdown markers stripped; raw —
+   *  collapsed carries a trimmed preview, expanded the whole prose. Wrapped
+   *  at paint time by the width-aware component. */
+  answer?: string;
   rows: SearchRowView[];
   hiddenCount: number;
   nextCursor?: string;
@@ -148,11 +147,7 @@ export function searchView(
       ? {
         // Collapsed cuts by visible width — embedded hyperlink escapes count
         // zero, and the … lands only when something was actually cut.
-        answer: wrapHanging(
-          options.expanded ? answer : cutPlain(answer, PROSE_PREVIEW_CHARS),
-          PROSE_WRAP_COLS,
-          "   ",
-        ),
+        answer: options.expanded ? answer : cutPlain(answer, PROSE_PREVIEW_CHARS),
       }
       : {}),
     rows: shown.map((row, i) => {
@@ -186,10 +181,10 @@ export function searchView(
 export interface PeopleRowView {
   index: number;
   name: string;
-  /** The full scraped profile text, markdown heading markers stripped and
-   *  pre-wrapped with a hanging indent — role, location, stats, and
-   *  about-text exactly as the page carried them, never cut. */
-  profile?: string[];
+  /** The full scraped profile text, markdown heading markers stripped —
+   *  role, location, stats, and about-text exactly as the page carried them,
+   *  never cut. Raw — wrapped at paint time by the width-aware component. */
+  profile?: string;
   url: string;
   /** Machine timestamp reformatted as a short relative date. */
   publishedDate?: string;
@@ -248,8 +243,17 @@ function formatSearchDate(iso: string, now: number): string | undefined {
 }
 
 /** Drop a display URL's scheme and www so a LinkedIn slug fits on one line. */
-function shortUrl(url: string): string {
-  return url.replace(/^https?:\/\/(www\.)?/, "");
+/** Display form of a URL: scheme and www stripped, query and fragment
+ *  dropped (a load.php?lang=en&modules=... asset URL would wrap a whole row),
+ *  and anything still over budget middle-ellipsized — host head kept, file
+ *  tail kept. The href always carries the full URL; only the label shrinks. */
+const SHORT_URL_MAX = 48;
+export function shortUrl(url: string): string {
+  const bare = url.replace(/^https?:\/\/(www\.)?/, "").replace(/[?#].*$/, "");
+  if (bare.length <= SHORT_URL_MAX) return bare;
+  const head = bare.slice(0, SHORT_URL_MAX - 14);
+  const tail = bare.slice(-10);
+  return `${head}…${tail}`;
 }
 
 /** Parse one people-category row for display: the name comes from the row
@@ -271,15 +275,6 @@ function parsePeopleRow(row: WebSearchDetailsRow): { name: string; profile?: str
     ...(profile ? { profile } : {}),
     url: row.url,
   };
-}
-
-/** Wrap `text` to `width` visible columns and prefix every line with
- *  `indent`, so a long paragraph keeps its hanging indent no matter how wide
- *  it runs. ANSI/OSC-safe: an embedded hyperlink moves whole to the next
- *  line instead of being cut, and tokens longer than the width hard-break
- *  without loss. Terminals narrower than `width` re-wrap the TUI's way. */
-function wrapHanging(text: string, width: number, indent: string): string[] {
-  return wrapTextWithAnsi(text, width).map((l) => indent + l);
 }
 
 /** Cut plain prose at a visible-width budget with an ellipsis marker.
@@ -311,14 +306,12 @@ export function peopleView(
     query: options.query,
     rows: shown.map((row, i) => {
       const { profile, ...parsed } = parsePeopleRow(row);
-      const profileLines = options.expanded && profile
-        ? wrapHanging(profile, PROSE_WRAP_COLS, "   ")
-        : undefined;
+      const profileText = options.expanded && profile ? profile : undefined;
       return {
         index: i + 1,
         ...parsed,
         ...(row.publishedDate ? { publishedDate: formatSearchDate(row.publishedDate, now) } : {}),
-        ...(profileLines ? { profile: profileLines } : {}),
+        ...(profileText ? { profile: profileText } : {}),
       };
     }),
     hiddenCount: options.expanded ? 0 : Math.max(0, rows.length - COLLAPSED_ROWS),
@@ -467,18 +460,18 @@ export interface FetchRowView {
   /** Content size in characters — how much arrived. */
   chars: number;
   error?: string;
-  /** Flattened content preview, pre-wrapped with a hanging indent — one
-   *  complete style run per line, so no wrap boundary can bleed style. */
-  preview?: string[];
+  /** Raw flattened content preview — the width-aware component wraps it at
+   *  paint time; this seam stays width-blind. */
+  preview?: string;
 }
 
 export interface FetchView {
   count: number;
   summarized?: boolean;
   model?: string;
-  /** Model-authored summary, cleaned and pre-wrapped; collapsed carries a
-   *  trimmed preview, expanded the whole thing. */
-  summary?: string[];
+  /** Model-authored summary, cleaned; collapsed carries the trimmed preview,
+   *  expanded the whole thing. Raw — wrapped at paint time. */
+  summary?: string;
   rows: FetchRowView[];
   hiddenCount: number;
   error?: string;
@@ -507,11 +500,7 @@ export function fetchView(details: FetchDetails | undefined, options: FetchViewO
     ...(details?.model ? { model: details.model } : {}),
     ...(summary
       ? {
-        summary: wrapHanging(
-          options.expanded ? summary : cutPlain(summary, PROSE_PREVIEW_CHARS),
-          PROSE_WRAP_COLS,
-          "   ",
-        ),
+        summary: options.expanded ? summary : cutPlain(summary, PROSE_PREVIEW_CHARS),
       }
       : {}),
     rows: shown.map((row, i) => {
@@ -523,13 +512,7 @@ export function fetchView(details: FetchDetails | undefined, options: FetchViewO
         chars: row.content.length,
         ...(failed ? { error: row.error! } : {}),
         ...(options.expanded && !failed && row.content
-          ? {
-            preview: wrapHanging(
-              cutPlain(row.content.replace(/\s+/g, " ").trim(), FETCH_PREVIEW_CHARS),
-              PROSE_WRAP_COLS,
-              "   ",
-            ),
-          }
+          ? { preview: cutPlain(row.content.replace(/\s+/g, " ").trim(), FETCH_PREVIEW_CHARS) }
           : {}),
       };
     }),
@@ -538,7 +521,63 @@ export function fetchView(details: FetchDetails | undefined, options: FetchViewO
   };
 }
 
-// ── Renderer callbacks (theme + TUI assembly only) ──────────────────────────
+// ── Width-aware preview component ───────────────────────────────────────
+
+/** The terminal's real width only arrives at paint time (Component.render).
+ *  Preview blocks wrap there, flowing at message width: `terminalWidth − 6`,
+ *  floored so a squeezed terminal still renders usable lines. Via the
+ *  pi-subagents render-override pattern. */
+export const PREVIEW_MIN_COLS = 40;
+
+export function previewWrapWidth(terminalWidth: number): number {
+  return Math.max(PREVIEW_MIN_COLS, terminalWidth - 6);
+}
+
+const PREVIEW_INDENT = "   ";
+
+type PreviewSegment =
+  | { kind: "line"; text: string }
+  | { kind: "block"; text: string; style: (s: string) => string };
+
+/** Result text for fetch-shaped tools: final styled lines plus raw blocks
+ *  that wrap at paint time. Every emitted line is one complete style run —
+ *  the black-band lesson holds at any width. */
+export class PreviewText {
+  private segments: PreviewSegment[] = [];
+  private cached?: { width: number; lines: string[] };
+
+  set(segments: PreviewSegment[]): void {
+    this.segments = segments;
+    this.cached = undefined;
+  }
+
+  setText(text: string): void {
+    this.set([{ kind: "line", text }]);
+  }
+
+  invalidate(): void {
+    this.cached = undefined;
+  }
+
+  render(width: number): string[] {
+    if (this.cached && this.cached.width === width) return this.cached.lines;
+    const wrapWidth = previewWrapWidth(width);
+    const lines: string[] = [];
+    for (const seg of this.segments) {
+      if (seg.kind === "line") {
+        lines.push(seg.text);
+        continue;
+      }
+      for (const l of wrapTextWithAnsi(seg.text, wrapWidth - PREVIEW_INDENT.length)) {
+        lines.push(seg.style(PREVIEW_INDENT + l));
+      }
+    }
+    this.cached = { width, lines };
+    return lines;
+  }
+}
+
+// ── Renderer callbacks (theme + TUI assembly only) ────────────────────────────
 
 interface WebSearchCallArgs {
   query?: string;
@@ -572,39 +611,43 @@ export const webSearchRenderers: Pick<
     theme: Theme,
     context,
   ) {
-    const text =
-      context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+    const comp =
+      context.lastComponent instanceof PreviewText ? context.lastComponent : new PreviewText();
     const contentText = result.content.find((item) => item.type === "text")?.text;
     if (isPartial) {
-      text.setText(theme.fg("muted", contentText ?? ""));
-      return text;
+      comp.setText(theme.fg("muted", contentText ?? ""));
+      return comp;
     }
     const details = result.details;
     if (details?.error) {
-      text.setText(theme.fg("error", details.error || contentText || "Search failed"));
-      return text;
+      comp.setText(theme.fg("error", details.error || contentText || "Search failed"));
+      return comp;
     }
     if (!details) {
       // Sessions resumed across the renderer's introduction replay results
       // with no details payload — fall back to the text the tool returned.
-      text.setText(theme.fg("muted", contentText ?? "No web search results"));
-      return text;
+      comp.setText(theme.fg("muted", contentText ?? "No web search results"));
+      return comp;
     }
     const query = (context.args as WebSearchCallArgs | undefined)?.query ?? "";
+    const muted = (s: string) => theme.fg("muted", s);
+    const dim = (s: string) => theme.fg("dim", s);
+    const segments: PreviewSegment[] = [];
+
     if (details.provider === "papers") {
       const view = papersView(details, { expanded, query });
       if (view.count === 0) {
-        text.setText(theme.fg("muted", `No results for “${view.query}”`));
-        return text;
+        comp.setText(muted(`No results for “${view.query}”`));
+        return comp;
       }
       const header: string[] = [];
-      if (view.provider) header.push(theme.fg("dim", `${view.provider} ·`));
+      if (view.provider) header.push(dim(`${view.provider} ·`));
       header.push(theme.fg("success", `${view.count} result${view.count === 1 ? "" : "s"}`));
-      header.push(theme.fg("dim", ` for “${view.query}”`));
-      const lines = [header.join(" ")];
+      header.push(dim(` for “${view.query}”`));
+      segments.push({ kind: "line", text: header.join(" ") });
       for (const row of view.rows) {
-        lines.push(`${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`);
-        if (row.summary) lines.push(`   ${theme.fg("muted", row.summary)}`);
+        segments.push({ kind: "line", text: `${muted(`${row.index}.`)} ${theme.fg("accent", row.title)}` });
+        if (row.summary) segments.push({ kind: "line", text: `   ${muted(row.summary)}` });
         if (expanded) {
           // The link always resolves: OA URL, then doi.org, then the row's
           // own URL — same priority the model text uses.
@@ -612,88 +655,86 @@ export const webSearchRenderers: Pick<
             hyperlink(shortUrl(row.linkTarget), row.linkTarget),
             ...(row.trend ? [row.trend] : []),
           ].join(" · ");
-          lines.push(`   ${theme.fg("dim", meta)}`);
-          if (row.abstract) lines.push(`   ${theme.fg("muted", row.abstract)}`);
+          segments.push({ kind: "line", text: `   ${dim(meta)}` });
+          if (row.abstract) segments.push({ kind: "block", text: row.abstract, style: muted });
         }
       }
-      if (view.hiddenCount > 0) {
-        lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
-      }
-      if (view.nextCursor) {
-        lines.push(theme.fg("dim", `Next cursor: pass filters.cursor for the next page.`));
-      }
-      text.setText(lines.join("\n"));
-      return text;
+      appendTail(segments, view.hiddenCount, view.nextCursor);
+      comp.set(segments);
+      return comp;
     }
+
     if (details.category === "people") {
       const view = peopleView(details, { expanded, query });
       if (view.count === 0) {
-        text.setText(theme.fg("muted", `No results for “${view.query}”`));
-        return text;
+        comp.setText(muted(`No results for “${view.query}”`));
+        return comp;
       }
       const header: string[] = [];
-      if (view.provider) header.push(theme.fg("dim", `${view.provider} ·`));
+      if (view.provider) header.push(dim(`${view.provider} ·`));
       header.push(theme.fg("success", `${view.count} result${view.count === 1 ? "" : "s"}`));
-      header.push(theme.fg("dim", ` for “${view.query}”`));
-      const lines = [header.join(" ")];
+      header.push(dim(` for “${view.query}”`));
+      segments.push({ kind: "line", text: header.join(" ") });
       for (const row of view.rows) {
-        lines.push(`${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.name)}`);
-        if (row.profile) lines.push(...row.profile);
+        segments.push({ kind: "line", text: `${muted(`${row.index}.`)} ${theme.fg("accent", row.name)}` });
+        if (row.profile) segments.push({ kind: "block", text: row.profile, style: muted });
         const meta = [
           hyperlink(shortUrl(row.url), row.url),
           ...(row.publishedDate ? [row.publishedDate] : []),
         ].join(" · ");
-        lines.push(`   ${theme.fg("dim", meta)}`);
+        segments.push({ kind: "line", text: `   ${dim(meta)}` });
       }
-      if (view.hiddenCount > 0) {
-        lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
-      }
-      if (view.nextCursor) {
-        lines.push(theme.fg("dim", `Next cursor: pass filters.cursor for the next page.`));
-      }
-      text.setText(lines.join("\n"));
-      return text;
+      appendTail(segments, view.hiddenCount, view.nextCursor);
+      comp.set(segments);
+      return comp;
     }
+
     const view = searchView(details, { expanded, query });
     // An answer with zero citations is a success — the model returned prose
     // with no url_citation rows — so "No results" would misreport it.
     if (view.count === 0 && !view.answer) {
-      text.setText(theme.fg("muted", `No results for “${view.query}”`));
-      return text;
+      comp.setText(muted(`No results for “${view.query}”`));
+      return comp;
     }
     const header: string[] = [];
-    if (view.provider) header.push(theme.fg("dim", `${view.provider} ·`));
+    if (view.provider) header.push(dim(`${view.provider} ·`));
     // The count drops when there is nothing to count and prose to show —
     // "0 results" above a rendered answer reads as failure.
     if (view.count > 0 || !view.answer) {
       header.push(theme.fg("success", `${view.count} result${view.count === 1 ? "" : "s"}`));
-      header.push(theme.fg("dim", ` for “${view.query}”`));
+      header.push(dim(` for “${view.query}”`));
     } else {
-      header.push(theme.fg("dim", `for “${view.query}”`));
+      header.push(dim(`for “${view.query}”`));
     }
-    const lines = [header.join(" ")];
-    if (view.answer) lines.push(...view.answer);
+    segments.push({ kind: "line", text: header.join(" ") });
+    if (view.answer) segments.push({ kind: "block", text: view.answer, style: muted });
     for (const row of view.rows) {
       // Links are real OSC 8 hyperlinks: short label, full clickable target.
       const label = row.titleIsUrl
         ? theme.fg("accent", hyperlink(row.title, row.url))
         : theme.fg("accent", row.title);
-      let line = `${theme.fg("muted", `${row.index}.`)} ${label}`;
-      if (row.publishedDate) line += theme.fg("dim", ` — ${row.publishedDate}`);
-      if (!row.titleIsUrl) line += theme.fg("dim", ` — ${hyperlink(shortUrl(row.url), row.url)}`);
-      lines.push(line);
-      if (row.snippet) lines.push(`   ${theme.fg("muted", row.snippet)}`);
+      let line = `${muted(`${row.index}.`)} ${label}`;
+      if (row.publishedDate) line += dim(` — ${row.publishedDate}`);
+      if (!row.titleIsUrl) line += dim(` — ${hyperlink(shortUrl(row.url), row.url)}`);
+      segments.push({ kind: "line", text: line });
+      if (row.snippet) segments.push({ kind: "block", text: row.snippet, style: muted });
     }
-    if (view.hiddenCount > 0) {
-      lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
-    }
-    if (view.nextCursor) {
-      lines.push(theme.fg("dim", `Next cursor: pass filters.cursor for the next page.`));
-    }
-    text.setText(lines.join("\n"));
-    return text;
+    appendTail(segments, view.hiddenCount, view.nextCursor);
+    comp.set(segments);
+    return comp;
   },
 };
+
+/** The collapsed tail every search-shaped view shares: the hidden remainder
+ *  hint and the papers pagination pointer. */
+function appendTail(segments: PreviewSegment[], hiddenCount: number, nextCursor?: string): void {
+  if (hiddenCount > 0) {
+    segments.push({ kind: "line", text: `…${hiddenCount} more` });
+  }
+  if (nextCursor) {
+    segments.push({ kind: "line", text: `Next cursor: pass filters.cursor for the next page.` });
+  }
+}
 
 interface WebFetchCallArgs {
   urls?: string | string[];
@@ -729,49 +770,136 @@ export const webFetchRenderers: Pick<
     theme: Theme,
     context,
   ) {
-    const text =
-      context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+    const comp =
+      context.lastComponent instanceof PreviewText ? context.lastComponent : new PreviewText();
     const contentText = result.content.find((item) => item.type === "text")?.text;
     if (isPartial) {
-      text.setText(theme.fg("muted", contentText ?? ""));
-      return text;
+      comp.setText(theme.fg("muted", contentText ?? ""));
+      return comp;
     }
     const details = result.details;
     if (details?.error) {
-      text.setText(theme.fg("error", details.error || contentText || "Fetch failed"));
-      return text;
+      comp.setText(theme.fg("error", details.error || contentText || "Fetch failed"));
+      return comp;
     }
     if (!details) {
       // Sessions resumed across the renderer's introduction replay results
       // with no details payload — fall back to the text the tool returned.
-      text.setText(theme.fg("muted", contentText ?? "No fetch result"));
-      return text;
+      comp.setText(theme.fg("muted", contentText ?? "No fetch result"));
+      return comp;
     }
     const view = fetchView(details, { expanded });
     if (view.count === 0) {
-      text.setText(theme.fg("muted", "No content fetched"));
-      return text;
+      comp.setText(theme.fg("muted", "No content fetched"));
+      return comp;
     }
     const header: string[] = [theme.fg("success", `${view.count} page${view.count === 1 ? "" : "s"}`)];
     if (view.summarized && view.model) header.push(theme.fg("dim", ` · summarized by ${view.model}`));
-    const lines = [header.join(" ")];
-    if (view.summary) lines.push(...view.summary);
-    for (const row of view.rows) {
-      if (row.error) {
-        // Failed pages stay prominent: URL, then the actionable hint below.
-        lines.push(`${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", shortUrl(row.url))}`);
-        lines.push(`   ${theme.fg("error", row.error)}`);
-        continue;
-      }
-      let line = `${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`;
-      line += theme.fg("dim", ` — ${hyperlink(shortUrl(row.url), row.url)} · ${formatChars(row.chars)}`);
-      lines.push(line);
-      if (row.preview) lines.push(...row.preview.map((l) => theme.fg("muted", l)));
+    const segments: PreviewSegment[] = [{ kind: "line", text: header.join(" ") }];
+    if (view.summary) segments.push({ kind: "block", text: view.summary, style: (s) => theme.fg("muted", s) });
+    segments.push(...fetchRowSegments(view, theme));
+    comp.set(segments);
+    return comp;
+  },
+};
+
+/** The per-page segments of a fetch-shaped view: one-liner rows as final
+ *  lines, raw content previews as blocks the component wraps at paint time.
+ *  Shared by the fetch and crawl renderers — a crawled page is the same Page
+ *  object a fetch returns. */
+function fetchRowSegments(view: FetchView, theme: Theme): PreviewSegment[] {
+  const segments: PreviewSegment[] = [];
+  for (const row of view.rows) {
+    if (row.error) {
+      // Failed pages stay prominent: URL, then the actionable hint below.
+      segments.push({ kind: "line", text: `${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", shortUrl(row.url))}` });
+      segments.push({ kind: "line", text: `   ${theme.fg("error", row.error)}` });
+      continue;
     }
-    if (view.hiddenCount > 0) {
-      lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
-    }
-    text.setText(lines.join("\n"));
+    let line = `${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`;
+    line += theme.fg("dim", ` — ${hyperlink(shortUrl(row.url), row.url)} · ${formatChars(row.chars)}`);
+    segments.push({ kind: "line", text: line });
+    if (row.preview) segments.push({ kind: "block", text: row.preview, style: (s) => theme.fg("muted", s) });
+  }
+  if (view.hiddenCount > 0) {
+    segments.push({ kind: "line", text: theme.fg("dim", `…${view.hiddenCount} more`) });
+  }
+  return segments;
+}
+
+// ── Crawl renderer (theme + TUI assembly only) ──────────────────────────────
+
+/** The details payload web_crawl's execute() returns — the fetch shape plus
+ *  the sweep's own facts: which discovery path supplied the inventory and
+ *  whether it stopped on budget. */
+export interface CrawlDetails extends FetchDetails {
+  source?: "sitemap" | "links" | "js";
+  capped?: boolean;
+  found?: number;
+}
+
+interface WebCrawlCallArgs {
+  seed?: string;
+  maxPages?: number;
+  depth?: number;
+}
+
+export const webCrawlRenderers: Pick<
+  ToolDefinition<any, CrawlDetails>,
+  "renderCall" | "renderResult"
+> = {
+  renderCall(rawArgs, theme, context) {
+    const args = (rawArgs ?? {}) as WebCrawlCallArgs;
+    const text =
+      context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+    const parts = [theme.fg("toolTitle", theme.bold("crawl "))];
+    if (args.seed) parts.push(theme.fg("accent", `“${shortUrl(args.seed)}”`));
+    if (args.maxPages !== undefined) parts.push(theme.fg("dim", ` max=${args.maxPages}`));
+    if (args.depth !== undefined && args.depth !== 1) parts.push(theme.fg("dim", ` depth=${args.depth}`));
+    text.setText(parts.join(""));
     return text;
+  },
+
+  renderResult(
+    result: AgentToolResult<CrawlDetails>,
+    { expanded, isPartial }: ToolRenderResultOptions,
+    theme: Theme,
+    context,
+  ) {
+    const comp =
+      context.lastComponent instanceof PreviewText ? context.lastComponent : new PreviewText();
+    const contentText = result.content.find((item) => item.type === "text")?.text;
+    if (isPartial) {
+      comp.setText(theme.fg("muted", contentText ?? ""));
+      return comp;
+    }
+    const details = result.details;
+    if (details?.error) {
+      comp.setText(theme.fg("error", details.error || contentText || "Crawl failed"));
+      return comp;
+    }
+    if (!details) {
+      // Sessions resumed across the renderer's introduction replay results
+      // with no details payload — fall back to the text the tool returned.
+      comp.setText(theme.fg("muted", contentText ?? "No crawl result"));
+      return comp;
+    }
+    const view = fetchView(details, { expanded });
+    if (view.count === 0) {
+      comp.setText(theme.fg("muted", "No pages swept"));
+      return comp;
+    }
+    const header: string[] = [theme.fg("success", `${view.count} page${view.count === 1 ? "" : "s"} swept`)];
+    if (details.capped) {
+      const more = Math.max(0, (details.found ?? view.count) - view.count);
+      header.push(theme.fg("warning", `· capped, ~${more} more exist`));
+    } else {
+      header.push(theme.fg("dim", "· complete"));
+    }
+    if (details.source) header.push(theme.fg("dim", `· ${details.source}`));
+    const segments: PreviewSegment[] = [{ kind: "line", text: header.join(" ") }];
+    segments.push(...fetchRowSegments(view, theme));
+    comp.set(segments);
+    return comp;
   },
 };
