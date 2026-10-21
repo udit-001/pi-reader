@@ -34,7 +34,8 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { consumeParallelIssue } from "./search/parallel-mcp.ts";
 import { openParallelSetup } from "./search/parallel-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
-import { webFetchRenderers, webSearchRenderers, type FetchDetails, type WebSearchDetails } from "./render.ts";
+import { webCrawlRenderers, webFetchRenderers, webSearchRenderers, type CrawlDetails, type FetchDetails, type WebSearchDetails } from "./render.ts";
+import { crawl, excerptOf } from "./fetch/crawl.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { OpenAISearchUnavailableError } from "./search/openai.ts";
@@ -597,7 +598,8 @@ export default function piWeb(pi: ExtensionAPI): void {
       "for metadata inspection, structured data in pages, or debugging extraction. " +
       "topic extracts just the matching sections of long pages. " +
       "prompt answers a question about the fetched content using the current model. " +
-      "Accepts one URL string or an array of URLs.",
+      "Accepts one URL string or an array of URLs. " +
+      "For several pages from one site, use web_crawl instead.",
     promptSnippet:
       "Use to read full page content from known URLs (docs, articles, issues); " +
       "GitHub repos return a local checkout in one call.",
@@ -679,6 +681,93 @@ export default function piWeb(pi: ExtensionAPI): void {
         };
       } finally {
         notifyExaIssueOnce(ctx);
+      }
+    },
+  });
+
+  const webCrawlParams = Type.Object({
+    seed: Type.String({ description: "Entry URL for the sweep. The crawl stays on this host and, " +
+      "when the site has a sitemap, harvests its entries under this path; otherwise it follows " +
+      "same-origin links from this page. For known single URLs use web_fetch instead." }),
+    maxPages: Type.Optional(Type.Integer({
+      minimum: 1,
+      maximum: 25,
+      description: "Pages to harvest before stopping (default 8, max 25). " +
+        "The result reports capped vs complete.",
+    })),
+    depth: Type.Optional(Type.Integer({
+      minimum: 1,
+      maximum: 3,
+      description: "Link hops from the seed on the link-following path (default 1, max 3). " +
+        "Inert when a sitemap supplies the inventory.",
+    })),
+  });
+  type WebCrawlParams = Static<typeof webCrawlParams>;
+
+  pi.registerTool({
+    name: "web_crawl",
+    label: "Crawl a site section",
+    description:
+      "Sweep several pages from one site in one call — docs sections, changelogs, wiki " +
+      "categories. Harvests up to maxPages pages (sitemap entries under the seed's path when " +
+      "the site has one, else same-origin links from the seed), extracts each to clean " +
+      "Markdown, and returns an inventory with a short excerpt per page. The result reports " +
+      "capped vs complete: capped means more pages exist — raise maxPages or narrow the seed. " +
+      "Follow up with web_fetch for the full content of the pages worth reading. " +
+      "Same origin as the seed only.",
+    promptSnippet:
+      "Use to sweep several pages from one site (docs sections, changelogs); " +
+      "returns an inventory with excerpts — follow up with web_fetch for full pages.",
+    parameters: webCrawlParams,
+    ...webCrawlRenderers,
+    async execute(
+      _callId: string,
+      params: WebCrawlParams,
+      signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      _ctx: ExtensionContext,
+    ): Promise<AgentToolResult<CrawlDetails>> {
+      try {
+        const result = await crawl(params.seed, {
+          maxPages: params.maxPages,
+          depth: params.depth,
+          signal,
+        });
+        const state = result.capped
+          ? `capped — ${Math.max(0, result.found - result.pages.length)} more exist; ` +
+            "raise maxPages or narrow the seed"
+          : "complete";
+        const rows = result.pages.map((p, i) => p.error
+          ? `${i + 1}. ${p.url}\n   Error: ${p.error}`
+          : `${i + 1}. ${p.title || p.url} — ${p.url} (${p.content.length} chars)\n` +
+            `   ${excerptOf(p.content)}`);
+        const text = [
+          `Swept ${result.pages.length} page${result.pages.length === 1 ? "" : "s"} ` +
+            `(${state} · via ${result.source})`,
+          "",
+          ...rows,
+          "",
+          "Follow up with web_fetch for the full content of any page above.",
+        ].join("\n");
+        return {
+          content: [{ type: "text", text }],
+          details: {
+            source: result.source,
+            capped: result.capped,
+            found: result.found,
+            results: result.pages,
+          },
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const hint = /abort/i.test(message)
+          ? "Crawl aborted."
+          : `The crawl failed (${message}). Check the seed URL and try again, ` +
+            "or fetch known pages directly with web_fetch.";
+        return {
+          content: [{ type: "text", text: `web_crawl failed: ${hint}` }],
+          details: { error: hint },
+        };
       }
     },
   });

@@ -1,6 +1,6 @@
 # AGENTS.md — pi-reader
 
-Pi extension: `web_search` (DuckDuckGo, Exa, Parallel, papers, news/images/videos, Codex) and `web_fetch` (URL→Markdown). Zero config on the default path.
+Pi extension: `web_search` (DuckDuckGo, Exa, Parallel, papers, news/images/videos, Codex), `web_fetch` (URL→Markdown), and `web_crawl` (bounded site sweep). Zero config on the default path.
 
 ## Gate
 
@@ -22,6 +22,8 @@ The entry (`index.ts`) stays thin: registers the two tools, maps params, formats
 | `search/key-setup.ts`, `exa-setup.ts`, `parallel-setup.ts`, `openalex-setup.ts` | Wizard skeleton (paste→validate→save→done, spinner, redaction, headless path, reopen guard) and its three instances |
 | `search/exa-issue.ts`, `redact.ts` | One-shot issue hint per tool call; `redactSecret` keeps keys out of the transcript |
 | `fetch/fetch.ts`, `curl-fetch.ts` | URL→Markdown: local extraction → free services → Exa; the bot-wall curl rescue |
+| `fetch/crawl.ts` | Sweep: seed + budgets → `CrawlResult`; capped-vs-complete, excerpts, backend selection (uv driver vs JS fallback) |
+| `fetch/crawl-uv.ts` | trafilatura driver via uv: sitemap-first → BFS, embedded script, guarded fetches, parse seam |
 | `fetch/handlers/`, `topic.ts` | Per-site structured rendering (GitHub, registries, HN, feeds, …); `matchTopic` section extraction |
 | `fetch/github-clone.ts`, `github-issue-pr.ts` | Local checkouts (`ensureClone`, `renderRepoView`, `resolveTreePath`); issue/PR documents, gh-first with REST fallback |
 | `cache/cache.ts` | Fetch cache on disk: lookup/store/prune, sqlite index in `cachedb.ts` |

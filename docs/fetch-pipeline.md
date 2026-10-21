@@ -30,6 +30,17 @@ Escape hatch: `allowPrivateNetwork: true` in `~/.pi/agent/pi-reader.json`.
 
 `topic` selects matching sections through `matchTopic` (`fetch/topic.ts`) after extraction and before the char cap, so a matched section is not truncated by the page it shares with unmatched ones.
 
+## Crawl
+
+`web_crawl` sweeps several pages of one site section. `fetch/crawl.ts` owns the interface (seed + budgets in, `CrawlResult` out) and everything both adapters need: budget clamps, the capped-vs-complete call, per-page excerpts, and the public-target guard run on the seed at dispatch.
+
+Two adapters satisfy the interface — that is what makes the seam real:
+
+1. **uv driver** (`fetch/crawl-uv.ts`) — trafilatura via `uvx --with trafilatura python`. The embedded driver discovers sitemap entries under the seed's path first (`sitemap_search`: robots.txt probing, sitemap indexes, gzip), then falls back to a same-origin breadth-first walk. It fetches outside Node, so it mirrors the guard internally: pre-connect DNS checks and per-hop redirect checks refuse loopback, link-local, private, and reserved targets. Per-page extraction caps the text so the JSON pipe stays small; one bad page becomes an error row. Residual: the driver's DNS check and connect are two steps — the rebinding window Node's pinned lookup closes stays open here, narrowed to a host already validated public at dispatch.
+2. **JS fallback** — discovery over the seed's **raw** HTML (the markdown extractor strips links entirely; the probe must be raw), harvest through `fetchContent`, so JS-rendered pages ride the full chain.
+
+The driver reports `exhausted`; `crawl.ts` turns not-exhausted into `capped` — the inventory is partial, and the result text names the recovery (raise `maxPages`, narrow the seed). Pages keep the fetch shape (`url`, `title`, `content`, `error`), so `fetchView` and the fetch renderer rows carry over; the crawl renderer adds only the state line.
+
 ## Cache
 
 - `canonicalize` drops fragments and tracking params (`utm_*`, `fbclid`, …), sorts the query, lowercases the host. The canonical form is both the cache key and the URL actually fetched, so a tracking-tagged copy and its clean form cannot fork into two entries.

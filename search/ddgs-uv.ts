@@ -25,7 +25,7 @@ export function uvxInstallPath(platform: string, home: string): string {
   return platform === "win32" ? join(bin, "uvx.exe") : join(bin, "uvx");
 }
 
-function uvxBinary(): string {
+export function uvxBinary(): string {
   const installPath = uvxInstallPath(process.platform, homedir());
   if (existsSync(installPath)) return installPath;
   return "uvx"; // PATH fallback: brew, apt, pip, scoop, winget installs
