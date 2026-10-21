@@ -93,7 +93,7 @@ test("answer: collapsed carries a preview cut at PROSE_PREVIEW_CHARS with a mark
   const prose = Array.from({ length: 60 }, () => "word").join(" "); // 299 chars
   const d = details(5, { provider: "openai", answer: prose });
   const view = searchView(d, { expanded: false, query: "q" });
-  const cut = truncateToWidth(prose, PROSE_PREVIEW_CHARS, "…");
+  const cut = truncateToWidth(prose, PROSE_PREVIEW_CHARS, "…").replace(/\x1b\[0m/g, "");
   assert.equal(unwrap(view.answer!), cut);
   assert.ok(stripTerminalSequences(cut).length <= PROSE_PREVIEW_CHARS);
   assert.ok(stripTerminalSequences(cut).endsWith("…"));
@@ -450,13 +450,27 @@ test("fetch collapsed: caps rows at COLLAPSED_ROWS, counts hidden, no previews",
   assert.equal(view.rows[0]!.chars, fetchDetails(1).results![0]!.content.length);
 });
 
-test("fetch expanded: every page carries a flattened preview cut at FETCH_PREVIEW_CHARS", () => {
+test("fetch expanded: every page carries a hanging-indented preview cut at FETCH_PREVIEW_CHARS", () => {
   const view = fetchView(fetchDetails(2), { expanded: true });
   assert.equal(view.rows.length, 2);
   assert.equal(view.hiddenCount, 0);
-  const preview = stripTerminalSequences(view.rows[0]!.preview!);
-  assert.ok(preview.length <= FETCH_PREVIEW_CHARS);
+  const lines = view.rows[0]!.preview!;
+  assert.ok(lines.length > 1);
+  assert.ok(lines.every((l) => l.startsWith("   ")));
+  const preview = stripTerminalSequences(lines.join(""));
+  assert.ok(stripTerminalSequences(lines.join("")).length <= FETCH_PREVIEW_CHARS + 4 * lines.length);
   assert.ok(preview.endsWith("…"));
+});
+
+test("fetch: a truncated cut carries no style resets — the black-band bug", () => {
+  // truncateToWidth injects \x1b[0m before the ellipsis on every cut; inside a
+  // styled wrapped block that reset kills the row background (black band).
+  const prose = Array.from({ length: 120 }, () => "word").join(" "); // 599 chars — past the budget
+  const d = fetchDetails(1);
+  d.results![0]!.content = prose;
+  const preview = fetchView(d, { expanded: true }).rows[0]!.preview!.join("");
+  assert.ok(!preview.includes("\x1b"));
+  assert.ok(stripTerminalSequences(preview).endsWith("…"));
 });
 
 test("fetch: an untitled page falls back to its shortened URL as title", () => {

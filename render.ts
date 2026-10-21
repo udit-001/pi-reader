@@ -37,7 +37,13 @@
 // theme, no TUI, and no live session. Theme colors, the Text component, and
 // the lastComponent reuse live only in the callbacks.
 
-import { Text, hyperlink, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+  Text,
+  hyperlink,
+  stripTerminalSequences,
+  truncateToWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import type {
   AgentToolResult,
   Theme,
@@ -143,7 +149,7 @@ export function searchView(
         // Collapsed cuts by visible width — embedded hyperlink escapes count
         // zero, and the … lands only when something was actually cut.
         answer: wrapHanging(
-          options.expanded ? answer : truncateToWidth(answer, PROSE_PREVIEW_CHARS, "…"),
+          options.expanded ? answer : cutPlain(answer, PROSE_PREVIEW_CHARS),
           PROSE_WRAP_COLS,
           "   ",
         ),
@@ -164,7 +170,7 @@ export function searchView(
             // Same markdown cleanup the answer gets — snippets cut from
             // LLM prose carry the same **bold** artifacts — and the same
             // visible-width cut, marked only when something was cut.
-            snippet: truncateToWidth(cleanProse(row.snippet), SNIPPET_CHARS, "…"),
+            snippet: cutPlain(cleanProse(row.snippet), SNIPPET_CHARS),
           }
           : {}),
       };
@@ -274,6 +280,18 @@ function parsePeopleRow(row: WebSearchDetailsRow): { name: string; profile?: str
  *  without loss. Terminals narrower than `width` re-wrap the TUI's way. */
 function wrapHanging(text: string, width: number, indent: string): string[] {
   return wrapTextWithAnsi(text, width).map((l) => indent + l);
+}
+
+/** Cut plain prose at a visible-width budget with an ellipsis marker.
+ *  truncateToWidth injects `\x1b[0m` before the ellipsis on every cut — even
+ *  for plain input — and when the cut lands inside a styled, wrapped block,
+ *  that reset also kills the block background, so the ellipsis and the row's
+ *  trailing padding paint terminal-default black. Cutting plain text here
+ *  (escapes stripped first, then the truncation's resets removed) keeps every
+ *  emitted line a single clean style run. */
+export function cutPlain(text: string, max: number): string {
+  const cut = truncateToWidth(stripTerminalSequences(text), max, "…");
+  return cut.replace(/\x1b\[0m/g, "");
 }
 
 /** Shape people-category details for the transcript. Collapsed shows the top
@@ -408,7 +426,7 @@ export function papersView(
       // it displays. The trend and abstract collapse away.
       const { abstract, trend, ...base } = parsePaperRow(row);
       const excerpt = options.expanded && abstract
-        ? truncateToWidth(cleanProse(abstract), SNIPPET_CHARS, "…")
+        ? cutPlain(cleanProse(abstract), SNIPPET_CHARS)
         : undefined;
       return {
         ...base,
@@ -449,7 +467,9 @@ export interface FetchRowView {
   /** Content size in characters — how much arrived. */
   chars: number;
   error?: string;
-  preview?: string;
+  /** Flattened content preview, pre-wrapped with a hanging indent — one
+   *  complete style run per line, so no wrap boundary can bleed style. */
+  preview?: string[];
 }
 
 export interface FetchView {
@@ -488,7 +508,7 @@ export function fetchView(details: FetchDetails | undefined, options: FetchViewO
     ...(summary
       ? {
         summary: wrapHanging(
-          options.expanded ? summary : truncateToWidth(summary, PROSE_PREVIEW_CHARS, "…"),
+          options.expanded ? summary : cutPlain(summary, PROSE_PREVIEW_CHARS),
           PROSE_WRAP_COLS,
           "   ",
         ),
@@ -503,7 +523,13 @@ export function fetchView(details: FetchDetails | undefined, options: FetchViewO
         chars: row.content.length,
         ...(failed ? { error: row.error! } : {}),
         ...(options.expanded && !failed && row.content
-          ? { preview: truncateToWidth(row.content.replace(/\s+/g, " ").trim(), FETCH_PREVIEW_CHARS, "…") }
+          ? {
+            preview: wrapHanging(
+              cutPlain(row.content.replace(/\s+/g, " ").trim(), FETCH_PREVIEW_CHARS),
+              PROSE_WRAP_COLS,
+              "   ",
+            ),
+          }
           : {}),
       };
     }),
@@ -740,7 +766,7 @@ export const webFetchRenderers: Pick<
       let line = `${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`;
       line += theme.fg("dim", ` — ${hyperlink(shortUrl(row.url), row.url)} · ${formatChars(row.chars)}`);
       lines.push(line);
-      if (row.preview) lines.push(`   ${theme.fg("muted", row.preview)}`);
+      if (row.preview) lines.push(...row.preview.map((l) => theme.fg("muted", l)));
     }
     if (view.hiddenCount > 0) {
       lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
