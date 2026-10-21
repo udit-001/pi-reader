@@ -1,4 +1,4 @@
-// render.ts — transcript presentation for web_search.
+// render.ts — transcript presentation for web_search and web_fetch.
 //
 // The module's interface is pi's renderer seam: `renderCall` and
 // `renderResult`, attached to the web_search registration by spreading
@@ -25,7 +25,11 @@
 // collapsed, full when expanded, pre-wrapped with a hanging indent like the
 // people blocks. Other providers' answers are buildAnswer(rows), a view of
 // the rows themselves, and never ride in details. Citation rows whose only
-// title is the URL render that URL once, shortened. The TUI transcript
+// title is the URL render that URL once, shortened. web_fetch renders
+// through the same shape: fetchView() caps pages to one-liners (title, link,
+// size — failed pages show their error instead), expanded adds a bounded
+// content preview, and a model-authored summary (the prompt param) rides in
+// details like the openai answer does. The TUI transcript
 // changes; what the model sees does not.
 //
 // Internal seam: `searchView()` is pure — details + view options in, plain
@@ -74,9 +78,13 @@ export interface WebSearchDetails {
 export const COLLAPSED_ROWS = 3;
 /** Expanded snippet length — Radius's budget: enough to judge, not to read. */
 export const SNIPPET_CHARS = 220;
-/** Collapsed answer preview — enough to judge whether the grounded prose is
- *  on track, not to read it; expand for the whole thing. */
-export const ANSWER_PREVIEW_CHARS = 240;
+/** Collapsed preview budget for model-authored prose — openai answers, fetch
+ *  summaries: enough to judge whether it's on track, not to read it; expand
+ *  for the whole thing. */
+export const PROSE_PREVIEW_CHARS = 240;
+/** Expanded page-content preview — enough to recognize what arrived, not to
+ *  read it; the full content went to the model. */
+export const FETCH_PREVIEW_CHARS = 360;
 /** Prose blocks — people profiles, openai answers — wrap at this width with
  *  a hanging indent; wider terminals keep the block's shape, narrower ones
  *  fall back to the TUI's own full-width wrap. */
@@ -135,7 +143,7 @@ export function searchView(
         // Collapsed cuts by visible width — embedded hyperlink escapes count
         // zero, and the … lands only when something was actually cut.
         answer: wrapHanging(
-          options.expanded ? answer : truncateToWidth(answer, ANSWER_PREVIEW_CHARS, "…"),
+          options.expanded ? answer : truncateToWidth(answer, PROSE_PREVIEW_CHARS, "…"),
           PROSE_WRAP_COLS,
           "   ",
         ),
@@ -415,6 +423,95 @@ export function papersView(
   };
 }
 
+// ── Fetch view (pure — the testable seam) ────────────────────────────────
+
+/** The details payload web_fetch's execute() returns. Content is the page's
+ *  markdown (or raw body) — agent food; the transcript shows a bounded
+ *  preview. A model-authored summary (the prompt param) is a distinct object
+ *  and rides in details like the openai answer does. */
+export interface FetchDetails {
+  error?: string;
+  results?: Array<{
+    url: string;
+    title: string;
+    content: string;
+    error: string | null;
+  }>;
+  summarized?: boolean;
+  model?: string;
+  summary?: string;
+}
+
+export interface FetchRowView {
+  index: number;
+  title: string;
+  url: string;
+  /** Content size in characters — how much arrived. */
+  chars: number;
+  error?: string;
+  preview?: string;
+}
+
+export interface FetchView {
+  count: number;
+  summarized?: boolean;
+  model?: string;
+  /** Model-authored summary, cleaned and pre-wrapped; collapsed carries a
+   *  trimmed preview, expanded the whole thing. */
+  summary?: string[];
+  rows: FetchRowView[];
+  hiddenCount: number;
+  error?: string;
+}
+
+export interface FetchViewOptions {
+  expanded: boolean;
+}
+
+/** Human-sized content count: "850 chars", "12.3k chars". Pure; exported for tests. */
+export function formatChars(n: number): string {
+  return n < 1000 ? `${n} chars` : `${(n / 1000).toFixed(1)}k chars`;
+}
+
+/** Shape fetch details for the transcript. Collapsed caps at COLLAPSED_ROWS
+ *  one-liners (title, link, size — no content); expanded adds a flattened
+ *  content preview per page, cut at FETCH_PREVIEW_CHARS. A failed page
+ *  carries its error instead of a size or preview. */
+export function fetchView(details: FetchDetails | undefined, options: FetchViewOptions): FetchView {
+  const rows = details?.results ?? [];
+  const shown = options.expanded ? rows : rows.slice(0, COLLAPSED_ROWS);
+  const summary = details?.summary ? cleanProse(details.summary) : undefined;
+  return {
+    count: rows.length,
+    ...(details?.summarized ? { summarized: true } : {}),
+    ...(details?.model ? { model: details.model } : {}),
+    ...(summary
+      ? {
+        summary: wrapHanging(
+          options.expanded ? summary : truncateToWidth(summary, PROSE_PREVIEW_CHARS, "…"),
+          PROSE_WRAP_COLS,
+          "   ",
+        ),
+      }
+      : {}),
+    rows: shown.map((row, i) => {
+      const failed = !!row.error;
+      return {
+        index: i + 1,
+        title: row.title || shortUrl(row.url),
+        url: row.url,
+        chars: row.content.length,
+        ...(failed ? { error: row.error! } : {}),
+        ...(options.expanded && !failed && row.content
+          ? { preview: truncateToWidth(row.content.replace(/\s+/g, " ").trim(), FETCH_PREVIEW_CHARS, "…") }
+          : {}),
+      };
+    }),
+    hiddenCount: options.expanded ? 0 : Math.max(0, rows.length - COLLAPSED_ROWS),
+    ...(details?.error ? { error: details.error } : {}),
+  };
+}
+
 // ── Renderer callbacks (theme + TUI assembly only) ──────────────────────────
 
 interface WebSearchCallArgs {
@@ -566,6 +663,87 @@ export const webSearchRenderers: Pick<
     }
     if (view.nextCursor) {
       lines.push(theme.fg("dim", `Next cursor: pass filters.cursor for the next page.`));
+    }
+    text.setText(lines.join("\n"));
+    return text;
+  },
+};
+
+interface WebFetchCallArgs {
+  urls?: string | string[];
+  mode?: string;
+  topic?: string;
+  prompt?: string;
+  maxChars?: number;
+}
+
+export const webFetchRenderers: Pick<
+  ToolDefinition<any, FetchDetails>,
+  "renderCall" | "renderResult"
+> = {
+  renderCall(rawArgs, theme, context) {
+    const args = (rawArgs ?? {}) as WebFetchCallArgs;
+    const text =
+      context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+    const urls = Array.isArray(args.urls) ? args.urls : args.urls ? [args.urls] : [];
+    const parts = [theme.fg("toolTitle", theme.bold("fetch "))];
+    parts.push(theme.fg("accent", urls.slice(0, 2).map((u) => `“${shortUrl(u)}”`).join(" ")));
+    if (urls.length > 2) parts.push(theme.fg("dim", ` +${urls.length - 2}`));
+    if (args.mode && args.mode !== "markdown") parts.push(theme.fg("dim", ` ${args.mode}`));
+    if (args.topic) parts.push(theme.fg("dim", ` topic: ${args.topic}`));
+    if (args.prompt) parts.push(theme.fg("dim", ` prompt`));
+    if (args.maxChars) parts.push(theme.fg("dim", ` max=${args.maxChars}`));
+    text.setText(parts.join(""));
+    return text;
+  },
+
+  renderResult(
+    result: AgentToolResult<FetchDetails>,
+    { expanded, isPartial }: ToolRenderResultOptions,
+    theme: Theme,
+    context,
+  ) {
+    const text =
+      context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+    const contentText = result.content.find((item) => item.type === "text")?.text;
+    if (isPartial) {
+      text.setText(theme.fg("muted", contentText ?? ""));
+      return text;
+    }
+    const details = result.details;
+    if (details?.error) {
+      text.setText(theme.fg("error", details.error || contentText || "Fetch failed"));
+      return text;
+    }
+    if (!details) {
+      // Sessions resumed across the renderer's introduction replay results
+      // with no details payload — fall back to the text the tool returned.
+      text.setText(theme.fg("muted", contentText ?? "No fetch result"));
+      return text;
+    }
+    const view = fetchView(details, { expanded });
+    if (view.count === 0) {
+      text.setText(theme.fg("muted", "No content fetched"));
+      return text;
+    }
+    const header: string[] = [theme.fg("success", `${view.count} page${view.count === 1 ? "" : "s"}`)];
+    if (view.summarized && view.model) header.push(theme.fg("dim", ` · summarized by ${view.model}`));
+    const lines = [header.join(" ")];
+    if (view.summary) lines.push(...view.summary);
+    for (const row of view.rows) {
+      if (row.error) {
+        // Failed pages stay prominent: URL, then the actionable hint below.
+        lines.push(`${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", shortUrl(row.url))}`);
+        lines.push(`   ${theme.fg("error", row.error)}`);
+        continue;
+      }
+      let line = `${theme.fg("muted", `${row.index}.`)} ${theme.fg("accent", row.title)}`;
+      line += theme.fg("dim", ` — ${hyperlink(shortUrl(row.url), row.url)} · ${formatChars(row.chars)}`);
+      lines.push(line);
+      if (row.preview) lines.push(`   ${theme.fg("muted", row.preview)}`);
+    }
+    if (view.hiddenCount > 0) {
+      lines.push(theme.fg("dim", `…${view.hiddenCount} more`));
     }
     text.setText(lines.join("\n"));
     return text;

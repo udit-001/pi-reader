@@ -34,7 +34,7 @@ import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
 import { consumeParallelIssue } from "./search/parallel-mcp.ts";
 import { openParallelSetup } from "./search/parallel-setup.ts";
 import { openOpenAlexSetup } from "./search/openalex-setup.ts";
-import { webSearchRenderers, type WebSearchDetails } from "./render.ts";
+import { webFetchRenderers, webSearchRenderers, type FetchDetails, type WebSearchDetails } from "./render.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
 import { webSearch, type SearchProviderName } from "./search/search.ts";
 import { OpenAISearchUnavailableError } from "./search/openai.ts";
@@ -602,13 +602,14 @@ export default function piWeb(pi: ExtensionAPI): void {
       "Use to read full page content from known URLs (docs, articles, issues); " +
       "GitHub repos return a local checkout in one call.",
     parameters: webFetchParams,
+    ...webFetchRenderers,
     async execute(
       _callId: string,
       params: WebFetchParams,
       signal: AbortSignal | undefined,
       _onUpdate: unknown,
       ctx: ExtensionContext,
-    ): Promise<AgentToolResult<Record<string, unknown>>> {
+    ): Promise<AgentToolResult<FetchDetails>> {
       try {
         const urls = Array.isArray(params.urls) ? params.urls : [params.urls];
         const results = await fetchContent(urls, {
@@ -642,7 +643,7 @@ export default function piWeb(pi: ExtensionAPI): void {
             .join("\n");
           return {
             content: [{ type: "text", text: summaryText }],
-            details: { summarized: true, model: summary.model, results },
+            details: { summarized: true, model: summary.model, summary: summary.text, results },
           };
         }
 

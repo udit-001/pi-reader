@@ -6,13 +6,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import {
-  ANSWER_PREVIEW_CHARS,
   COLLAPSED_ROWS,
+  FETCH_PREVIEW_CHARS,
+  PROSE_PREVIEW_CHARS,
   PROSE_WRAP_COLS,
   SNIPPET_CHARS,
+  fetchView,
+  formatChars,
   papersView,
   peopleView,
   searchView,
+  type FetchDetails,
   type WebSearchDetails,
   type WebSearchDetailsRow,
 } from "../render.ts";
@@ -85,13 +89,13 @@ function unwrap(lines: string[]): string {
   return lines.map((l) => l.slice(3)).join(" ");
 }
 
-test("answer: collapsed carries a preview cut at ANSWER_PREVIEW_CHARS with a marker", () => {
+test("answer: collapsed carries a preview cut at PROSE_PREVIEW_CHARS with a marker", () => {
   const prose = Array.from({ length: 60 }, () => "word").join(" "); // 299 chars
   const d = details(5, { provider: "openai", answer: prose });
   const view = searchView(d, { expanded: false, query: "q" });
-  const cut = truncateToWidth(prose, ANSWER_PREVIEW_CHARS, "…");
+  const cut = truncateToWidth(prose, PROSE_PREVIEW_CHARS, "…");
   assert.equal(unwrap(view.answer!), cut);
-  assert.ok(stripTerminalSequences(cut).length <= ANSWER_PREVIEW_CHARS);
+  assert.ok(stripTerminalSequences(cut).length <= PROSE_PREVIEW_CHARS);
   assert.ok(stripTerminalSequences(cut).endsWith("…"));
   // The row collapse contract is untouched by the answer block.
   assert.equal(view.rows.length, COLLAPSED_ROWS);
@@ -422,4 +426,68 @@ test("papers: nextCursor and error pass through", () => {
   );
   assert.equal(err.error, "OpenAlex was unreachable");
   assert.equal(err.count, 0);
+});
+
+// ── Fetch view ───────────────────────────────────────────────────────────────
+
+function fetchDetails(n: number, extra: Partial<FetchDetails> = {}): FetchDetails {
+  return {
+    results: Array.from({ length: n }, (_, i) => ({
+      url: `https://example.com/page-${i + 1}`,
+      title: `Page ${i + 1}`,
+      content: `Content of page ${i + 1}. `.repeat(40),
+      error: null,
+    })),
+    ...extra,
+  };
+}
+
+test("fetch collapsed: caps rows at COLLAPSED_ROWS, counts hidden, no previews", () => {
+  const view = fetchView(fetchDetails(5), { expanded: false });
+  assert.equal(view.rows.length, COLLAPSED_ROWS);
+  assert.equal(view.hiddenCount, 5 - COLLAPSED_ROWS);
+  assert.ok(view.rows.every((r) => r.preview === undefined));
+  assert.equal(view.rows[0]!.chars, fetchDetails(1).results![0]!.content.length);
+});
+
+test("fetch expanded: every page carries a flattened preview cut at FETCH_PREVIEW_CHARS", () => {
+  const view = fetchView(fetchDetails(2), { expanded: true });
+  assert.equal(view.rows.length, 2);
+  assert.equal(view.hiddenCount, 0);
+  const preview = stripTerminalSequences(view.rows[0]!.preview!);
+  assert.ok(preview.length <= FETCH_PREVIEW_CHARS);
+  assert.ok(preview.endsWith("…"));
+});
+
+test("fetch: an untitled page falls back to its shortened URL as title", () => {
+  const d = fetchDetails(1);
+  d.results![0]!.title = "";
+  const view = fetchView(d, { expanded: false });
+  assert.equal(view.rows[0]!.title, "example.com/page-1");
+});
+
+test("fetch: a failed page carries its error and no preview even expanded", () => {
+  const d = fetchDetails(2, {});
+  d.results![0]!.error = "Fetch failed (HTTP 404). The URL may require authentication.";
+  const view = fetchView(d, { expanded: true });
+  assert.equal(view.rows[0]!.error, "Fetch failed (HTTP 404). The URL may require authentication.");
+  assert.equal(view.rows[0]!.preview, undefined);
+  assert.ok(view.rows[1]!.preview);
+});
+
+test("fetch summarized: model rides, summary pre-wrapped and preview-cut collapsed", () => {
+  const prose = Array.from({ length: 60 }, () => "word").join(" ");
+  const d = fetchDetails(2, { summarized: true, model: "gpt-x", summary: prose });
+  const collapsed = fetchView(d, { expanded: false });
+  assert.equal(collapsed.model, "gpt-x");
+  assert.ok(collapsed.summary!.length > 1);
+  assert.ok(collapsed.summary!.every((l) => l.startsWith("   ")));
+  assert.ok(stripTerminalSequences(unwrap(collapsed.summary!)).endsWith("…"));
+  const expanded = fetchView(d, { expanded: true });
+  assert.equal(unwrap(expanded.summary!), prose);
+});
+
+test("fetch: formatChars humanizes sizes", () => {
+  assert.equal(formatChars(850), "850 chars");
+  assert.equal(formatChars(12345), "12.3k chars");
 });
