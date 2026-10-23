@@ -13,7 +13,8 @@
 // Everything else — gh→git transport choice, checkout-size gate, tree-URL ref
 // resolution, best-effort submodule init, cross-process runtime cache with
 // owner files and stale sweeping, timeout kill discipline, traversal guards,
-// tree caps — is implementation.
+// tree caps, one retry on transient transport failures (a mid-pack disconnect
+// costs at most 2× cloneTimeoutSeconds before `failed`) — is implementation.
 // `exec` and `clonePath` are injectable so tests never touch the network or git.
 //
 // Clone destinations live under `<clonePath>/runtime-<mkdtemp>/<sha256>`:
@@ -101,7 +102,7 @@ export function validateRepoRef(ref: RepoRef): string | null {
 const CLONE_DEFAULTS: CloneConfig = {
   enabled: true,
   maxRepoSizeMB: 350,
-  cloneTimeoutSeconds: 30,
+  cloneTimeoutSeconds: 120,
   clonePath: "/tmp/pi-github-repos",
 };
 
@@ -191,6 +192,13 @@ export async function ensureClone(req: RepoRef, opts: CloneOptions = {}): Promis
   }
 }
 
+/** Clone stderr worth one retry: momentary transport drops, not repo or auth
+ *  errors — retrying "repository not found" cannot succeed. A process killed by
+ *  the timeout never matches here; the code is null and the budget is spent.
+ *  Pure; exported for tests. */
+export const TRANSIENT_CLONE_RE =
+  /unexpected disconnect|remote end hung up|early EOF|RPC failed|connection reset by peer|connection was reset/i;
+
 function digestOf(req: RepoRef): string {
   return createHash("sha256").update(JSON.stringify([req.owner, req.repo, req.ref ?? null])).digest("hex");
 }
@@ -224,10 +232,6 @@ async function runClone(
     const incomplete = await initSubmodules(runner, destination, timeoutMs, opts.signal);
     return clonedResult(destination, "cache", incomplete);
   }
-  rmSync(destination, { recursive: true, force: true });
-  // git clone accepts an existing empty dir; creating it here also gives the
-  // fake runner (tests) a real destination.
-  mkdirSync(destination, { recursive: true, mode: 0o700 });
 
   const cloneArgs = hasGh
     ? ["repo", "clone", `${req.owner}/${req.repo}`, destination, "--", "--depth", "1", "--single-branch",
@@ -237,10 +241,34 @@ async function runClone(
        `https://github.com/${req.owner}/${req.repo}.git`, destination];
 
   const cmd = hasGh ? "gh" : "git";
-  const r = await runner(cmd, cloneArgs, { timeoutMs, signal: opts.signal });
+
+  // git clone accepts an existing empty dir; creating it here also gives the
+  // fake runner (tests) a real destination.
+  const attemptClone = async () => {
+    rmSync(destination, { recursive: true, force: true });
+    mkdirSync(destination, { recursive: true, mode: 0o700 });
+    return runner(cmd, cloneArgs, { timeoutMs, signal: opts.signal });
+  };
+
+  let r = await attemptClone();
+  let retried = false;
+  if (r.code !== 0 && r.code !== null && !opts.signal?.aborted && TRANSIENT_CLONE_RE.test(r.stderr)) {
+    // Mid-pack disconnects and resets are usually momentary — one retry before
+    // the handler degrades to the API view. A killed process (code null) has
+    // spent its timeout budget; retrying would double it, so it never retries.
+    r = await attemptClone();
+    retried = true;
+  }
   if (r.code !== 0) {
     rmSync(destination, { recursive: true, force: true });
-    return { status: "failed", reason: r.stderr.trim().slice(0, 300) || `${cmd} clone exited ${r.code}` };
+    const base = r.code === null
+      // Timeout kill: the captured stderr is mid-write noise — a killed pack
+      // read prints whatever it was reading ("unexpected disconnect…"), which
+      // reads as a network error when the network is fine. Name the timeout.
+      ? `clone exceeded ${cfg.cloneTimeoutSeconds}s (still downloading — large pack or slow network); ` +
+        "a re-fetch retries, or raise githubClone.cloneTimeout"
+      : r.stderr.trim().slice(0, 300) || `${cmd} clone exited ${r.code}`;
+    return { status: "failed", reason: retried ? `retried once, still failing: ${base}` : base };
   }
   const submodulesIncomplete = await initSubmodules(runner, destination, timeoutMs, opts.signal);
   return clonedResult(destination, hasGh ? "gh" : "git", submodulesIncomplete);

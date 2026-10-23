@@ -18,6 +18,7 @@ import {
   resolveTreePath,
   SHA_LIKE_RE,
   splitTreePath,
+  TRANSIENT_CLONE_RE,
   transportEnv,
   validateRepoRef,
   type CloneExec,
@@ -30,14 +31,15 @@ interface Call {
   args: string[];
 }
 
-type Route = (command: string, args: string[]) => { stdout?: string; stderr?: string; code?: number } | undefined;
+type Route = (command: string, args: string[]) => { stdout?: string; stderr?: string; code?: number | null } | undefined;
 
 function fakeExec(route: Route): { exec: CloneExec; calls: Call[] } {
   const calls: Call[] = [];
   const exec: CloneExec = async (command, args) => {
     calls.push({ command, args });
     const r = route(command, args);
-    return { stdout: r?.stdout ?? "", stderr: r?.stderr ?? "", code: r?.code ?? 0 };
+    // An explicit null code (timeout kill) must survive; only a missing code means success.
+    return { stdout: r?.stdout ?? "", stderr: r?.stderr ?? "", code: r && r.code !== undefined ? r.code : 0 };
   };
   return { exec, calls };
 }
@@ -162,13 +164,13 @@ test("clone: normalizeCloneConfig applies defaults and tolerates junk", () => {
   const cfg = normalizeCloneConfig(undefined);
   assert.equal(cfg.enabled, true);
   assert.equal(cfg.maxRepoSizeMB, 350);
-  assert.equal(cfg.cloneTimeoutSeconds, 30);
+  assert.equal(cfg.cloneTimeoutSeconds, 120);
   assert.equal(cfg.clonePath, "/tmp/pi-github-repos");
 
   const junk = normalizeCloneConfig({ maxRepoSizeMB: -5, cloneTimeoutSeconds: "x", enabled: "yes" });
   assert.equal(junk.enabled, true);
   assert.equal(junk.maxRepoSizeMB, 350);
-  assert.equal(junk.cloneTimeoutSeconds, 30);
+  assert.equal(junk.cloneTimeoutSeconds, 120);
 
   const custom = normalizeCloneConfig({ enabled: false, maxRepoSizeMB: 100, clonePath: "~/r" });
   assert.equal(custom.enabled, false);
@@ -343,8 +345,86 @@ test("clone: ensureClone reports failed clones and cleans the destination", asyn
   if (result.status !== "failed") return;
   assert.match(result.reason, /repository not found/);
   assert.ok(!calls.some((c) => c.command === "git"), "no git retry after a gh clone that ran");
+  const cloneCalls = calls.filter((c) => c.command === "gh" && c.args[0] === "repo").length;
+  assert.equal(cloneCalls, 1, "a permanent error gets no retry");
   // Destination removed: whatever dirs exist under the runtime are not the checkout.
   rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: ensureClone retries a transient disconnect once and then clones", async () => {
+  const clonePath = tmpClonePath();
+  let cloneCalls = 0;
+  const { exec } = fakeExec((command, args) => {
+    if (command === "gh" && args[0] === "repo" && args[1] === "clone") {
+      cloneCalls++;
+      // The exact failure from the wild: mid-pack disconnect on a media-heavy repo.
+      if (cloneCalls === 1) return { code: 128, stderr: "fetch-pack: unexpected disconnect while reading sideband packet" };
+    }
+    return ghHappyPath(command, args);
+  });
+  const result = await ensureClone(REPO, { exec, clonePath });
+  assert.equal(result.status, "cloned");
+  assert.equal(cloneCalls, 2, "exactly one retry after the transient failure");
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: ensureClone reports a transient failure that survives the retry", async () => {
+  const clonePath = tmpClonePath();
+  let cloneCalls = 0;
+  const { exec } = fakeExec((command, args) => {
+    if (command === "gh" && args[0] === "repo" && args[1] === "clone") {
+      cloneCalls++;
+      return { code: 128, stderr: "fatal: the remote end hung up unexpectedly" };
+    }
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
+    if (command === "gh" && args[0] === "api") return { stdout: "1024\n" };
+    return undefined;
+  });
+  const result = await ensureClone(REPO, { exec, clonePath });
+  assert.equal(result.status, "failed");
+  if (result.status !== "failed") return;
+  assert.match(result.reason, /retried once, still failing/);
+  assert.match(result.reason, /remote end hung up/);
+  assert.equal(cloneCalls, 2);
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: a killed clone (timeout budget spent) gets no retry", async () => {
+  const clonePath = tmpClonePath();
+  let cloneCalls = 0;
+  const { exec } = fakeExec((command, args) => {
+    if (command === "gh" && args[0] === "repo" && args[1] === "clone") {
+      cloneCalls++;
+      return { code: null, stderr: "" };
+    }
+    if (command === "gh" && args[0] === "auth") return { code: 0 };
+    if (command === "gh" && args[0] === "api") return { stdout: "1024\n" };
+    return undefined;
+  });
+  const result = await ensureClone(REPO, { exec, clonePath });
+  assert.equal(result.status, "failed");
+  if (result.status !== "failed") return;
+  // The killed process's stderr (a killed pack read prints "unexpected
+  // disconnect…") must not become the reason — that reads as a network error
+  // when the network is fine. The timeout is named, with the recovery path.
+  assert.match(result.reason, /clone exceeded \d+s/);
+  assert.match(result.reason, /still downloading/);
+  assert.equal(cloneCalls, 1, "retrying would double the timeout budget");
+  rmSync(clonePath, { recursive: true, force: true });
+});
+
+test("clone: TRANSIENT_CLONE_RE matches transport drops, not repo or auth errors", () => {
+  for (const s of [
+    "fetch-pack: unexpected disconnect while reading sideband packet",
+    "fatal: the remote end hung up unexpectedly",
+    "fatal: early EOF",
+    "error: RPC failed; curl 56 Recv failure: Connection reset by peer",
+  ]) assert.equal(TRANSIENT_CLONE_RE.test(s), true, s);
+  for (const s of [
+    "fatal: repository not found",
+    "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    "error: pathspec 'main' did not match any file(s) known to git",
+  ]) assert.equal(TRANSIENT_CLONE_RE.test(s), false, s);
 });
 
 test("clone: ensureClone dedupes concurrent clones of the same ref", async () => {
