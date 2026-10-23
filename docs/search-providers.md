@@ -41,7 +41,6 @@ Two backends behind one dispatch, one record shape, failure always in band. The 
 ## Exa MCP
 
 - **Key precedence:** `~/.pi/agent/pi-reader.json` (`exa.apiKey`), then `EXA_API_KEY`. `mcp.json` is a wizard *import source*, never a runtime key source — a stale entry there must not shadow a key the user saved later. Resolution is lazy and cached; `resetExaKeyCache()` after a wizard write makes a new key live without a restart.
-- **Network errors are expected** on remote SSE JSON-RPC: the adapter retries once, the router falls back to DDG.
 - **`redactSecret()` (`search/redact.ts`)**, shared with Codex, wraps every error leaving the adapter, so a key never reaches the transcript. Short values are skipped because they occur in ordinary text.
 
 ## Parallel MCP
@@ -55,7 +54,7 @@ Two backends behind one dispatch, one record shape, failure always in band. The 
 
 ## Config
 
-One file, `~/.pi/agent/pi-reader.json`, owned entirely by `config.ts`: atomic writes, forgiving reads (missing or malformed → null, never a throw at startup). Non-obvious keys: `parallel.apiKey` absent is a valid state; `hints.mcpDuplicate` persists a one-time explanation; `openai.searchModel` is sent verbatim.
+Non-obvious keys: `parallel.apiKey` absent is a valid state; `hints.mcpDuplicate` persists a one-time explanation; `openai.searchModel` is sent verbatim.
 
 ## Setup
 
