@@ -30,10 +30,9 @@ import type { Static } from "typebox";
 import { consumeExaIssue } from "./search/exa-issue.ts";
 import { warmDdgs } from "./search/ddgs-uv.ts";
 import { exaCategoryList } from "./search/exa-mcp.ts";
-import { detectMcpDuplicate, openExaSetup } from "./search/exa-setup.ts";
+import { detectMcpDuplicate } from "./search/exa-setup.ts";
 import { consumeParallelIssue } from "./search/parallel-mcp.ts";
-import { openParallelSetup } from "./search/parallel-setup.ts";
-import { openOpenAlexSetup } from "./search/openalex-setup.ts";
+import { registerSearchSetupCommand } from "./search/setup-menu.ts";
 import { webCrawlRenderers, webFetchRenderers, webSearchRenderers, type CrawlDetails, type FetchDetails, type WebSearchDetails } from "./render.ts";
 import { crawl, excerptOf } from "./fetch/crawl.ts";
 import { configPath, loadConfig, saveConfig } from "./config.ts";
@@ -315,14 +314,16 @@ type WebFetchParams = Static<typeof webFetchParams>;
 
 // The adapter notes rate-limit/missing-key issues as they happen, even when
 // callers auto-fallback and swallow the error. This surfaces them once, with
-// the recovery path — the wizard never auto-opens over a running session.
+// the recovery path — the menu never auto-opens over a running session. All
+// providers recover through /search-setup <provider>; the arg preselects the
+// row (see setup-menu.ts, the openers' one door).
 function notifyExaIssueOnce(ctx: ExtensionContext): void {
   const issue = consumeExaIssue();
   if (!issue) return;
   if (issue === "rate-limited") {
-    ctx.ui.notify("Exa is rate limited. /exa-setup to replace the key — DuckDuckGo still works.", "warning");
+    ctx.ui.notify("Exa is rate limited. Run /search-setup exa to replace the key — DuckDuckGo still works.", "warning");
   } else {
-    ctx.ui.notify("No Exa API key configured. /exa-setup to add one — DuckDuckGo still works.", "warning");
+    ctx.ui.notify("No Exa API key configured. Run /search-setup exa to add one — DuckDuckGo still works.", "warning");
   }
 }
 
@@ -331,30 +332,11 @@ function notifyExaIssueOnce(ctx: ExtensionContext): void {
 // surfacing as Exa's.
 function notifyParallelIssueOnce(ctx: ExtensionContext): void {
   if (!consumeParallelIssue()) return;
-  ctx.ui.notify("Parallel is rate limited. /parallel-setup to add a key for higher limits — DuckDuckGo still works.", "warning");
+  ctx.ui.notify("Parallel is rate limited. Run /search-setup parallel to add a key for higher limits — DuckDuckGo still works.", "warning");
 }
 
 export default function piWeb(pi: ExtensionAPI): void {
-  pi.registerCommand("exa-setup", {
-    description: "Set up or replace the Exa API key (guided wizard)",
-    handler: async (_args: string, ctx: ExtensionCommandContext) => {
-      openExaSetup(ctx);
-    },
-  });
-
-  pi.registerCommand("parallel-setup", {
-    description: "Add a Parallel API key for higher search rate limits (optional — search works keyless)",
-    handler: async (_args: string, ctx: ExtensionCommandContext) => {
-      openParallelSetup(ctx);
-    },
-  });
-
-  pi.registerCommand("openalex-setup", {
-    description: "Set up the free OpenAlex API key for papers search (guided wizard)",
-    handler: async (_args: string, ctx: ExtensionCommandContext) => {
-      openOpenAlexSetup(ctx);
-    },
-  });
+  registerSearchSetupCommand(pi);
 
   // Duplication hygiene: an mcp.json exa entry with directTools puts exa's
   // raw tools next to web_search/web_fetch in every session. The detailed
@@ -375,12 +357,12 @@ export default function piWeb(pi: ExtensionAPI): void {
     if (!detectMcpDuplicate()) return;
     const config = loadConfig() ?? { version: 1 };
     if (config.hints?.mcpDuplicate) {
-      ctx.ui.notify("Exa configured in both mcp.json and pi-reader — /exa-setup to dedupe", "info");
+      ctx.ui.notify("Exa configured in both mcp.json and pi-reader — /search-setup to dedupe", "info");
       return;
     }
     ctx.ui.notify(
       "Exa is configured in mcp.json, and pi-reader's web_search/web_fetch already cover it. " +
-        "Run /exa-setup to import the key and remove the duplicate.",
+        "Run /search-setup to import the key and remove the duplicate.",
       "warning",
     );
     saveConfig(configPath(), {
@@ -559,10 +541,10 @@ export default function piWeb(pi: ExtensionAPI): void {
           error = "Search failed. Try provider: 'exa' or rephrase with a descriptive query.";
         } else if (/rate.?limit/i.test(message)) {
           error = provider === "parallel"
-            ? "Search failed. Parallel is rate limited — wait and retry, or /parallel-setup to add a key."
-            : "Search failed. Run /exa-setup to replace the key, or wait and retry.";
+            ? "Search failed. Parallel is rate limited — wait and retry, or run /search-setup parallel to add a key."
+            : "Search failed. Run /search-setup exa to replace the key, or wait and retry.";
         } else if (/no.*key|not.*configured|missing/i.test(message)) {
-          error = "Search failed. Run /exa-setup to configure an Exa API key.";
+          error = "Search failed. Run /search-setup exa to configure an Exa API key.";
         } else if (/no.*results|parseable/i.test(message)) {
           error = "No results found. Try a more descriptive query, an earlier page, or a different provider.";
         } else if (/timeout|ECONNREFUSED|fetch.*fail/i.test(message)) {
@@ -609,7 +591,7 @@ export default function piWeb(pi: ExtensionAPI): void {
       _callId: string,
       params: WebFetchParams,
       signal: AbortSignal | undefined,
-      _onUpdate: unknown,
+      onUpdate: AgentToolUpdateCallback<FetchDetails> | undefined,
       ctx: ExtensionContext,
     ): Promise<AgentToolResult<FetchDetails>> {
       try {
@@ -619,6 +601,12 @@ export default function piWeb(pi: ExtensionAPI): void {
           signal,
           topic: params.topic,
           mode: params.mode,
+          // Mid-run feedback: the transcript holds this line (renderResult's
+          // isPartial branch) until the real result lands — the words come
+          // from the deep module (system voice, state-only) because only it
+          // knows tiers and cache hits mid-flight. The call row already
+          // carries the URL, so the lines never repeat it.
+          onEvent: (note) => onUpdate?.({ content: [{ type: "text", text: note }], details: {} }),
         });
 
         // Summarize the pages if a prompt was given.
@@ -724,10 +712,14 @@ export default function piWeb(pi: ExtensionAPI): void {
       _callId: string,
       params: WebCrawlParams,
       signal: AbortSignal | undefined,
-      _onUpdate: unknown,
+      onUpdate: AgentToolUpdateCallback<CrawlDetails> | undefined,
       _ctx: ExtensionContext,
     ): Promise<AgentToolResult<CrawlDetails>> {
       try {
+        // Mid-run feedback for a potentially long sweep (pre-clone, pre-crawl
+        // probing reads slow; the uv driver adds its own later). The seed is
+        // on the call row; the line says only that work started.
+        onUpdate?.({ content: [{ type: "text", text: "Crawling…" }], details: {} });
         const result = await crawl(params.seed, {
           maxPages: params.maxPages,
           depth: params.depth,

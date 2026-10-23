@@ -1,7 +1,8 @@
 // fetch.ts — deep module: URL → clean Markdown, optionally summarized.
 //
 // The seam is fetchContent(): a list of URLs in, a list of {url,title,content}
-// out. Tiers, tried until one serves the URL: local (verbatim markdown/text/
+// out; an optional onEvent(note) streams one-line progress (cache hits, named
+// handlers, reader-service tiers) for the transcript's partial rendering. Tiers, tried until one serves the URL: local (verbatim markdown/text/
 // JSON; Defuddle → Markdown for HTML; Next.js RSC flight decode when
 // Readability finds nothing; regex last resort; bot-walled pages get one curl
 // retry with a real Chrome profile before leaving the machine) → Jina Reader
@@ -63,6 +64,28 @@ export interface FetchOptions {
    *  crawl's JS adapter sets this: its sweeps stay on the machine's own
    *  fetch path, never the remote services. */
   localOnly?: boolean;
+  /** Progress notes for the transcript's partial rendering: one line at a
+   *  time, each replacing the last — never a log. System voice: only facts
+   *  known at emission time (counts, cache hits, handler name, tier
+   *  entered), never the caller's intent. Default noop. */
+  onEvent?: (note: string) => void;
+}
+
+/** The transcript's progress-note decision for the handler tier, pure and
+ *  exported for tests. Named handlers do real work before rendering (a github
+ *  repo clones — 30-60s), so they announce; the default webpage handler is the
+ *  ordinary case "via webpage handler" would just repeat. Raw mode speaks only
+ *  for fetchRaw dispatch (its canonical-body summoning, e.g. orcid) so the
+ *  note can't promise a handler dispatch that doesn't happen. Reaches fetch
+ *  tests only through this function because assertPublicTarget resolves
+ *  synthetic hosts' DNS and blocks them before any handler runs. */
+export function handlerNote(
+  handler: ReturnType<typeof resolveHandler> | null,
+  raw: boolean,
+): string | null {
+  if (!handler || handler.name === "webpage") return null;
+  if (raw && !handler.fetchRaw) return null;
+  return `reading via ${handler.name} handler…`;
 }
 
 // ── Public interface ─────────────────────────────────────────────────────────
@@ -103,6 +126,8 @@ export async function fetchContent(
 ): Promise<FetchResult[]> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
   const raw = options.mode === "raw";
+  const onEvent = options.onEvent ?? (() => {});
+  onEvent(urls.length === 1 ? "Fetching…" : `Fetching ${urls.length} URLs…`);
 
   // SSRF guard at the only entry point: covers every path to content — cache,
   // handlers, and fetch. Redirect hops re-validate at the transport layer.
@@ -156,6 +181,10 @@ export async function fetchContent(
       ? { url: u, title: "", content: "", error: blockedResults.get(u)! }
       : cachedResults.get(u)!);
   }
+  // Why the count below can first move by more than one fetch.
+  if (cachedResults.size > 0) {
+    onEvent(`${cachedResults.size} of ${urls.length} served from cache; fetching ${uncachedUrls.length}…`);
+  }
 
   // Try structured handlers first (GitHub, npm, Wikipedia, etc.). Raw mode
   // bypasses them, except handlers that opt in with fetchRaw (rawViaHandler
@@ -166,6 +195,14 @@ export async function fetchContent(
 
   for (const urlStr of urlsToProcess) {
     if (raw) {
+      let rawHandler: ReturnType<typeof resolveHandler> | null = null;
+      try {
+        rawHandler = resolveHandler(new URL(urlStr));
+      } catch {
+        // Unparseable URL — rawViaHandler reports it below.
+      }
+      const note = handlerNote(rawHandler, true);
+      if (note) onEvent(note);
       const viaHandler = await rawViaHandler(urlStr, options.signal);
       if (viaHandler) {
         handlerResults.set(urlStr, { ...viaHandler, content: viaHandler.content.slice(0, maxChars) });
@@ -177,7 +214,9 @@ export async function fetchContent(
     try {
       const url = new URL(urlStr);
       const handler = resolveHandler(url);
-      if (handler) {
+      {
+        const note = handlerNote(handler, false);
+        if (note) onEvent(note);
         const ctx: FetchContext = { mode: "light", entryDir: "", signal: options.signal };
         const result = await fetchWithHandler(url, ctx);
         if (result) {
@@ -214,6 +253,7 @@ export async function fetchContent(
   // localOnly skips them — the crawl's adapters sweep with local fetches only.
   const rescued = new Map<string, FetchResult>();
   if (!options.localOnly) {
+    onEvent(`${failedUrls.length} of ${urls.length} need a reader service…`);
     await Promise.all(failedUrls.map(async (url) => {
       for (const fetcher of FREE_FALLBACKS) {
         try {
@@ -231,6 +271,7 @@ export async function fetchContent(
     const stillMissing = failedUrls.filter((u) => !rescued.has(u));
     if (stillMissing.length > 0) {
       try {
+        onEvent(`trying Exa for ${stillMissing.length} page${stillMissing.length === 1 ? "" : "s"}…`);
         const exa = await fetchExaMcp(stillMissing, maxChars, options.signal);
         for (const r of exa) {
           // Only trust Exa where it actually produced content.

@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { htmlToMarkdown, convert, fitToBudget, normalizeUrl, rawContentLabel, opencodeSessionHeaders, rawViaHandler } from "../fetch/fetch.ts";
+import { htmlToMarkdown, convert, fetchContent, handlerNote, fitToBudget, normalizeUrl, rawContentLabel, opencodeSessionHeaders, rawViaHandler } from "../fetch/fetch.ts";
 import { FetchError, defineHandler } from "../fetch/handlers/handler.ts";
 import { registerHandler } from "../fetch/handlers/registry.ts";
 
@@ -154,6 +154,37 @@ test("fetch: every transport in fetch.ts goes through httpGet (per-hop SSRF vali
     directFetches.length, 1,
     `expected exactly one direct fetch( (fetchWithTimeout, fixed-host fallbacks), found ${directFetches.length}`,
   );
+});
+
+test("fetch: handlerNote names a handler's long read in markdown mode, never the default webpage one", () => {
+  const named = defineHandler({ name: "github", match: () => true, fetch: async () => ({ kind: "page", title: "", content: "x" }) });
+  const plain = defineHandler({ name: "webpage", match: () => true, fetch: async () => ({ kind: "page", title: "", content: "x" }) });
+  assert.equal(handlerNote(named, false), "reading via github handler…");
+  assert.equal(handlerNote(plain, false), null, "the ordinary case would just repeat");
+  assert.equal(handlerNote(null, false), null);
+});
+
+test("fetch: handlerNote in raw mode speaks only for fetchRaw dispatch", () => {
+  const named = defineHandler({ name: "github", match: () => true, fetch: async () => ({ kind: "page", title: "", content: "x" }) });
+  const raw = defineHandler({
+    name: "orcid",
+    match: () => true,
+    fetch: async () => ({ kind: "page", title: "", content: "x" }),
+    fetchRaw: async () => ({ kind: "page", title: "", content: "body" }),
+  });
+  assert.equal(handlerNote(raw, true), "reading via orcid handler…");
+  assert.equal(handlerNote(named, true), null, "the note can't promise a raw handler dispatch that doesn't happen");
+});
+
+test("fetch: onEvent gets the start line, and SSRF-blocked URLs add nothing after it", async () => {
+  // Synthetic hosts can't pass assertPublicTarget's DNS validation, so this
+  // integration test pins what the seam can genuinely reach: the start line
+  // fires first, counts URLs, and blocked URLs produce no further notes.
+  const notes: string[] = [];
+  await fetchContent(["https://event-notes.test/a", "https://event-notes.test/b"], {
+    onEvent: (n) => notes.push(n),
+  });
+  assert.deepEqual(notes, ["Fetching 2 URLs…"]);
 });
 
 // ── OpenCode identity (direct-completion session header) ─────────────────────
