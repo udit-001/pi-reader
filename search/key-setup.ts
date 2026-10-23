@@ -11,14 +11,16 @@
 //
 // The key is never rendered: masked in previews, redacted from error text.
 
-import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ExtensionCommandContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { spawn } from "node:child_process";
 import { configPath } from "../config.ts";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_MS = 100;
-const WIZARD_WIDTH = 72;
+
+// Borders (DynamicBorder) and text both size to the live terminal width —
+// the /mcp view applies no fixed cap, and neither do the wizards.
 
 // ── Masking / redaction ──────────────────────────────────────────────────────
 
@@ -358,17 +360,19 @@ export class KeySetupWizard {
 
   render(width: number): string[] {
     if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
-    const W = Math.min(width, WIZARD_WIDTH);
+    // Full-width chrome, one drawing home (the same component /mcp uses);
+    // the explicit color fn avoids the jiti global-theme caveat pi warns about.
+    const border = new DynamicBorder((t) => this.theme.fg("border", t));
     const lines: string[] = [];
     const add = (s = "") => lines.push(s);
     const wrap = (text: string, style: "text" | "dim" | "error" | "warning" | "accent" = "text", indent = 0) => {
       const pad = " ".repeat(2 + indent);
-      for (const l of wrapTextWithAnsi(text, W - 2 - indent)) {
+      for (const l of wrapTextWithAnsi(text, Math.max(10, width - 2 - indent))) {
         lines.push(`${pad}${this.theme.fg(style, l)}`);
       }
     };
 
-    add(this.theme.fg("border", "─".repeat(W)));
+    lines.push(...border.render(width));
     add(`  ${this.theme.fg("accent", this.theme.bold(this.spec.title))}`);
     add();
 
@@ -378,9 +382,14 @@ export class KeySetupWizard {
         for (const l of this.spec.introLines) wrap(l);
         add();
         const source = this.spec.currentKeyLabel?.() ?? null;
-        wrap(source
-          ? `Current key: set (${source})`
-          : "Current key: none configured");
+        // The key state is the one fact this screen reports; make it the
+        // most visible line, and make the two states read differently.
+        // Green set / red none (theme-standard oklch tokens), source dim.
+        if (source) {
+          add(`  ${this.theme.fg("success", `Key: set ✓`)} ${this.theme.fg("dim", `(${source})`)}`);
+        } else {
+          wrap(this.theme.fg("error", "Key: none configured"), "error");
+        }
         add();
         wrap(`Get a key — Enter opens the dashboard.`);
         add();
@@ -424,7 +433,7 @@ export class KeySetupWizard {
         add();
         const preview = JSON.stringify(this.spec.previewConfig(this.key.trim()), null, 2);
         for (const l of preview.split("\n")) {
-          lines.push(`    ${this.theme.fg("text", truncateToWidth(l, W - 6, "…"))}`);
+          lines.push(`    ${this.theme.fg("text", truncateToWidth(l, width - 6, "…"))}`);
         }
         add();
         wrap(`Written to ${configPath()}. No restart needed.`, "dim");
@@ -456,7 +465,7 @@ export class KeySetupWizard {
 
     add();
     add(`  ${this.theme.fg("dim", this.footer())}`);
-    add(this.theme.fg("border", "─".repeat(W)));
+    lines.push(...border.render(width));
 
     this.cachedWidth = width;
     this.cachedLines = lines;
@@ -479,9 +488,25 @@ export class KeySetupWizard {
 }
 // ── Opening ──────────────────────────────────────────────────────────────────
 
-/** Wizards currently open, keyed by title — one reopen guard for every
- *  provider's command. */
+/** Wizards currently open, keyed by title — one reopen guard shared by every
+ *  provider's command and the /search-setup menu (setup-menu.ts). Mutually
+ *  exclusive: one setup surface at a time, whichever opened first. */
 const openWizards = new Set<string>();
+
+/** Register/unregister a setup surface in the guard registry — openKeySetup
+ *  does this for the wizard commands; the /search-setup menu (setup-menu.ts)
+ *  does it for its own title. */
+export function setWizardOpen(title: string, open: boolean): void {
+  if (open) openWizards.add(title);
+  else openWizards.delete(title);
+}
+
+/** The first open setup surface's title, or null when none is — the guard
+ *  predicate every opener consults so no surface can stack on another. */
+export function anyWizardOpen(): string | null {
+  for (const title of openWizards) return title;
+  return null;
+}
 
 // Best-effort browser open. The URL is always shown as text too, so a missing
 // opener is an inconvenience, not a dead end.
@@ -510,8 +535,9 @@ export function openKeySetup(
     ctx.ui.notify(spec.manualInstructions, "info");
     return;
   }
-  if (openWizards.has(spec.title)) {
-    ctx.ui.notify(`The ${spec.title} wizard is already open.`, "info");
+  const open = anyWizardOpen();
+  if (open) {
+    ctx.ui.notify(`The ${open} view is already open.`, "info");
     return;
   }
   openWizards.add(spec.title);

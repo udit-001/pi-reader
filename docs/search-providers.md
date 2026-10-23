@@ -57,6 +57,10 @@ Two backends behind one dispatch, one record shape, failure always in band. The 
 
 One file, `~/.pi/agent/pi-reader.json`, owned entirely by `config.ts`: atomic writes, forgiving reads (missing or malformed → null, never a throw at startup). Non-obvious keys: `parallel.apiKey` absent is a valid state; `hints.mcpDuplicate` persists a one-time explanation; `openai.searchModel` is sent verbatim.
 
+## Setup
+
+One command, `/search-setup`, opens a provider menu (Exa, Parallel, OpenAlex) that hosts each provider's wizard in one overlay: pick a row, the wizard runs inside it, done returns to the menu with statuses re-read. `/search-setup exa` (also `parallel`, `openalex`) preselects the row; this arg is how the rate-limit prompts route recovery. All setup surfaces share one guard, so only one is open at a time. The per-provider commands are gone; every hint string names `/search-setup <provider>`.
+
 ## Wizards
 
-One skeleton owns the flow, the spinner, redaction, the headless manual-path fallback, and the reopen guard; each provider is a spec plus a thin subclass. Two rules live outside the skeleton because one provider owns them: the `mcp.json` import and duplicate removal belong to the Exa instance, and the duplicate warning fires once per install (persisted) then drops to a brief reminder while the condition persists — an Exa `directTools` entry otherwise puts raw Exa tools beside `web_search` in every session. A wizard opens only via its command: it needs keyboard focus, so headless prints the manual path instead.
+One skeleton owns the flow, the spinner, redaction, and the headless manual-path fallback, and the reopen guard is shared with the menu (one surface at a time); each provider is a spec plus a thin subclass. Two rules live outside the skeleton because one provider owns them: the `mcp.json` import and duplicate removal belong to the Exa instance, and the duplicate warning fires once per install (persisted) then drops to a brief reminder while the condition persists — an Exa `directTools` entry otherwise puts raw Exa tools beside `web_search` in every session. A wizard runs only inside the /search-setup overlay: it needs keyboard focus, so headless prints the manual paths instead.

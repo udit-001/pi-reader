@@ -257,10 +257,15 @@ export class ExaSetupWizard extends KeySetupWizard {
 
 // ── The Exa spec + opener ────────────────────────────────────────────────────
 
-const exaSpec: KeySetupSpec = {
+export const exaSpec: KeySetupSpec = {
   title: "Exa setup",
   dashboardUrl: DASHBOARD_URL,
-  introLines: ["Exa semantic search needs a key. Search and fetch work without one."],
+  introLines: [
+    // The key's value only. The keyless reassurance lives on the /search-setup
+    // menu ("DuckDuckGo works without a key.") — one owner per meaning; this
+    // intro shows from the menu too, so repeating it there says it twice.
+    "A free key switches results to Exa and enables its filters: category, domains, full content.",
+  ],
   currentKeyLabel: () => exaKeySource(),
   pasteInstructions: "On the dashboard: API Keys -> Create key -> copy it.",
   validatingLabel: "Testing the key (one search)...",
@@ -296,6 +301,9 @@ const exaSpec: KeySetupSpec = {
   writeErrorHint: "Fix by hand: set EXA_API_KEY, or check permissions on ~/.pi/agent/ and re-run /exa-setup.",
 };
 
+/** @deprecated Callers recover through /search-setup (setup-menu.ts) — one
+ *  door, preselect arg names the provider. Kept only as the subclass wiring
+ *  the menu shares; not exported to new code. */
 export function openExaSetup(ctx: ExtensionCommandContext): void {
   openKeySetup(ctx, exaSpec, (wiring) => new ExaSetupWizard(exaSpec, wiring));
 }

@@ -93,12 +93,14 @@ export async function openAlexBudgetLines(key: string): Promise<string[]> {
 
 // ── The OpenAlex spec + opener ───────────────────────────────────────────────
 
-const openalexSpec: KeySetupSpec = {
+export const openalexSpec: KeySetupSpec = {
   title: "OpenAlex setup",
   dashboardUrl: DASHBOARD_URL,
   introLines: [
-    "Papers search (provider \"papers\", index \"openalex\") works without a key, but the free anonymous budget is about 100 searches a day.",
-    "A free OpenAlex API key raises it 10×. Get one at openalex.org/settings/api.",
+    // The budget fact only: the second line's "raises it" needs it. The
+    // keyless reassurance lives on the /search-setup menu (one owner).
+    "Keyless papers search: about 100 searches a day.",
+    "A free key raises it 10x.",
   ],
   currentKeyLabel: () => {
     const key = resolveOpenAlexKey(loadConfig()?.papers?.openalexApiKey, process.env.OPENALEX_API_KEY);
@@ -144,6 +146,9 @@ const openalexSpec: KeySetupSpec = {
   writeErrorHint: "Fix by hand: set OPENALEX_API_KEY, or check permissions on ~/.pi/agent/ and re-run /openalex-setup.",
 };
 
+/** @deprecated Callers recover through /search-setup (setup-menu.ts). Kept
+ *  only where the menu itself constructs its wizards; not exported to new
+ *  code. */
 export function openOpenAlexSetup(ctx: ExtensionCommandContext): void {
   openKeySetup(ctx, openalexSpec, (wiring) => new KeySetupWizard(openalexSpec, wiring));
 }

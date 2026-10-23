@@ -134,7 +134,7 @@ async function getExaClient(): Promise<Client> {
     const key = resolveApiKey();
     if (!key) {
       throw new Error(
-        "No Exa API key found. Run /exa-setup to set one up, or set the EXA_API_KEY environment variable.",
+        "No Exa API key found. Run /search-setup exa to set one up, or set the EXA_API_KEY environment variable.",
       );
     }
     clientPromise = connectMcp(endpointUrl(key)).catch((err) => {

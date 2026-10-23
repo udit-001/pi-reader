@@ -626,7 +626,7 @@ test("openalex error detail: 429 with zero remaining reports credits exhausted â
   const d = openAlexErrorDetail(429, rl({ remaining: 0, resetSeconds: 300 }), false);
   assert.match(d!, /daily credits exhausted/);
   assert.match(d!, /openalex\.org\/settings\/api/);
-  assert.match(d!, /\/openalex-setup/);
+  assert.match(d!, /\/search-setup openalex/);
 });
 
 test("openalex error detail: keyed exhaustion names the reset from X-RateLimit-Reset", () => {
@@ -1131,7 +1131,7 @@ test("a metered 429 (zero remaining) surfaces the credits-exhausted text â€” key
     (err: unknown) => {
       const m = (err as Error).message;
       assert.match(m, /daily credits exhausted/);
-      assert.match(m, /\/openalex-setup/);
+      assert.match(m, /\/search-setup openalex/);
       return true;
     },
   );

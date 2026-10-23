@@ -7,7 +7,7 @@
 //
 // Key difference from Exa: the anonymous free tier is the default product.
 // No key = works (fast mode, per-session rate limits). An optional key
-// (PARALLEL_API_KEY or /parallel-setup) raises the rate limits and unlocks
+// (PARALLEL_API_KEY or /search-setup parallel) raises the rate limits and unlocks
 // connection-level overrides; it rides the Authorization header, never the
 // URL, so it cannot leak into transport error messages. Because a missing key
 // is a valid configuration, the only issue worth noting is rate-limiting.

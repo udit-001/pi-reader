@@ -802,7 +802,7 @@ export function openAlexErrorDetail(status: number, rateLimit: OpenAlexRateLimit
       ? `daily credits exhausted — budget resets in ${Math.ceil(resetSeconds)} seconds (midnight UTC)`
       : "daily credits exhausted — budget resets at midnight UTC";
   }
-  return "daily credits exhausted (the keyless daily budget is spent) — a free API key raises the budget 10×: get one at openalex.org/settings/api or run /openalex-setup";
+  return "daily credits exhausted (the keyless daily budget is spent) — a free API key raises the budget 10×: get one at openalex.org/settings/api or run /search-setup openalex";
 }
 
 /** How much of a rejected request's complaint reaches the agent. An unknown

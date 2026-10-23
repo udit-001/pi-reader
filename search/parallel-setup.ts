@@ -56,12 +56,14 @@ export async function validateParallelKey(key: string, signal?: AbortSignal): Pr
 
 // ── The Parallel spec + opener ───────────────────────────────────────────────
 
-const parallelSpec: KeySetupSpec = {
+export const parallelSpec: KeySetupSpec = {
   title: "Parallel setup",
   dashboardUrl: DASHBOARD_URL,
   introLines: [
-    "Search works without a key (Parallel's free tier, per-session rate limits).",
-    "A key raises those limits and enables pinned search settings.",
+    // The limping context only: the second line's "those limits" needs it.
+    // The keyless reassurance lives on the /search-setup menu (one owner).
+    "The free tier: per-session limits.",
+    "A key raises those limits and lets you pin default search settings.",
   ],
   currentKeyLabel: () => parallelKeySource(),
   pasteInstructions: "On the dashboard: API Keys -> Create key -> copy it.",
@@ -98,6 +100,9 @@ const parallelSpec: KeySetupSpec = {
   writeErrorHint: "Fix by hand: set PARALLEL_API_KEY, or check permissions on ~/.pi/agent/ and re-run /parallel-setup.",
 };
 
+/** @deprecated Callers recover through /search-setup (setup-menu.ts). Kept
+ *  only where the menu itself constructs its wizards; not exported to new
+ *  code. */
 export function openParallelSetup(ctx: ExtensionCommandContext): void {
   openKeySetup(ctx, parallelSpec, (wiring) => new KeySetupWizard(parallelSpec, wiring));
 }
