@@ -13,14 +13,82 @@
 // duplicates it. The parse seam below is the test surface: fixtures in, pages
 // out — the network and the Python process are not unit-tested.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { hasUvx, uvxBinary } from "../search/ddgs-uv.ts";
+import { loadConfig, saveConfig, configPath } from "../config.ts";
 
 const execFileAsync = promisify(execFile);
+
+// ── Cold-start warm probe ───────────────────────────────────────────────────
+
+/** Download-only budget, decoupled from the crawl exec timeout: uv's first
+ *  trafilatura download (lxml wheels included, ~30 MB) must never eat the
+ *  crawl's own 150 s window. Cached forever after the first success. */
+export const WARM_TIMEOUT_MS = 180_000;
+
+/** Probe command for the warm check: imports trafilatura, forcing uv to
+ *  resolve and cache the inline dependency. Pure — tests pin the plan. */
+export function warmProbeCommand(uvxBin: string): string[] {
+  return [uvxBin, "--with", "trafilatura", "python", "-c", "import trafilatura"];
+}
+
+/** The cold-start flow: the note is a once-per-MACHINE event, so it is gated
+ *  on a persisted marker, not on a stopwatch — a fast download is still the
+ *  first download (a racy 5s probe once hid the note from a first-time user).
+ *  No marker → note + warm + onWarmed() on success. Marker set → silence.
+ *  Warm failure stays silent: the crawl's degrade notice is the surface, and
+ *  the unmarked state lets a later cold crawl announce again (correct: still
+ *  unwarmed). Exported as an internal seam so tests pin the flow without
+ *  spawning processes or touching real config. */
+export async function crawlWarmFlow(
+  probeArgs: string[],
+  firstEver: boolean,
+  run: (args: string[], timeout: number) => Promise<unknown>,
+  onNote?: (note: string) => void,
+  onWarmed?: () => void,
+): Promise<void> {
+  if (!firstEver) return;
+  onNote?.("Downloading crawl backend (trafilatura) — one-time");
+  try {
+    await run(probeArgs, WARM_TIMEOUT_MS);
+  } catch {
+    return; // no marker — a later cold crawl announces again (still unwarmed)
+  }
+  onWarmed?.();
+}
+
+/** Fire-and-forget warm for the crawl backend: announces the one-time download
+ *  exactly once per machine (marker in shared config), then caches the
+ *  trafilatura inline dep off the crawl's exec timeout. Once per process.
+ *  Returns the promise so tests can await; callers may ignore. */
+let crawlWarmDone = false;
+export function warmCrawlUv(onNote?: (note: string) => void): Promise<void> {
+  if (crawlWarmDone) return Promise.resolve();
+  crawlWarmDone = true;
+  const config = loadConfig() ?? { version: 1 };
+  if (config.hints?.crawlBackendWarmed) return Promise.resolve();
+  return crawlWarmFlow(
+    warmProbeCommand(uvxBinary()),
+    true,
+    async (args, timeout) => {
+      await execFileAsync(args[0]!, args.slice(1), { timeout });
+    },
+    onNote,
+    () => {
+      // Re-read: a concurrent save between our load and now must not be dropped.
+      const fresh = loadConfig() ?? { version: 1 };
+      saveConfig(configPath(), {
+        ...fresh,
+        hints: { ...fresh.hints, crawlBackendWarmed: true },
+      });
+    },
+  );
+}
 
 /** True when the uv toolchain is present — the gate crawl.ts uses to pick
  *  this adapter. */
@@ -192,6 +260,12 @@ def extract_page(html, url):
     return {"url": url, "title": title, "text": text, "error": None}
 
 
+def emit_page(page):
+    """NDJSON page event: one line per harvested page, flushed — Node reads
+    these as they arrive (milestone notes, partial recovery on kill)."""
+    print(json.dumps({"page": page}), flush=True)
+
+
 def crawl_links(seed, max_pages, depth, deadline):
     """Breadth-first same-origin walk from the seed's links.
     Returns (pages, exhausted, visited_count)."""
@@ -211,10 +285,14 @@ def crawl_links(seed, max_pages, depth, deadline):
         except NonHTML:
             continue  # an asset endpoint, not a page — no row, no budget
         except Exception as e:
-            pages.append({"url": url, "title": "", "text": "",
-                          "error": f"Fetch failed ({e})"})
+            page = {"url": url, "title": "", "text": "",
+                    "error": f"Fetch failed ({e})"}
+            pages.append(page)
+            emit_page(page)
             continue
-        pages.append(extract_page(html, url))
+        page = extract_page(html, url)
+        pages.append(page)
+        emit_page(page)
         if d < depth:
             for link in extract_links(html, url, host):
                 queue.append((link, d + 1))
@@ -241,7 +319,9 @@ def main():
                 html = fetch_html(u)
             except NonHTML:
                 continue
-            pages.append(extract_page(html, u))
+            page = extract_page(html, u)
+            pages.append(page)
+            emit_page(page)
     else:
         source = "links"
         pages, exhausted, found = crawl_links(seed, max_pages, depth, deadline)
@@ -252,6 +332,37 @@ def main():
 if __name__ == "__main__":
     main()
 `;
+
+// ── NDJSON line protocol (driver stdout) ─────────────────────────────────────
+
+/** Which kind of line the driver emitted. `skip` covers garbage (warnings,
+ *  tracebacks, partial lines) — the protocol never kills the parse over it. */
+export type DriverLine =
+  | { kind: "page"; page: DriverPage }
+  | { kind: "summary"; out: DriverOutput }
+  | { kind: "skip" };
+
+/** Parse one NDJSON line from the driver. Pure; the test surface for the
+ *  streaming protocol. A line is a page event when it parses to an object
+ *  with a `page` object; the summary when it parses with a `pages` array;
+ *  everything else (unparseable, empty, both-shapes-missing) skips. */
+export function parseCrawlDriverLine(raw: string): DriverLine {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed[0] !== "{") return { kind: "skip" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { kind: "skip" };
+  }
+  if (typeof parsed !== "object" || parsed === null) return { kind: "skip" };
+  const obj = parsed as Record<string, unknown>;
+  if (obj.page && typeof obj.page === "object") {
+    return { kind: "page", page: obj.page as DriverPage };
+  }
+  if (Array.isArray(obj.pages)) return { kind: "summary", out: parsed as DriverOutput };
+  return { kind: "skip" };
+}
 
 // ── uv invocation ─────────────────────────────────────────────────────────────
 
@@ -281,11 +392,16 @@ const DRIVER_MAX_BUFFER = 4_000_000;
 /** Run the embedded driver: `uvx --with trafilatura python <script> <args>`.
  *  Argv-array exec — the seed (model-supplied) stays one data slot; no shell.
  *  The deadline rides in as an argument so the driver stops harvesting and
- *  reports its state; the exec timeout is the hard outer bound. */
+ *  reports its state; the exec timeout is the hard outer bound. Stdout is
+ *  NDJSON: a `"page"` line per harvested page (streamed to onPage as it
+ *  arrives) plus the final summary line. A driver killed before its summary
+ *  still returns the pages already parsed (partial recovery) instead of
+ *  losing the whole sweep; zero pages and no summary throws, as before. */
 export async function crawlViaUv(
   seed: string,
   options: { maxPages: number; depth: number; deadlineMs: number },
   signal?: AbortSignal,
+  onPage?: (page: DriverPage) => void,
 ): Promise<DriverOutput> {
   // Private per-call dir (mkdtemp: exclusive random suffix, 0700) — the driver
   // is written by path, so a pre-placed file at a guessable path is not an option.
@@ -301,13 +417,83 @@ export async function crawlViaUv(
     String(Math.ceil(options.deadlineMs / 1000)),
   ];
   try {
-    const { stdout } = await execFileAsync(uvxBinary(), args, {
-      timeout: CRAWL_EXEC_TIMEOUT_MS,
-      maxBuffer: DRIVER_MAX_BUFFER,
+    return await runCrawlDriver(
+      [uvxBinary(), ...args],
+      spawnCrawlDriver,
+      onPage,
+      validateDriverOutput,
       signal,
-    });
-    return parseCrawlDriverOutput(stdout);
+    );
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
   }
+}
+
+/** Shared validation from the collect-all parser — one shape contract. */
+const validateDriverOutput = (out: DriverOutput): DriverOutput => {
+  if (!Array.isArray(out.pages)) {
+    throw new Error("crawl driver output is missing its pages list");
+  }
+  return out;
+};
+
+/** The real subprocess: spawn the driver, feed stdout line-by-line as they
+ *  arrive, return the pages and summary the child produced before any death.
+ *  Exposed as the default `spawnCrawl` dependency of runCrawlDriver so tests
+ *  substitute a fake emitting line sequences. Timeout maps to killing the
+ *  child — the caller then decides (summary? partial pages? throw). */
+function spawnCrawlDriver(
+  args: string[],
+  onPage: ((page: DriverPage) => void) | undefined,
+  signal: AbortSignal | undefined,
+): Promise<{ summary: DriverOutput | null; pages: DriverPage[] }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(args[0]!, args.slice(1), {
+      signal,
+      timeout: CRAWL_EXEC_TIMEOUT_MS,
+    });
+    const rl = createInterface({ input: child.stdout! });
+    const pages: DriverPage[] = [];
+    let summary: DriverOutput | null = null;
+    rl.on("line", (line) => {
+      const parsed = parseCrawlDriverLine(line);
+      if (parsed.kind === "page") {
+        pages.push(parsed.page);
+        onPage?.(parsed.page);
+      } else if (parsed.kind === "summary") {
+        summary = parsed.out;
+      }
+    });
+    child.on("error", reject); // spawn failure (ENOENT) — nothing ran
+    child.on("close", () => {
+      if (summary) {
+        // Keep the streamed page events as the canonical row list: identical
+        // in the happy path, authoritative when the summary missed pages
+        // (shouldn't happen, but pages-witnessed outranks summary-claimed).
+        resolve({ summary, pages: pages.length > 0 ? pages : (summary.pages ?? []) });
+      } else {
+        resolve({ summary: null, pages });
+      }
+    });
+  });
+}
+
+
+/** The protected core, dependency-injected so tests pin it without a real
+ *  child. Outcome ladder: summary → summary (pages validated). No summary →
+ *  ≥1 page → partial recovery { exhausted: false, found: page count }.
+ *  No summary → 0 pages → throw (previous behavior, unchanged). */
+export async function runCrawlDriver(
+  args: string[],
+  spawnCrawl: typeof spawnCrawlDriver,
+  onPage: ((page: DriverPage) => void) | undefined,
+  validate: (out: DriverOutput) => DriverOutput,
+  signal?: AbortSignal,
+): Promise<DriverOutput> {
+  const { summary, pages } = await spawnCrawl(args, onPage, signal);
+  if (summary) return validate(summary);
+  if (pages.length > 0) {
+    return validate({ exhausted: false, found: pages.length, pages });
+  }
+  throw new Error("crawl driver produced no JSON");
 }

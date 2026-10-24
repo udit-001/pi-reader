@@ -1,6 +1,6 @@
 {
   "name": "pi-reader",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Web search (DuckDuckGo + Exa MCP) and URL-to-Markdown fetch for Pi coding agent. Zero config.",
   "type": "module",
   "license": "MIT",

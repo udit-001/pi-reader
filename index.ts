@@ -716,14 +716,18 @@ export default function piWeb(pi: ExtensionAPI): void {
       _ctx: ExtensionContext,
     ): Promise<AgentToolResult<CrawlDetails>> {
       try {
-        // Mid-run feedback for a potentially long sweep (pre-clone, pre-crawl
-        // probing reads slow; the uv driver adds its own later). The seed is
-        // on the call row; the line says only that work started.
-        onUpdate?.({ content: [{ type: "text", text: "Crawling…" }], details: {} });
+        // Progress notes ride the tool's onUpdate channel (mirrors
+        // fetch.ts's onEvent notes). crawl() emits them only for real
+        // waits — the cold one-time dependency download.
+        onUpdate?.({
+          content: [{ type: "text", text: "Crawling…" }],
+          details: {},
+        });
         const result = await crawl(params.seed, {
           maxPages: params.maxPages,
           depth: params.depth,
           signal,
+          onEvent: (note) => onUpdate?.({ content: [{ type: "text", text: note }], details: {} }),
         });
         const state = result.capped
           ? `capped — ${Math.max(0, result.found - result.pages.length)} more exist; ` +

@@ -17,7 +17,7 @@
 
 import { fetchContent } from "./fetch.ts";
 import { assertPublicTarget } from "./handlers/handler.ts";
-import { crawlUvAvailable, crawlViaUv, type DriverOutput } from "./crawl-uv.ts";
+import { crawlUvAvailable, crawlViaUv, warmCrawlUv, type DriverPage, type DriverOutput } from "./crawl-uv.ts";
 
 // ── Budgets — the contract every adapter satisfies ──────────────────────────
 
@@ -60,6 +60,10 @@ export interface CrawlOptions {
   maxPages?: number;
   depth?: number;
   signal?: AbortSignal;
+  /** One-line progress notes for long waits (cold dependency download).
+   *  Transport-agnostic — index.ts transposes them onto the tool's onUpdate
+   *  channel. Mirrors fetch.ts's onEvent shape. */
+  onEvent?: (note: string) => void;
 }
 
 // ── Pure seam (exported for tests) ───────────────────────────────────────────
@@ -149,6 +153,36 @@ export function shapeCrawl(out: DriverOutput, maxPages: number): CrawlResult {
  *  seed host. Residual: the driver's DNS check and connect are two steps —
  *  the rebinding window Node closes with a pinned lookup stays open here,
  *  narrowed to a host already validated public at dispatch. */
+// ── Degrade notice — the masked-failure surface ───────────────────────────────────
+
+/** One-line agent-visible notice appended when the uv adapter was selected but
+ *  the inventory came from the JS adapter. Mirrors withDdgsNotice in
+ *  search/duckduckgo.ts: the degraded result names its own quality. Exported
+ *  for tests; call site is crawl() below. */
+export function withCrawlDegradeNotice(result: CrawlResult, uvWasAvailable: boolean): CrawlResult {
+  if (!uvWasAvailable) return result; // js was the chosen adapter — not a degrade
+  if (result.source !== "js") return result; // uv adapter itself ran
+  const note = "[crawl: uv backend unavailable or timed out — fell back to the basic " +
+    "adapter (bot-walled sites 403, fewer pages). A one-time backend download may " +
+    "still be in progress; retry after it completes.]";
+  const pages = result.pages.slice();
+  const last = pages[pages.length - 1];
+  return last
+    ? { ...result, pages: [...pages.slice(0, -1), { ...last, content: `${last.content}\n\n${note}` }] }
+    : { ...result, pages: [{ url: "", title: "", content: note, error: null }] };
+}
+
+// ── Milestone notes — the throttle for per-page progress ────────────────────
+
+/** The next milestone note for a stream of page events, or null (nothing
+ *  earned pixels). Pure; fires the count at every 5th page and never repeats
+ *  an already-noted count (repeat calls are idempotent-safe). Exported for
+ *  tests; the call site is crawl()'s uv branch. */
+export function crawlMilestoneNote(seen: number, lastNoted: number): string | null {
+  const next = lastNoted < 5 ? 5 : lastNoted + 5;
+  return seen >= next ? `Crawled ${seen} pages…` : null;
+}
+
 export async function crawl(seed: string, options: CrawlOptions = {}): Promise<CrawlResult> {
   if (!isCrawlableUrl(seed)) {
     throw new Error(`Seed must be an http(s) URL, got: ${seed}`);
@@ -158,11 +192,24 @@ export async function crawl(seed: string, options: CrawlOptions = {}): Promise<C
   const depth = clamp(options.depth ?? DEFAULT_DEPTH, 1, MAX_DEPTH);
 
   if (crawlUvAvailable()) {
+    await warmCrawlUv(options.onEvent);
+    // Per-page progress → throttled milestone notes through the same onEvent
+    // seam as everything else; counts only, content stays in the inventory.
+    let seen = 0;
+    let noted = 0;
     try {
       const out = await crawlViaUv(
         seed,
         { maxPages, depth, deadlineMs: CRAWL_DEADLINE_MS },
         options.signal,
+        (_page: DriverPage) => {
+          seen++;
+          const note = crawlMilestoneNote(seen, noted);
+          if (note) {
+            noted = seen;
+            options.onEvent?.(note);
+          }
+        },
       );
       const result = shapeCrawl(out, maxPages);
       // A driver sweep that harvested nothing usable means discovery or
@@ -175,7 +222,9 @@ export async function crawl(seed: string, options: CrawlOptions = {}): Promise<C
       // Fall through — the sweep still happens on the plugin's own chain.
     }
   }
-  return jsCrawl(seed, maxPages, options.signal);
+  const jsResult = await jsCrawl(seed, maxPages, options.signal);
+  // Degrade is real only when uv was available: js-as-chosen-adapter is normal.
+  return withCrawlDegradeNotice(jsResult, crawlUvAvailable());
 }
 
 /** The JS adapter: discover from the seed's raw HTML (the markdown

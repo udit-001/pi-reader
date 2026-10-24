@@ -32,6 +32,9 @@ export interface PiWebConfig {
   hints?: {
     /** ISO timestamp when the mcp.json duplication prompt was shown. */
     mcpDuplicate?: string;
+    /** Set after the crawl backend's one-time download note has been shown —
+     *  the cold-start note is a once-per-machine event, not a per-session one. */
+    crawlBackendWarmed?: boolean;
   };
   /** GitHub repo cloning (see fetch/github-clone.ts). Absent fields use defaults. */
   githubClone?: {
